@@ -402,16 +402,27 @@ func (c *CLI) Run() error {
 	// Daemon mode: just wait for shutdown signal
 	if c.daemonMode {
 		c.printLogo()
-		fmt.Printf("  Address: %s\n", c.wallet.Address())
 		height := c.daemon.Chain().Height()
-		spendable := c.wallet.SpendableBalance(height)
-		pending := c.wallet.PendingBalance(height)
-		balanceStr := formatAmount(spendable)
-		if pending > 0 {
-			balanceStr += fmt.Sprintf(" + %s pending", formatAmount(pending))
+
+		c.mu.RLock()
+		w := c.wallet
+		c.mu.RUnlock()
+
+		if w != nil {
+			fmt.Printf("  Address: %s\n", w.Address())
+			spendable := w.SpendableBalance(height)
+			pending := w.PendingBalance(height)
+			balanceStr := formatAmount(spendable)
+			if pending > 0 {
+				balanceStr += fmt.Sprintf(" + %s pending", formatAmount(pending))
+			}
+			fmt.Printf("  Balance: %s\n", balanceStr)
+			fmt.Printf("  Height:  %d\n", height)
+		} else {
+			fmt.Printf("  Peer ID: %s\n", c.daemon.Node().PeerID())
+			fmt.Printf("  Height:  %d\n", height)
+			fmt.Println("  Wallet:  not loaded (use API /api/wallet/load)")
 		}
-		fmt.Printf("  Balance: %s\n", balanceStr)
-		fmt.Printf("  Height:  %d\n", height)
 		fmt.Println()
 		fmt.Printf("  %s\n", c.sectionHead("Daemon mode (Ctrl+C to stop)"))
 
