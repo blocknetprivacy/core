@@ -889,7 +889,6 @@ func (c *CLI) importWalletTargetPath() (base string, walletPath string, err erro
 	}
 	return base, walletPath, nil
 }
-
 func (c *CLI) promptHex32(prompt string) ([32]byte, error) {
 	var out [32]byte
 	fmt.Print("  " + prompt)

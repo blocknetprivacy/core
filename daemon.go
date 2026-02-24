@@ -643,6 +643,7 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	}
 
 	d.updateMempoolForAcceptedMainChain(&block, prevBest)
+	d.maybeAppendCheckpointLocked(&block)
 
 	// Relay to other peers (exclude sender)
 	d.node.RelayBlock(from, data)
@@ -1178,6 +1179,7 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 
 	if isMainChain {
 		d.updateMempoolForAcceptedMainChain(block, prevBest)
+		d.maybeAppendCheckpointLocked(block)
 		d.miner.NotifyNewBlock()
 	}
 

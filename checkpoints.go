@@ -20,7 +20,7 @@ const (
 
 	// DefaultCheckpointsURL is where nodes fetch checkpoints when not in --full-sync mode.
 	// This file is intended to be committed to the repo (append-only).
-	DefaultCheckpointsURL = "https://raw.githubusercontent.com/blocknetprivacy/blocknet/master/checkpoints.dat"
+	DefaultCheckpointsURL = "https://raw.githubusercontent.com/blocknetprivacy/checkpoints/mainnet/checkpoints.dat"
 
 	// Keep downloads bounded in case of a misconfigured URL.
 	maxCheckpointsDownloadBytes = 32 << 20 // 32 MiB
