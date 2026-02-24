@@ -1885,37 +1885,27 @@ func (c *Chain) reorganizeTo(newTip [32]byte) error {
 		return err
 	}
 
-	// Find common ancestor between current tip and new tip
-	currentPath := c.getAncestorPath(c.bestHash)
-	newPath := c.getAncestorPath(newTip)
-
-	if currentPath == nil || newPath == nil {
-		return fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
-	}
-
-	// Find where they diverge
-	commonHeight := uint64(0)
-	for h := uint64(0); h <= min(c.height, c.blocks[newTip].Header.Height); h++ {
-		if h < uint64(len(currentPath)) && h < uint64(len(newPath)) {
-			if currentPath[h] == newPath[h] {
-				commonHeight = h
-			} else {
-				break
-			}
-		}
+	// Find common ancestor between current tip and new tip without requiring
+	// a full tip->genesis path build.
+	commonHash, commonHeight, err := c.findCommonAncestorLocked(c.bestHash, newTip)
+	if err != nil {
+		return err
 	}
 
 	// Collect blocks to disconnect
 	var disconnect []*Block
 	for h := c.height; h > commonHeight; h-- {
-		block := c.blocks[c.byHeight[h]]
+		block := c.getBlockByHeightLocked(h)
+		if block == nil {
+			return fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+		}
 		disconnect = append(disconnect, block)
 	}
 
 	// Collect blocks to connect
-	var connect []*Block
-	for h := newBlock.Header.Height; h > commonHeight; h-- {
-		connect = append([]*Block{c.blocks[newPath[h]]}, connect...)
+	connect, err := c.collectConnectPathLocked(commonHash, newTip)
+	if err != nil {
+		return err
 	}
 
 	newTipWork, err := c.cumulativeWorkAtLocked(newTip)
@@ -1986,34 +1976,13 @@ func (c *Chain) enforceReorgFinalityLocked(newTip [32]byte) error {
 		return nil
 	}
 
-	newBlock := c.blocks[newTip]
-	if newBlock == nil {
-		if loaded, _ := c.storage.GetBlock(newTip); loaded != nil {
-			c.blocks[newTip] = loaded
-			c.cacheTouchLocked(newTip)
-			c.cacheTrimLocked()
-			newBlock = loaded
-		} else {
-			return fmt.Errorf("unknown reorg tip")
-		}
+	if c.getBlockByHashLocked(newTip) == nil {
+		return fmt.Errorf("unknown reorg tip")
 	}
 
-	currentPath := c.getAncestorPath(c.bestHash)
-	newPath := c.getAncestorPath(newTip)
-	if currentPath == nil || newPath == nil {
-		return fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
-	}
-
-	// Find fork point (highest common height).
-	commonHeight := uint64(0)
-	for h := uint64(0); h <= min(c.height, newBlock.Header.Height); h++ {
-		if h < uint64(len(currentPath)) && h < uint64(len(newPath)) {
-			if currentPath[h] == newPath[h] {
-				commonHeight = h
-			} else {
-				break
-			}
-		}
+	_, commonHeight, err := c.findCommonAncestorLocked(c.bestHash, newTip)
+	if err != nil {
+		return err
 	}
 
 	finalizedBoundary := c.height - MaxReorgDepth
@@ -2026,6 +1995,88 @@ func (c *Chain) enforceReorgFinalityLocked(newTip [32]byte) error {
 	}
 
 	return nil
+}
+
+func (c *Chain) findCommonAncestorLocked(aTip, bTip [32]byte) ([32]byte, uint64, error) {
+	aHash := aTip
+	aBlock := c.getBlockByHashLocked(aHash)
+	if aBlock == nil {
+		return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", aHash[:8])
+	}
+
+	bHash := bTip
+	bBlock := c.getBlockByHashLocked(bHash)
+	if bBlock == nil {
+		return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", bHash[:8])
+	}
+
+	for aBlock.Header.Height > bBlock.Header.Height {
+		if aBlock.Header.Height == 0 {
+			return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+		}
+		aHash = aBlock.Header.PrevHash
+		aBlock = c.getBlockByHashLocked(aHash)
+		if aBlock == nil {
+			return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", aHash[:8])
+		}
+	}
+
+	for bBlock.Header.Height > aBlock.Header.Height {
+		if bBlock.Header.Height == 0 {
+			return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+		}
+		bHash = bBlock.Header.PrevHash
+		bBlock = c.getBlockByHashLocked(bHash)
+		if bBlock == nil {
+			return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", bHash[:8])
+		}
+	}
+
+	for aHash != bHash {
+		if aBlock.Header.Height == 0 || bBlock.Header.Height == 0 {
+			return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+		}
+
+		aHash = aBlock.Header.PrevHash
+		bHash = bBlock.Header.PrevHash
+		aBlock = c.getBlockByHashLocked(aHash)
+		bBlock = c.getBlockByHashLocked(bHash)
+		if aBlock == nil || bBlock == nil {
+			if aBlock == nil {
+				return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", aHash[:8])
+			}
+			return [32]byte{}, 0, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", bHash[:8])
+		}
+	}
+
+	return aHash, aBlock.Header.Height, nil
+}
+
+func (c *Chain) collectConnectPathLocked(commonHash, newTip [32]byte) ([]*Block, error) {
+	if newTip == commonHash {
+		return nil, nil
+	}
+
+	connectRev := make([]*Block, 0, 8)
+	current := newTip
+	for current != commonHash {
+		block := c.getBlockByHashLocked(current)
+		if block == nil {
+			return nil, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg (missing hash %x)", current[:8])
+		}
+		if block.Header.Height == 0 {
+			return nil, fmt.Errorf("incomplete chain: cannot build ancestor path for reorg")
+		}
+		connectRev = append(connectRev, block)
+		current = block.Header.PrevHash
+	}
+
+	connect := make([]*Block, len(connectRev))
+	for i := range connectRev {
+		connect[len(connectRev)-1-i] = connectRev[i]
+	}
+
+	return connect, nil
 }
 
 // getAncestorPath returns array of block hashes from genesis to the given hash
