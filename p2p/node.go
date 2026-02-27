@@ -346,6 +346,26 @@ func (n *Node) Peers() []peer.ID {
 	return n.host.Network().Peers()
 }
 
+// PeerInfo holds a connected peer's ID and observed addresses.
+type PeerInfo struct {
+	ID    peer.ID
+	Addrs []string
+}
+
+// PeerInfos returns connected peers with their remote multiaddrs.
+func (n *Node) PeerInfos() []PeerInfo {
+	pids := n.host.Network().Peers()
+	out := make([]PeerInfo, len(pids))
+	for i, pid := range pids {
+		info := PeerInfo{ID: pid}
+		for _, conn := range n.host.Network().ConnsToPeer(pid) {
+			info.Addrs = append(info.Addrs, conn.RemoteMultiaddr().String())
+		}
+		out[i] = info
+	}
+	return out
+}
+
 // Connect attempts to connect to a peer
 func (n *Node) Connect(ctx context.Context, pi peer.AddrInfo) error {
 	return n.host.Connect(ctx, pi)

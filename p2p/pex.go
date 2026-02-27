@@ -152,6 +152,7 @@ type BanRecord struct {
 	ExpiresAt time.Time
 	BanCount  int // How many times this peer has been banned
 	Permanent bool
+	Addrs     []string // Last known multiaddrs at ban time
 }
 
 // PeerExchange manages peer discovery without public DHT
@@ -819,6 +820,13 @@ func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time
 
 	permanent := banCount >= MaxBansBeforePermanent
 
+	var addrStrs []string
+	if pex.node != nil && pex.node.host != nil {
+		for _, conn := range pex.node.host.Network().ConnsToPeer(pid) {
+			addrStrs = append(addrStrs, conn.RemoteMultiaddr().String())
+		}
+	}
+
 	pex.bannedPeers[pid] = &BanRecord{
 		PeerID:    pid,
 		Reason:    reason,
@@ -826,6 +834,7 @@ func (pex *PeerExchange) banPeerLocked(pid peer.ID, reason string, duration time
 		ExpiresAt: now.Add(duration),
 		BanCount:  banCount,
 		Permanent: permanent,
+		Addrs:     addrStrs,
 	}
 
 	pex.enforceBanRetentionLocked(now)

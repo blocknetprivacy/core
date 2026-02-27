@@ -1,6 +1,6 @@
 .PHONY: all clean clean-data build-rust build-go test run install deploy release
 
-VERSION := 0.5.3
+VERSION := 0.6.0
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
 ARCH := $(shell uname -m)
 ifeq ($(ARCH),x86_64)

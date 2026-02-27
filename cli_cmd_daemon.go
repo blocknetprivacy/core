@@ -103,17 +103,20 @@ func (c *CLI) cmdStatus() {
 }
 
 func (c *CLI) cmdPeers() {
-	peers := c.daemon.Node().Peers()
+	infos := c.daemon.Node().PeerInfos()
 	banned := c.daemon.Node().BannedCount()
 
 	fmt.Printf("\n%s", c.sectionHead("Peers"))
-	if len(peers) == 0 {
+	if len(infos) == 0 {
 		fmt.Println(" (0)")
 		fmt.Println("  None connected")
 	} else {
-		fmt.Printf(" (%d)\n", len(peers))
-		for _, p := range peers {
-			fmt.Printf("  %s\n", p.String())
+		fmt.Printf(" (%d)\n", len(infos))
+		for _, info := range infos {
+			fmt.Printf("  %s\n", info.ID.String())
+			for _, addr := range info.Addrs {
+				fmt.Printf("    %s\n", addr)
+			}
 		}
 	}
 
@@ -138,8 +141,11 @@ func (c *CLI) cmdBanned() {
 			remaining := time.Until(ban.ExpiresAt).Round(time.Minute)
 			durStr = fmt.Sprintf("expires in %s", remaining)
 		}
-		fmt.Printf("  %s\n    reason: %s\n    count:  %dx, %s\n",
-			ban.PeerID.String(),
+		fmt.Printf("  %s\n", ban.PeerID.String())
+		for _, addr := range ban.Addrs {
+			fmt.Printf("    addr:   %s\n", addr)
+		}
+		fmt.Printf("    reason: %s\n    count:  %dx, %s\n",
 			ban.Reason,
 			ban.BanCount,
 			durStr,

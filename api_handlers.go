@@ -130,14 +130,26 @@ func (s *APIServer) handleMempoolTxs(w http.ResponseWriter, r *http.Request) {
 // handlePeers returns connected peers.
 // GET /api/peers
 func (s *APIServer) handlePeers(w http.ResponseWriter, r *http.Request) {
-	peers := s.daemon.Node().Peers()
-	ids := make([]string, len(peers))
-	for i, p := range peers {
-		ids[i] = p.String()
+	infos := s.daemon.Node().PeerInfos()
+
+	type peerEntry struct {
+		PeerID string   `json:"peer_id"`
+		Addrs  []string `json:"addrs"`
+	}
+
+	entries := make([]peerEntry, len(infos))
+	for i, info := range infos {
+		entries[i] = peerEntry{
+			PeerID: info.ID.String(),
+			Addrs:  info.Addrs,
+		}
+		if entries[i].Addrs == nil {
+			entries[i].Addrs = []string{}
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"count": len(peers),
-		"peers": ids,
+		"count": len(entries),
+		"peers": entries,
 	})
 }
 
@@ -147,17 +159,23 @@ func (s *APIServer) handleBannedPeers(w http.ResponseWriter, r *http.Request) {
 	bans := s.daemon.Node().GetBannedPeers()
 
 	type banEntry struct {
-		PeerID    string `json:"peer_id"`
-		Reason    string `json:"reason"`
-		BanCount  int    `json:"ban_count"`
-		Permanent bool   `json:"permanent"`
-		ExpiresAt string `json:"expires_at,omitempty"`
+		PeerID    string   `json:"peer_id"`
+		Addrs     []string `json:"addrs"`
+		Reason    string   `json:"reason"`
+		BanCount  int      `json:"ban_count"`
+		Permanent bool     `json:"permanent"`
+		ExpiresAt string   `json:"expires_at,omitempty"`
 	}
 
 	entries := make([]banEntry, len(bans))
 	for i, b := range bans {
+		addrs := b.Addrs
+		if addrs == nil {
+			addrs = []string{}
+		}
 		entry := banEntry{
 			PeerID:    b.PeerID.String(),
+			Addrs:     addrs,
 			Reason:    b.Reason,
 			BanCount:  b.BanCount,
 			Permanent: b.Permanent,

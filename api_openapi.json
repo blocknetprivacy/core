@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
-    "version": "0.5.3",
+    "version": "0.6.0",
     "license": {
       "name": "MIT"
     }
@@ -360,7 +360,7 @@
         "operationId": "getPeers",
         "tags": ["Network"],
         "summary": "Connected peers",
-        "description": "Returns the list of currently connected libp2p peer IDs.",
+        "description": "Returns the list of currently connected libp2p peers with their peer IDs and remote multiaddrs.",
         "responses": {
           "200": {
             "description": "Peer list",
@@ -372,17 +372,25 @@
                     "count": { "type": "integer" },
                     "peers": {
                       "type": "array",
-                      "items": { "type": "string" },
-                      "description": "libp2p peer IDs"
+                      "items": { "$ref": "#/components/schemas/PeerEntry" }
                     }
                   }
                 },
                 "example": {
                   "count": 3,
                   "peers": [
-                    "12D3KooWBLUPjZgAoizTkbNJvHxgHkb2tF1saUhmKBzFfo8zZLfj",
-                    "12D3KooWN7z3vEqr4C8pMk2axGfRbLVJzqPEasiY4L9DMqFjVnGq",
-                    "12D3KooWQe1RkTvGvbFYm6G3bNzdpJRcmAQA4f9bUDkYcFWLdM4P"
+                    {
+                      "peer_id": "12D3KooWBLUPjZgAoizTkbNJvHxgHkb2tF1saUhmKBzFfo8zZLfj",
+                      "addrs": ["/ip4/203.0.113.10/tcp/28080"]
+                    },
+                    {
+                      "peer_id": "12D3KooWN7z3vEqr4C8pMk2axGfRbLVJzqPEasiY4L9DMqFjVnGq",
+                      "addrs": ["/ip4/198.51.100.22/tcp/28080"]
+                    },
+                    {
+                      "peer_id": "12D3KooWQe1RkTvGvbFYm6G3bNzdpJRcmAQA4f9bUDkYcFWLdM4P",
+                      "addrs": ["/ip4/192.0.2.5/tcp/28080"]
+                    }
                   ]
                 }
               }
@@ -418,6 +426,7 @@
                   "banned": [
                     {
                       "peer_id": "12D3KooWMalicious111111111111111111111111111111111111",
+                      "addrs": ["/ip4/203.0.113.50/tcp/28080"],
                       "reason": "sent invalid block",
                       "ban_count": 3,
                       "permanent": false,
@@ -425,6 +434,7 @@
                     },
                     {
                       "peer_id": "12D3KooWMalicious222222222222222222222222222222222222",
+                      "addrs": ["/ip4/198.51.100.99/tcp/28080"],
                       "reason": "excessive invalid transactions",
                       "ban_count": 5,
                       "permanent": true
@@ -1907,10 +1917,30 @@
           }
         ]
       },
+      "PeerEntry": {
+        "type": "object",
+        "properties": {
+          "peer_id": { "type": "string", "description": "libp2p peer ID" },
+          "addrs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Remote multiaddrs of active connections to this peer"
+          }
+        },
+        "example": {
+          "peer_id": "12D3KooWN7z3vEqr4C8pMk2axGfRbLVJzqPEasiY4L9DMqFjVnGq",
+          "addrs": ["/ip4/203.0.113.10/tcp/28080"]
+        }
+      },
       "BanEntry": {
         "type": "object",
         "properties": {
           "peer_id": { "type": "string", "description": "libp2p peer ID" },
+          "addrs": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Last known multiaddrs at ban time"
+          },
           "reason": { "type": "string", "description": "Human-readable ban reason" },
           "ban_count": { "type": "integer", "description": "Number of times this peer has been banned" },
           "permanent": { "type": "boolean", "description": "True if ban does not expire" },
@@ -1922,6 +1952,7 @@
         },
         "example": {
           "peer_id": "12D3KooWN7z3vEqr4C8pMk2axGfRbLVJzqPEasiY4L9DMqFjVnGq",
+          "addrs": ["/ip4/203.0.113.10/tcp/28080"],
           "reason": "sent invalid block",
           "ban_count": 3,
           "permanent": false,
