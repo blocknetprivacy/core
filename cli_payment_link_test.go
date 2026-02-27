@@ -35,6 +35,12 @@ func TestParseSendArgsFromPaymentLink(t *testing.T) {
 			wantMatch: true,
 		},
 		{
+			name:      "bntpay handle link",
+			in:        "https://bntpay.com/$rock?amount=100&memo=thank%20you",
+			wantArgs:  []string{"$rock", "100", "thank you"},
+			wantMatch: true,
+		},
+		{
 			name:      "bntpay https link and decoded memo",
 			in:        "https://bntpay.com/Y19BMGFbSdKRzHPoXG7Sreqf7x7u8x5GTpHFpzfkAYT58sdD6SFZnj9Q1GGHrJogaeV1pf9YrVMEWW2xncuHGy9eG2U4F?amount=0.5&memo=invoice%2042",
 			wantArgs:  []string{"Y19BMGFbSdKRzHPoXG7Sreqf7x7u8x5GTpHFpzfkAYT58sdD6SFZnj9Q1GGHrJogaeV1pf9YrVMEWW2xncuHGy9eG2U4F", "0.5", "invoice 42"},

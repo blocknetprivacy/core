@@ -68,7 +68,7 @@ func resolveRecipientAddress(recipient string) (resolvedAddress string, info *re
 	resolveURL := fmt.Sprintf("%s/api/v1/resolve/%s", baseURL, handle)
 	resp, err := client.Get(resolveURL)
 	if err != nil {
-		return "", nil, fmt.Errorf("handle resolver unavailable")
+		return "", nil, fmt.Errorf("handle resolver unavailable: %v", err)
 	}
 	defer resp.Body.Close()
 
