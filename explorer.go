@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -104,13 +105,26 @@ func (e *Explorer) proxyToTestnet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		http.Error(w, "testnet explorer read error", http.StatusBadGateway)
+		return
+	}
+	// Inject our egg script so the toggle works even if the testnet
+	// daemon is running an older build with stale JS/templates.
+	fix := explorerProxyFixScript + "\n" + explorerEggScript
+	body = bytes.Replace(body, []byte("</body>"), []byte(fix+"\n</body>"), 1)
 	for k, vals := range resp.Header {
+		if strings.EqualFold(k, "Content-Length") {
+			continue
+		}
 		for _, v := range vals {
 			w.Header().Add(k, v)
 		}
 	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	w.Write(body)
 }
 
 func (e *Explorer) httpServer(addr string) *http.Server {
@@ -755,9 +769,18 @@ tr:hover{background:#111}
 .prop-v.mono{font-size:12px;color:#888}
 .topnav{font-size:13px;margin:4px 0 0}`
 
+const explorerProxyFixScript = `<script>
+(function(){
+var aa=document.querySelectorAll('.topnav a,div a,h1 span');
+for(var i=0;i<aa.length;i++){var t=aa[i].textContent.trim();
+if(t==='mainnet'||t==='testnet'||t==='TESTNET'){aa[i].remove();}}
+})();
+</script>`
+
 const explorerEggScript = `<script>
 (function(){
 var egg=document.getElementById('egg');if(!egg)return;
+var ne=egg.cloneNode(true);egg.parentNode.replaceChild(ne,egg);egg=ne;
 var active=false,hex='0123456789abcdef';
 function px(c){c=c.replace('#','');if(c.length===3)c=c[0]+c[0]+c[1]+c[1]+c[2]+c[2];return[parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)];}
 function hx(r,g,b){return'#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);}
@@ -817,7 +840,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1><div style="display:flex;gap:12px"><a href="/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:12px"><a href="/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
 
 <form class="search" action="/search" method="get">
 <input type="text" name="q" placeholder="Search by block height or hash...">
@@ -897,7 +920,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1>
 <div class="topnav"><a href="/">blocks</a>  <a href="/stats">stats</a></div>
 
 <div class="nav">
@@ -956,7 +979,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1>
 <div class="topnav"><a href="/">blocks</a>   <a href="/stats">stats</a></div>
 
 <h2><span class="g">#</span> transaction</h2>
@@ -1042,7 +1065,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1>
 <div class="topnav"><a href="/">← blocks</a></div>
 
 <h2><span class="g">#</span> network overview</h2>
