@@ -196,7 +196,7 @@ func (sm *SyncManager) Start(ctx context.Context) {
 	sm.ctx, sm.cancel = context.WithCancel(ctx)
 
 	// Update the node's sync handler
-	sm.node.host.SetStreamHandler(ProtocolSync, sm.HandleStream)
+	sm.node.host.SetStreamHandler(protocolID(params.ProtocolSync), sm.HandleStream)
 
 	// Start sync loop
 	go sm.syncLoop()
@@ -385,7 +385,7 @@ func (sm *SyncManager) relayBlock(from peer.ID, data []byte) {
 			ctx, cancel := context.WithTimeout(sm.ctx, 10*time.Second)
 			defer cancel()
 
-			s, err := sm.node.host.NewStream(ctx, pid, ProtocolSync)
+			s, err := sm.node.host.NewStream(ctx, pid, protocolID(params.ProtocolSync))
 			if err != nil {
 				return
 			}
@@ -582,7 +582,7 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 	ctx, cancel := context.WithTimeout(sm.ctx, 30*time.Second)
 	defer cancel()
 
-	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)
+	s, err := sm.node.host.NewStream(ctx, p, protocolID(params.ProtocolSync))
 	if err != nil {
 		return ChainStatus{}, err
 	}
@@ -1149,7 +1149,7 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
-	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)
+	s, err := sm.node.host.NewStream(ctx, p, protocolID(params.ProtocolSync))
 	if err != nil {
 		return nil, err
 	}
@@ -1224,7 +1224,7 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 	ctx, cancel := context.WithTimeout(sm.ctx, 120*time.Second)
 	defer cancel()
 
-	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)
+	s, err := sm.node.host.NewStream(ctx, p, protocolID(params.ProtocolSync))
 	if err != nil {
 		return nil, err
 	}
@@ -1271,7 +1271,7 @@ func (sm *SyncManager) BroadcastBlock(blockData []byte) {
 			ctx, cancel := context.WithTimeout(sm.ctx, 10*time.Second)
 			defer cancel()
 
-			s, err := sm.node.host.NewStream(ctx, pid, ProtocolSync)
+			s, err := sm.node.host.NewStream(ctx, pid, protocolID(params.ProtocolSync))
 			if err != nil {
 				return
 			}
@@ -1308,7 +1308,7 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	ctx, cancel := context.WithTimeout(sm.ctx, 60*time.Second)
 	defer cancel()
 
-	s, err := sm.node.host.NewStream(ctx, p, ProtocolSync)
+	s, err := sm.node.host.NewStream(ctx, p, protocolID(params.ProtocolSync))
 	if err != nil {
 		return err
 	}

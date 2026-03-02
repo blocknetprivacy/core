@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -81,8 +83,9 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 		rotationAge = 0
 	}
 
-	// 2. XDG config dir — manually placed key file
-	if key == nil {
+	// 2. XDG config dir — manually placed key file (skipped on testnet to
+	//    avoid accidentally loading a mainnet identity).
+	if key == nil && !params.IsTestnet {
 		if xdgPath, err := defaultIdentityPath(); err == nil {
 			if k, i, err := loadIdentity(xdgPath); err == nil {
 				key = k

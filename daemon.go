@@ -219,6 +219,10 @@ var DefaultSeedNodes = []string{
 	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWPMeQZB8pJTavN6KXJ12LpMYfBSYDkV1md2xsYaWC8VMa",
 }
 
+// DefaultTestnetSeedNodes are the hardcoded testnet bootstrap nodes.
+// Populated once testnet seeds are stood up on existing machines with new peer IDs.
+var DefaultTestnetSeedNodes = []string{}
+
 // DefaultDaemonConfig returns sensible defaults
 func DefaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{

@@ -15,8 +15,9 @@ const (
 	// MemoPayloadMax is the max plaintext payload length (bytes) inside the envelope.
 	// Layout: version(1) + length(1) + checksum(2) + payload(n) + padding(...)
 	MemoPayloadMax = 124
-
-	// MemoBlockDomainSep is a public domain separator string for memo KDFs.
-	MemoBlockDomainSep = NetworkID
 )
+
+// MemoBlockDomainSep is a public domain separator string for memo KDFs.
+// Overwritten by InitTestnet().
+var MemoBlockDomainSep = NetworkID
 

@@ -1,0 +1,45 @@
+services:
+  blocknet-testnet:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: blocknet-testnet
+    restart: unless-stopped
+    
+    environment:
+      - BLOCKNET_TESTNET=true
+      - BLOCKNET_DATA_DIR=/data
+      - BLOCKNET_WALLET_FILE=/wallet/wallet.dat
+      - BLOCKNET_LISTEN=/ip4/0.0.0.0/tcp/38080
+      - BLOCKNET_API_ADDR=0.0.0.0:18332
+      - BLOCKNET_EXPLORER_ADDR=0.0.0.0:18080
+      - BLOCKNET_WALLET_PASSWORD=${BLOCKNET_WALLET_PASSWORD?set BLOCKNET_WALLET_PASSWORD in docker/.env}
+      - BLOCKNET_SEED_MODE=false
+    
+    ports:
+      - "38080:38080"
+      - "127.0.0.1:18332:18332"
+      - "127.0.0.1:18080:18080"
+    
+    volumes:
+      - blocknet-testnet-data:/data
+      - blocknet-testnet-wallet:/wallet
+    
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+    
+    networks:
+      - blocknet-testnet-network
+
+networks:
+  blocknet-testnet-network:
+    driver: bridge
+
+volumes:
+  blocknet-testnet-data:
+    name: blocknet-testnet-data
+  blocknet-testnet-wallet:
+    name: blocknet-testnet-wallet

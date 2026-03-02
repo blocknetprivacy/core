@@ -26,6 +26,12 @@ if [ -n "$BLOCKNET_EXPLORER_ADDR" ]; then
     echo "Block explorer: ${BLOCKNET_EXPLORER_ADDR}"
 fi
 
+# Testnet mode
+if [ "$BLOCKNET_TESTNET" = "true" ]; then
+    ARGS="$ARGS --testnet"
+    echo "Running in TESTNET mode"
+fi
+
 # Seed mode for bootstrap nodes
 if [ "$BLOCKNET_SEED_MODE" = "true" ]; then
     ARGS="$ARGS --seed"

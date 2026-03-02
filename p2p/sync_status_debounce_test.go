@@ -33,7 +33,7 @@ func TestStatusTriggeredSync_IsDebouncedAndSerialized(t *testing.T) {
 	smA.ctx, smA.cancel = context.WithCancel(ctx)
 
 	var inboundStatusRequests atomic.Int64
-	a.host.SetStreamHandler(ProtocolSync, func(s network.Stream) {
+	a.host.SetStreamHandler(protocolID(params.ProtocolSync), func(s network.Stream) {
 		// Any checkSync() run on B will query peer status by opening a Sync stream
 		// and sending SyncMsgStatus. Count those inbound status requests here.
 		inboundStatusRequests.Add(1)
@@ -46,7 +46,7 @@ func TestStatusTriggeredSync_IsDebouncedAndSerialized(t *testing.T) {
 	smB.ctx, smB.cancel = context.WithCancel(ctx)
 	// Tighten debounce window so the test runs quickly and deterministically.
 	smB.statusSyncMinInterval = 200 * time.Millisecond
-	b.host.SetStreamHandler(ProtocolSync, smB.HandleStream)
+	b.host.SetStreamHandler(protocolID(params.ProtocolSync), smB.HandleStream)
 	go smB.statusSyncLoop()
 
 	sendStatus := func(st ChainStatus) {
@@ -54,7 +54,7 @@ func TestStatusTriggeredSync_IsDebouncedAndSerialized(t *testing.T) {
 		ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
 
-		s, err := a.host.NewStream(ctx, b.PeerID(), ProtocolSync)
+		s, err := a.host.NewStream(ctx, b.PeerID(), protocolID(params.ProtocolSync))
 		if err != nil {
 			t.Fatalf("failed to open sync stream: %v", err)
 		}

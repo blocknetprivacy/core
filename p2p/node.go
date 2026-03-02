@@ -21,14 +21,9 @@ import (
 	"github.com/multiformats/go-multiaddr"
 )
 
-// Protocol IDs for blocknet
-const (
-	ProtocolPEX       protocol.ID = params.ProtocolPEX
-	ProtocolBlock     protocol.ID = params.ProtocolBlock
-	ProtocolTx        protocol.ID = params.ProtocolTx
-	ProtocolSync      protocol.ID = params.ProtocolSync
-	ProtocolDandelion protocol.ID = params.ProtocolDandelion
-)
+// protocolID converts a params string to a libp2p protocol.ID at call time,
+// so that testnet overrides in params are picked up.
+func protocolID(s string) protocol.ID { return protocol.ID(s) }
 
 // NodeConfig configures the P2P node
 type NodeConfig struct {
@@ -234,19 +229,19 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 // registerProtocols sets up stream handlers for all protocols
 func (n *Node) registerProtocols() {
 	// PEX protocol
-	n.host.SetStreamHandler(ProtocolPEX, n.pex.HandleStream)
+	n.host.SetStreamHandler(protocolID(params.ProtocolPEX), n.pex.HandleStream)
 
 	// Block announcement protocol
-	n.host.SetStreamHandler(ProtocolBlock, n.handleBlockStream)
+	n.host.SetStreamHandler(protocolID(params.ProtocolBlock), n.handleBlockStream)
 
 	// Transaction protocol (fluff phase ingress)
-	n.host.SetStreamHandler(ProtocolTx, n.handleTxStream)
+	n.host.SetStreamHandler(protocolID(params.ProtocolTx), n.handleTxStream)
 
 	// Dandelion stem protocol
-	n.host.SetStreamHandler(ProtocolDandelion, n.dandel.HandleStemStream)
+	n.host.SetStreamHandler(protocolID(params.ProtocolDandelion), n.dandel.HandleStemStream)
 
 	// Sync protocol
-	n.host.SetStreamHandler(ProtocolSync, n.handleSyncStream)
+	n.host.SetStreamHandler(protocolID(params.ProtocolSync), n.handleSyncStream)
 }
 
 // handleBlockStream handles incoming block announcements
@@ -398,7 +393,7 @@ func (n *Node) SetStemSanityValidator(validator func(data []byte) bool) {
 func (n *Node) BroadcastBlock(data []byte) {
 	peers := n.host.Network().Peers()
 	for _, p := range peers {
-		n.sendToPeerAsync(p, ProtocolBlock, data)
+		n.sendToPeerAsync(p, protocolID(params.ProtocolBlock), data)
 	}
 }
 
@@ -407,7 +402,7 @@ func (n *Node) RelayBlock(sender peer.ID, data []byte) {
 	peers := n.host.Network().Peers()
 	for _, p := range peers {
 		if p != sender {
-			n.sendToPeerAsync(p, ProtocolBlock, data)
+			n.sendToPeerAsync(p, protocolID(params.ProtocolBlock), data)
 		}
 	}
 }

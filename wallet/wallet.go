@@ -35,7 +35,11 @@ func walletBackupDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(configDir, "blocknet", "mainnet")
+	network := "mainnet"
+	if params.IsTestnet {
+		network = "testnet"
+	}
+	dir := filepath.Join(configDir, "blocknet", network)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}

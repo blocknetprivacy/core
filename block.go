@@ -514,8 +514,8 @@ func validateGenesisBlock(block *Block) error {
 	if header.PrevHash != GenesisPrevHash() {
 		return fmt.Errorf("invalid genesis prev hash")
 	}
-	if header.Timestamp != GenesisTimestamp {
-		return fmt.Errorf("invalid genesis timestamp: expected %d, got %d", GenesisTimestamp, header.Timestamp)
+	if header.Timestamp != ActiveGenesisTimestamp() {
+		return fmt.Errorf("invalid genesis timestamp: expected %d, got %d", ActiveGenesisTimestamp(), header.Timestamp)
 	}
 	if header.Difficulty != MinDifficulty {
 		return fmt.Errorf("invalid genesis difficulty: expected %d, got %d", MinDifficulty, header.Difficulty)
@@ -2375,14 +2375,34 @@ func (c *Chain) FindTxByHashStr(hashStr string) (*Transaction, uint64, bool) {
 // Source: https://www.wired.com/story/the-nothing-that-has-the-potential-to-be-anything/
 const GenesisMessage = "Wired 2026/02/15 - The Nothing That Has the Potential to Be Anything"
 
-// GenesisPrevHash returns SHA3-256(GenesisMessage)
-func GenesisPrevHash() [32]byte {
-	return sha3.Sum256([]byte(GenesisMessage))
-}
+const TestnetGenesisMessage = "Blocknet Testnet Genesis 2026"
 
 // GenesisTimestamp is the fixed genesis block timestamp (unix seconds, UTC).
 // Derived from the relaunch time unix nanoseconds: 1771207118829000000.
 const GenesisTimestamp int64 = 1771207118
+
+const TestnetGenesisTimestamp int64 = 1772000000
+
+// ActiveGenesisMessage returns the genesis message for the active network.
+func ActiveGenesisMessage() string {
+	if params.IsTestnet {
+		return TestnetGenesisMessage
+	}
+	return GenesisMessage
+}
+
+// ActiveGenesisTimestamp returns the genesis timestamp for the active network.
+func ActiveGenesisTimestamp() int64 {
+	if params.IsTestnet {
+		return TestnetGenesisTimestamp
+	}
+	return GenesisTimestamp
+}
+
+// GenesisPrevHash returns SHA3-256 of the active network's genesis message.
+func GenesisPrevHash() [32]byte {
+	return sha3.Sum256([]byte(ActiveGenesisMessage()))
+}
 
 // GetGenesisBlock returns the hardcoded genesis block (same for all nodes)
 func GetGenesisBlock() (*Block, error) {
@@ -2393,7 +2413,7 @@ func GetGenesisBlock() (*Block, error) {
 			Version:    1,
 			Height:     0,
 			PrevHash:   GenesisPrevHash(),
-			Timestamp:  GenesisTimestamp,
+			Timestamp:  ActiveGenesisTimestamp(),
 			Difficulty: MinDifficulty,
 			Nonce:      0,
 		},

@@ -2,10 +2,9 @@ package params
 
 // P2P protocol identifiers (libp2p stream protocol IDs).
 //
-// These are string constants (not protocol.ID) so the params package stays
-// dependency-light and can be reused across layers.
-const (
-	// P2PProtocolBase is the network protocol namespace.
+// These are string variables (not protocol.ID) so the params package stays
+// dependency-light and can be reused across layers. Overwritten by InitTestnet().
+var (
 	P2PProtocolBase = "/blocknet/mainnet"
 
 	ProtocolPEX       = P2PProtocolBase + "/pex/1.0.0"

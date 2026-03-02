@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -258,7 +260,7 @@ func (d *DandelionRouter) fluffTx(rec *txRecord) {
 			continue
 		}
 
-		d.node.sendToPeerAsync(p, ProtocolTx, data)
+		d.node.sendToPeerAsync(p, protocolID(params.ProtocolTx), data)
 	}
 }
 
@@ -267,7 +269,7 @@ func (d *DandelionRouter) sendStem(p peer.ID, data []byte) error {
 	ctx, cancel := context.WithTimeout(d.ctx, 10*time.Second)
 	defer cancel()
 
-	s, err := d.node.host.NewStream(ctx, p, ProtocolDandelion)
+	s, err := d.node.host.NewStream(ctx, p, protocolID(params.ProtocolDandelion))
 	if err != nil {
 		// Stem failed, fluff instead
 		d.stemFailed(data)
@@ -526,7 +528,7 @@ func (d *DandelionRouter) rebroadcast(exclude peer.ID, data []byte) {
 		if p == exclude {
 			continue
 		}
-		d.node.sendToPeerAsync(p, ProtocolTx, data)
+		d.node.sendToPeerAsync(p, protocolID(params.ProtocolTx), data)
 	}
 }
 

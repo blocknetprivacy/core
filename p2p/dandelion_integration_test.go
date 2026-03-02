@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -63,7 +65,7 @@ func TestHandleStemStream_PenalizesMalformedStemPayload(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s, err := a.host.NewStream(ctx, b.PeerID(), ProtocolDandelion)
+	s, err := a.host.NewStream(ctx, b.PeerID(), protocolID(params.ProtocolDandelion))
 	if err != nil {
 		t.Fatalf("failed to open dandelion stream: %v", err)
 	}

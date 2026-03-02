@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"blocknet/protocol/params"
+
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -320,7 +322,7 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 	ctx, cancel := context.WithTimeout(pex.ctx, 30*time.Second)
 	defer cancel()
 
-	s, err := pex.node.host.NewStream(ctx, p, ProtocolPEX)
+	s, err := pex.node.host.NewStream(ctx, p, protocolID(params.ProtocolPEX))
 	if err != nil {
 		return
 	}

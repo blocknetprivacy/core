@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"blocknet/p2p"
+	"blocknet/protocol/params"
 	"blocknet/wallet"
 )
 
@@ -20,6 +21,7 @@ const Version = "0.6.0"
 func main() {
 	// Parse command line flags
 	version := flag.Bool("version", false, "Print version and exit")
+	testnet := flag.Bool("testnet", false, "Run on testnet (isolated network, different ports/data)")
 	walletFile := flag.String("wallet", DefaultWalletFilename, "Path to wallet file")
 	dataDir := flag.String("data", DefaultDataDir, "Data directory")
 	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
@@ -46,6 +48,23 @@ func main() {
 		fmt.Println(Version)
 		return
 	}
+
+	if *testnet {
+		params.InitTestnet()
+		if *dataDir == DefaultDataDir {
+			*dataDir = TestnetDataDir
+		}
+		if *walletFile == DefaultWalletFilename {
+			*walletFile = TestnetWalletFilename
+		}
+		if *listen == "/ip4/0.0.0.0/tcp/28080" {
+			*listen = "/ip4/0.0.0.0/tcp/38080"
+		}
+		if !*fullSync {
+			*fullSync = true
+		}
+	}
+
 	if *p2pMaxInbound < 0 {
 		fmt.Fprintln(os.Stderr, "Error: --p2p-max-inbound must be >= 0")
 		os.Exit(1)
@@ -134,6 +153,9 @@ func main() {
 
 	// Normal mode: start interactive CLI
 	seedNodes := DefaultSeedNodes
+	if *testnet {
+		seedNodes = DefaultTestnetSeedNodes
+	}
 	if len(flag.Args()) > 0 {
 		seedNodes = append(seedNodes, flag.Args()...)
 	}
