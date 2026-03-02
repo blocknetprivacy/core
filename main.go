@@ -199,9 +199,12 @@ func createViewOnlyWallet(filename, spendPubHex, viewPrivHex string) error {
 		return fmt.Errorf("password must be at least 3 characters")
 	}
 
-	// Create wallet config
+	// Create wallet config (CheckStealthOutput needs parameter reordering to match
+	// WalletConfig callback signature: func(txPub, outputPub, viewPriv, spendPub) bool)
 	cfg := wallet.WalletConfig{
-		CheckStealthOutput: CheckStealthOutput,
+		CheckStealthOutput: func(txPub, outputPub, viewPriv, spendPub [32]byte) bool {
+			return CheckStealthOutput(spendPub, viewPriv, txPub, outputPub)
+		},
 		DeriveOutputSecret: DeriveStealthSecret,
 	}
 
