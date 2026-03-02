@@ -753,7 +753,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g">$</span> blocknet <span class="d">explorer</span>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1><div style="display:flex;gap:12px">{{if .IsTestnet}}<a href="/" style="font-size:13px">mainnet</a>{{else}}<a href="/testnet/" style="font-size:13px">testnet</a>{{end}}<a href="{{.BasePath}}/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1><div style="display:flex;gap:12px">{{if .IsTestnet}}<a href="/" style="font-size:13px">mainnet</a>{{else}}<a href="/testnet/" style="font-size:13px">testnet</a>{{end}}<a href="{{.BasePath}}/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
 
 <form class="search" action="{{.BasePath}}/search" method="get">
 <input type="text" name="q" placeholder="Search by block height or hash...">
