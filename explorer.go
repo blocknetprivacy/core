@@ -731,6 +731,45 @@ tr:hover{background:#111}
 .prop-v.mono{font-size:12px;color:#888}
 .topnav{font-size:13px;margin:4px 0 0}`
 
+const explorerEggScript = `<script>
+(function(){
+var egg=document.getElementById('egg');if(!egg)return;
+var active=false,hex='0123456789abcdef';
+var dest=location.pathname.indexOf('/testnet')===0?'/':'/testnet/';
+function px(c){c=c.replace('#','');if(c.length===3)c=c[0]+c[0]+c[1]+c[1]+c[2]+c[2];return[parseInt(c.slice(0,2),16),parseInt(c.slice(2,4),16),parseInt(c.slice(4,6),16)];}
+function hx(r,g,b){return'#'+((1<<24)+(r<<16)+(g<<8)+b).toString(16).slice(1);}
+function lp(a,b,t){return Math.round(a+(b-a)*t);}
+var tn=getComputedStyle(document.documentElement).getPropertyValue('--ac').trim()==='#f0a';
+var cF=px(tn?'#f0a':'#af0'),cT=px(tn?'#af0':'#f0a');
+var hF=px(tn?'#f5c':'#cf3'),hT=px(tn?'#cf3':'#f5c');
+egg.addEventListener('click',function(ev){
+ev.preventDefault();ev.stopPropagation();
+if(active)return;active=true;
+var els=document.querySelectorAll('h1,h2,.topnav a,.stat-k,.stat-v,.prop-k,.prop-v,td,th,footer a,button,.nav a');
+var saved=[];
+for(var i=0;i<els.length;i++){
+saved.push(els[i].textContent);
+var s='';for(var j=0;j<els[i].textContent.length;j++){var c=els[i].textContent[j];s+=/\s/.test(c)?c:hex[Math.random()*16|0];}
+els[i].textContent=s;
+}
+var dur=1800,t0=Date.now(),ds=0.45;
+var iv=setInterval(function(){
+var t=Math.min(1,(Date.now()-t0)/dur);
+document.documentElement.style.setProperty('--ac',hx(lp(cF[0],cT[0],t),lp(cF[1],cT[1],t),lp(cF[2],cT[2],t)));
+document.documentElement.style.setProperty('--ac-h',hx(lp(hF[0],hT[0],t),lp(hF[1],hT[1],t),lp(hF[2],hT[2],t)));
+if(t>ds){var dt=(t-ds)/(1-ds);
+for(var i=0;i<els.length;i++){var orig=saved[i],cur='';
+for(var j=0;j<orig.length;j++){if(Math.random()<dt)cur+=orig[j];else cur+=/\s/.test(orig[j])?orig[j]:hex[Math.random()*16|0];}
+els[i].textContent=cur;}
+}else{for(var i=0;i<els.length;i++){var s='';
+for(var j=0;j<els[i].textContent.length;j++){var c=els[i].textContent[j];s+=/\s/.test(c)?c:hex[Math.random()*16|0];}
+els[i].textContent=s;}}
+if(t>=1){clearInterval(iv);window.location.href=dest;}
+},60);
+});
+})();
+</script>`
+
 const explorerIndexTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -807,6 +846,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 </table>
 
 <footer><a href="https://blocknetcrypto.com">← blocknetcrypto.com</a>{{if .IsTestnet}} <span class="d">·</span> <a href="/">mainnet explorer</a>{{end}}</footer>
+` + explorerEggScript + `
 </body>
 </html>`
 
@@ -832,7 +872,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
 <div class="topnav">{{if .IsTestnet}}<a href="/">mainnet</a>  {{else}}<a href="/testnet/">testnet</a>  {{end}}<a href="{{.BasePath}}/">blocks</a>  <a href="{{.BasePath}}/stats">stats</a></div>
 
 <div class="nav">
@@ -866,6 +906,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 </table>
 
 <footer><a href="{{.BasePath}}/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+` + explorerEggScript + `
 </body>
 </html>`
 
@@ -890,7 +931,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
 <div class="topnav">{{if .IsTestnet}}<a href="/">mainnet</a>   {{else}}<a href="/testnet/">testnet</a>   {{end}}<a href="{{.BasePath}}/">blocks</a>   <a href="{{.BasePath}}/stats">stats</a></div>
 
 <h2><span class="g">#</span> transaction</h2>
@@ -930,6 +971,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{end}}
 
 <footer><a href="{{.BasePath}}/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+` + explorerEggScript + `
 </body>
 </html>`
 
@@ -975,7 +1017,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
+<h1><a href="{{.BasePath}}/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="cursor:pointer">$</span> blocknet <span class="d">explorer</span></a>{{if .IsTestnet}} <span style="color:#fa0;font-size:14px;border:1px solid #fa0;padding:2px 8px;vertical-align:middle">TESTNET</span>{{end}}</h1>
 <div class="topnav">{{if .IsTestnet}}<a href="/">mainnet</a>  {{else}}<a href="/testnet/">testnet</a>  {{end}}<a href="{{.BasePath}}/">← blocks</a></div>
 
 <h2><span class="g">#</span> network overview</h2>
@@ -1329,5 +1371,6 @@ draw('c-emission',function(d){return d.r;},'#f0a',{data:emD,yLabel:'BNT/block',s
 
 })();
 </script>
+` + explorerEggScript + `
 </body>
 </html>`
