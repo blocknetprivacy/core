@@ -742,6 +742,8 @@ func (c *CLI) executeCommand(line string) error {
 		c.cmdLock()
 	case "unlock":
 		return c.cmdUnlock()
+	case "audit":
+		c.cmdAuditKeyImages()
 	case "save":
 		return c.cmdSave()
 	case "purge":
@@ -941,9 +943,13 @@ func parseAmount(s string) (uint64, error) {
 	}
 
 	// Parse whole part
-	whole, err := strconv.ParseUint(parts[0], 10, 64)
-	if err != nil {
-		return 0, err
+	var whole uint64
+	if parts[0] != "" {
+		var err error
+		whole, err = strconv.ParseUint(parts[0], 10, 64)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	const atomicPerBNT uint64 = 100_000_000

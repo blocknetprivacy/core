@@ -729,7 +729,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <meta property="og:url" content="https://explorer.blocknetcrypto.com">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#000000">
 <meta http-equiv="refresh" content="300">
 <link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
 <style>` + explorerCSS + `</style>
@@ -807,14 +807,14 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <meta property="og:url" content="https://explorer.blocknetcrypto.com/block/{{.Height}}">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#000000">
 <meta http-equiv="refresh" content="300">
 <link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
 <style>` + explorerCSS + `</style>
 </head>
 <body>
 <h1><a href="/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a></h1>
-<div class="topnav"><a href="/">blocks</a> · <a href="/stats">stats</a></div>
+<div class="topnav"><a href="/">blocks</a>  <a href="/stats">stats</a></div>
 
 <div class="nav">
 {{if .HasPrev}}<a href="/block/{{.PrevHeight}}">← Block {{.PrevHeight}}</a>{{end}}
@@ -846,7 +846,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{end}}
 </table>
 
-<footer><a href="/">← explorer</a> · <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 </body>
 </html>`
 
@@ -864,14 +864,14 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <meta property="og:image:height" content="1024">
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#000000">
 <meta http-equiv="refresh" content="300">
 <link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
 <style>` + explorerCSS + `</style>
 </head>
 <body>
 <h1><a href="/" style="text-decoration:none;color:#eee"><span class="g">$</span> blocknet <span class="d">explorer</span></a></h1>
-<div class="topnav"><a href="/">blocks</a> · <a href="/stats">stats</a></div>
+<div class="topnav"><a href="/">blocks</a>   <a href="/stats">stats</a></div>
 
 <h2><span class="g">#</span> transaction</h2>
 <div class="box">
@@ -909,7 +909,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 </div>
 {{end}}
 
-<footer><a href="/">← explorer</a> · <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 </body>
 </html>`
 
@@ -991,7 +991,7 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 <h2><span class="g">#</span> emission schedule</h2>
 <div class="chart-box"><canvas id="c-emission"></canvas></div>
 
-<footer><a href="/">← explorer</a> · <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 
 <script>
 var D={{.DataJSON}};

@@ -483,6 +483,13 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Block self-sends: key derivation bug causes fund loss (see audit command).
+	walletKeys := s.wallet.Keys()
+	if spendPub == walletKeys.SpendPubKey && viewPub == walletKeys.ViewPubKey {
+		writeError(w, http.StatusBadRequest, "self-sends are temporarily disabled (key derivation bug would burn funds)")
+		return
+	}
+
 	// Validate amount
 	if req.Amount == 0 {
 		writeError(w, http.StatusBadRequest, "amount must be greater than 0")

@@ -352,6 +352,139 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 	}, nil
 }
 
+// TransferAll sweeps all spendable outputs to a single recipient, minus the fee.
+func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight uint64) (res *TransferResult, retErr error) {
+	var lease uint64
+	defer func() {
+		if retErr != nil && lease != 0 {
+			b.wallet.ReleaseInputLease(lease)
+		}
+	}()
+
+	var inputs []*OwnedOutput
+	var err error
+	lease, inputs, err = b.wallet.ReserveAllMatureInputs(currentHeight, 2*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("no spendable outputs: %w", err)
+	}
+
+	if len(inputs) > 256 {
+		return nil, fmt.Errorf("too many outputs to sweep in one transaction (%d, max 256)", len(inputs))
+	}
+
+	var totalInput uint64
+	for _, inp := range inputs {
+		var ok bool
+		totalInput, ok = addU64(totalInput, inp.Amount)
+		if !ok {
+			return nil, errors.New("input amount sum overflows uint64")
+		}
+	}
+
+	estimatedSize := estimateTxSizeBytes(len(inputs), 1, b.config.RingSize)
+	fee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
+
+	if totalInput <= fee {
+		return nil, fmt.Errorf("balance too small to cover fee: have %d, fee %d", totalInput, fee)
+	}
+
+	sendAmount := totalInput - fee
+	recipient.Amount = sendAmount
+
+	txPrivKey, txPubKey, oneTimePub, err := b.config.DeriveStealthAddress(
+		recipient.SpendPubKey, recipient.ViewPubKey,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive stealth address: %w", err)
+	}
+
+	sharedSecret, err := b.config.DeriveSharedSecret(txPrivKey, recipient.ViewPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive shared secret: %w", err)
+	}
+
+	blinding := DeriveBlinding(sharedSecret, 0)
+	commitment := b.config.CreateCommitment(sendAmount, blinding)
+	rangeProof, err := b.config.CreateRangeProof(sendAmount, blinding)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create range proof: %w", err)
+	}
+
+	encryptedAmount := encryptAmount(sendAmount, blinding, 0)
+	encryptedMemo, err := EncryptMemo(recipient.Memo, sharedSecret, 0)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt memo: %w", err)
+	}
+
+	outputs := []outputData{{
+		pubKey:          oneTimePub,
+		commitment:      commitment,
+		rangeProof:      rangeProof,
+		encryptedAmount: encryptedAmount,
+		encryptedMemo:   encryptedMemo,
+		blinding:        blinding,
+		amount:          sendAmount,
+	}}
+
+	totalOutputBlinding, err := b.sumBlindings([][32]byte{blinding})
+	if err != nil {
+		return nil, fmt.Errorf("failed to sum output blindings: %w", err)
+	}
+
+	inputsData := make([]inputData, len(inputs))
+	pseudoBlindings, err := b.distributeBlindings(totalOutputBlinding, len(inputs))
+	if err != nil {
+		return nil, fmt.Errorf("failed to distribute blindings: %w", err)
+	}
+
+	txPrefix := serializeTxPrefix(txPubKey, len(inputs), outputs, fee)
+	txPrefixHash := sha3.Sum256(txPrefix)
+
+	for i, inp := range inputs {
+		ringKeys, ringCommitments, secretIndex, err := b.config.SelectRingMembers(inp.OneTimePubKey, inp.Commitment)
+		if err != nil {
+			return nil, fmt.Errorf("failed to select ring members: %w", err)
+		}
+
+		pseudoCommitment := b.config.CreateCommitment(inp.Amount, pseudoBlindings[i])
+
+		sig, keyImage, err := b.config.SignRingCT(
+			ringKeys, ringCommitments,
+			secretIndex,
+			inp.OneTimePrivKey, inp.Blinding,
+			pseudoCommitment, pseudoBlindings[i],
+			txPrefixHash[:],
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign input %d: %w", i, err)
+		}
+
+		inputsData[i] = inputData{
+			keyImage:        keyImage,
+			ringMembers:     ringKeys,
+			ringCommitments: ringCommitments,
+			pseudoOutput:    pseudoCommitment,
+			signature:       sig,
+		}
+	}
+
+	txData := serializeTx(txPubKey, inputsData, outputs, fee)
+	txID, err := b.config.ComputeTxID(txData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute tx ID: %w", err)
+	}
+
+	return &TransferResult{
+		TxData:       txData,
+		TxID:         txID,
+		TxPrivKey:    txPrivKey,
+		SpentOutputs: inputs,
+		InputLease:   lease,
+		Fee:          fee,
+		Change:       0,
+	}, nil
+}
+
 func estimateTxSizeBytes(inputCount, outputCount, ringSize int) int {
 	// Prefix: version (1) + txPubKey (32) + inputCount (4) + outputCount (4) + fee (8)
 	size := 1 + 32 + 4 + 4 + 8

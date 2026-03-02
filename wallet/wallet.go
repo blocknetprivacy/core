@@ -923,6 +923,68 @@ func (w *Wallet) ReserveMatureInputs(currentHeight uint64, targetAmount uint64, 
 	return lease, inputs, nil
 }
 
+// ReserveAllMatureInputs reserves every mature, unspent, unreserved output.
+func (w *Wallet) ReserveAllMatureInputs(currentHeight uint64, ttl time.Duration) (lease uint64, inputs []*OwnedOutput, err error) {
+	if ttl <= 0 {
+		ttl = 2 * time.Minute
+	}
+
+	now := time.Now()
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.inputReservations == nil {
+		w.inputReservations = make(map[reservedOutpoint]inputReservation)
+	}
+
+	for op, res := range w.inputReservations {
+		if now.After(res.expiresAt) {
+			delete(w.inputReservations, op)
+		}
+	}
+
+	var candidates []*OwnedOutput
+	for _, out := range w.data.Outputs {
+		if out == nil || out.Spent {
+			continue
+		}
+		if !IsOutputMature(out, currentHeight) {
+			continue
+		}
+		op := reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex}
+		if _, reserved := w.inputReservations[op]; reserved {
+			continue
+		}
+		candidates = append(candidates, out)
+	}
+
+	if len(candidates) == 0 {
+		return 0, nil, errors.New("no spendable outputs")
+	}
+
+	lease = w.nextLease.Add(1)
+	expires := now.Add(ttl)
+
+	for _, out := range candidates {
+		op := reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex}
+		w.inputReservations[op] = inputReservation{lease: lease, expiresAt: expires}
+	}
+
+	inputs = make([]*OwnedOutput, 0, len(candidates))
+	for _, out := range candidates {
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		inputs = append(inputs, &c)
+	}
+
+	return lease, inputs, nil
+}
+
 // ReleaseInputLease releases all reservations held by a given lease id.
 func (w *Wallet) ReleaseInputLease(lease uint64) {
 	if lease == 0 {

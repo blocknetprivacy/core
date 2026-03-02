@@ -103,16 +103,34 @@ func (c *CLI) cmdSend(args []string) error {
 		return fmt.Errorf("invalid address: %w", err)
 	}
 
+	// Block self-sends: the stealth key derivation does not incorporate the
+	// output index, so multiple outputs to the same (spendPub, viewPub) in a
+	// single tx get identical one-time keys. Only one can ever be spent; the
+	// rest are permanently burned. Until the derivation is fixed, refuse
+	// transactions where the recipient is the wallet's own address.
+	keys := c.wallet.Keys()
+	if spendPub == keys.SpendPubKey && viewPub == keys.ViewPubKey {
+		return fmt.Errorf("self-sends are temporarily disabled (key derivation bug would burn funds)")
+	}
+
 	// Parse amount
-	amount, err := parseAmount(args[1])
-	if err != nil {
-		return fmt.Errorf("invalid amount: %w", err)
+	sendAll := strings.EqualFold(args[1], "all")
+	var amount uint64
+	if !sendAll {
+		amount, err = parseAmount(args[1])
+		if err != nil {
+			return fmt.Errorf("invalid amount: %w", err)
+		}
 	}
 
 	// Check spendable balance (excludes immature coinbase and unconfirmed)
 	height := c.daemon.Chain().Height()
 	spendable := c.wallet.SpendableBalance(height)
-	if spendable < amount {
+	if sendAll {
+		if spendable == 0 {
+			return fmt.Errorf("no spendable balance")
+		}
+	} else if spendable < amount {
 		pending := c.wallet.PendingBalance(height)
 		if pending > 0 {
 			return fmt.Errorf("insufficient spendable balance: have %s spendable + %s pending, need %s",
@@ -134,9 +152,20 @@ func (c *CLI) cmdSend(args []string) error {
 
 	builder := c.createTxBuilder()
 	chainHeight := c.daemon.Chain().Height()
-	result, err := builder.Transfer([]wallet.Recipient{recipient}, 10, chainHeight)
+	var result *wallet.TransferResult
+	if sendAll {
+		result, err = builder.TransferAll(recipient, 10, chainHeight)
+	} else {
+		result, err = builder.Transfer([]wallet.Recipient{recipient}, 10, chainHeight)
+	}
 	if err != nil {
 		return fmt.Errorf("failed to build transaction: %w", err)
+	}
+	if sendAll {
+		for _, spent := range result.SpentOutputs {
+			amount += spent.Amount
+		}
+		amount -= result.Fee
 	}
 
 	// Confirm
@@ -1010,6 +1039,111 @@ func (c *CLI) cmdUnlock() error {
 	c.locked = false
 	fmt.Printf("\n%s\n", c.sectionHead("Unlocked"))
 	return nil
+}
+
+func (c *CLI) cmdAuditKeyImages() {
+	outputs := c.wallet.AllOutputs()
+	if len(outputs) == 0 {
+		fmt.Printf("\n%s\n", c.sectionHead("Audit"))
+		fmt.Println("  No outputs in wallet.")
+		return
+	}
+
+	type keyImageGroup struct {
+		keyImage [32]byte
+		outputs  []*wallet.OwnedOutput
+	}
+
+	groups := make(map[[32]byte]*keyImageGroup)
+	var failedCount int
+
+	for _, out := range outputs {
+		ki, err := GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			failedCount++
+			continue
+		}
+		g, ok := groups[ki]
+		if !ok {
+			g = &keyImageGroup{keyImage: ki}
+			groups[ki] = g
+		}
+		g.outputs = append(g.outputs, out)
+	}
+
+	var duplicateGroups []*keyImageGroup
+	for _, g := range groups {
+		if len(g.outputs) > 1 {
+			duplicateGroups = append(duplicateGroups, g)
+		}
+	}
+
+	fmt.Printf("\n%s\n", c.sectionHead("Audit"))
+	fmt.Printf("  Total outputs:      %d\n", len(outputs))
+	fmt.Printf("  Unique key images:  %d\n", len(groups))
+	if failedCount > 0 {
+		fmt.Printf("  Failed key images:  %d\n", failedCount)
+	}
+
+	if len(duplicateGroups) == 0 {
+		fmt.Println("  Duplicate key images: none")
+		fmt.Println("\n  No burned funds detected.")
+		return
+	}
+
+	var totalBurned uint64
+	var burnedOutputs int
+
+	fmt.Printf("  Duplicate groups:   %d\n\n", len(duplicateGroups))
+
+	for i, g := range duplicateGroups {
+		fmt.Printf("  Group %d — key image %x\n", i+1, g.keyImage)
+
+		var groupTotal uint64
+		var spentCount int
+		for _, out := range g.outputs {
+			groupTotal += out.Amount
+			if out.Spent {
+				spentCount++
+			}
+		}
+
+		// Only one output per group can ever be spent. The rest are burned.
+		// The "saved" amount is the largest single output in the group (best case).
+		var maxAmount uint64
+		for _, out := range g.outputs {
+			if out.Amount > maxAmount {
+				maxAmount = out.Amount
+			}
+		}
+		burned := groupTotal - maxAmount
+		totalBurned += burned
+		burnedOutputs += len(g.outputs) - 1
+
+		for _, out := range g.outputs {
+			status := "unspent"
+			if out.Spent {
+				status = "spent"
+			}
+			fmt.Printf("    %x:%d  %s  %s  block %d\n",
+				out.TxID, out.OutputIndex, formatAmount(out.Amount), status, out.BlockHeight)
+		}
+		fmt.Printf("    burned: %s (%d of %d outputs unspendable)\n\n",
+			formatAmount(burned), len(g.outputs)-1, len(g.outputs))
+	}
+
+	red := "\033[38;2;255;68;68m"
+	reset := "\033[0m"
+	if c.noColor {
+		red = ""
+		reset = ""
+	}
+	fmt.Printf("  %sTotal burned: %s across %d duplicate outputs%s\n",
+		red, formatAmount(totalBurned), burnedOutputs, reset)
+	fmt.Println()
+	fmt.Println("  These outputs share a key image due to a key derivation bug")
+	fmt.Println("  in self-send transactions. Only one output per group can ever")
+	fmt.Println("  be spent; the others are permanently unspendable.")
 }
 
 func (c *CLI) cmdSave() error {
