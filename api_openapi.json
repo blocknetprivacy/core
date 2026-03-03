@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
-    "version": "0.6.0",
+    "version": "0.7.0",
     "license": {
       "name": "MIT"
     }
