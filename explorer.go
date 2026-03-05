@@ -395,44 +395,19 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Get miner stats
-	// Estimate network hashrate from recent block times and difficulty
-	// hashrate ≈ difficulty / average_block_time
-	var hashrate float64
-	if height >= 2 {
-		// Get last few blocks to estimate average block time
-		var totalTime int64
-		var count int
-		for h := height; h > 0 && count < 10; h-- {
-			block := chain.GetBlockByHeight(h)
-			prevBlock := chain.GetBlockByHeight(h - 1)
-			if block != nil && prevBlock != nil {
-				blockTime := block.Header.Timestamp - prevBlock.Header.Timestamp
-				if blockTime > 0 {
-					totalTime += blockTime
-					count++
-				}
-			}
-		}
-		if count > 0 && totalTime > 0 {
-			avgBlockTime := float64(totalTime) / float64(count)
-			// Each hash at current difficulty takes avgBlockTime seconds on average
-			// So hashrate = difficulty / avgBlockTime
-			hashrate = float64(chain.NextDifficulty()) / avgBlockTime
-		}
+	snapshot, ready := e.getStatsSnapshot()
+	if !ready {
+		snapshot = e.refreshStatsSnapshotSync()
+	} else if e.shouldRefreshStats(snapshot) {
+		e.refreshStatsSnapshotAsync()
 	}
 
 	data := map[string]interface{}{
-		"IsTestnet": params.IsTestnet,
-		"Height":    height,
-		"Difficulty": chain.NextDifficulty(),
-		"Peers": func() int {
-			if e.daemon == nil || e.daemon.node == nil {
-				return 0
-			}
-			return len(e.daemon.node.Peers())
-		}(),
-		"Hashrate":    fmt.Sprintf("%.2f", hashrate),
+		"IsTestnet":  params.IsTestnet,
+		"Height":     height,
+		"Difficulty": snapshot.Difficulty,
+		"Peers":      snapshot.Peers,
+		"Hashrate":   snapshot.Hashrate,
 		"Emitted":     fmtAmountComma(emitted),
 		"Remaining":   fmtAmountComma(remaining),
 		"PctEmitted":  fmt.Sprintf("%.4f", pctEmitted),
