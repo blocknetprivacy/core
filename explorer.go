@@ -1317,6 +1317,9 @@ footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 <h2><span class="g">#</span> difficulty</h2>
 <div class="chart-box"><canvas id="c-diff"></canvas></div>
 
+<h2 style="color:#a0f"><span style="color:#a0f">#</span> difficulty delta</h2>
+<div class="chart-box"><canvas id="c-ddelta"></canvas></div>
+
 <h2 style="color:#fa0"><span style="color:#fa0">#</span> estimated hashrate</h2>
 <div class="chart-box"><canvas id="c-hash"></canvas></div>
 
@@ -1511,6 +1514,22 @@ ctx.fillStyle=grad;
 ctx.lineTo(sx(pts[pts.length-1].x),pad.t+ph);ctx.lineTo(sx(pts[0].x),pad.t+ph);ctx.closePath();ctx.fill();
 }
 
+// trend line
+if(opts.trendLine&&pts.length>=2){
+var tn=pts.length,tsX=0,tsY=0,tsXY=0,tsX2=0;
+for(var i=0;i<tn;i++){tsX+=pts[i].x;tsY+=pts[i].y;tsXY+=pts[i].x*pts[i].y;tsX2+=pts[i].x*pts[i].x;}
+var tDen=tn*tsX2-tsX*tsX;
+if(tDen!==0){
+var tM=(tn*tsXY-tsX*tsY)/tDen,tB=(tsY-tM*tsX)/tn;
+ctx.save();
+ctx.beginPath();
+ctx.moveTo(sx(xMin),sy(tB+tM*xMin));
+ctx.lineTo(sx(xMax),sy(tB+tM*xMax));
+ctx.strokeStyle='#0AF';ctx.globalAlpha=0.25;ctx.lineWidth=2;ctx.setLineDash([8,6]);
+ctx.stroke();
+ctx.restore();
+}}
+
 // snapshot for hover redraw
 var base=ctx.getImageData(0,0,c.width,c.height);
 
@@ -1548,7 +1567,78 @@ c.addEventListener('mouseleave',function(){ctx.putImageData(base,0,0);hideTip();
 }
 
 // line charts
-draw('c-diff',function(d){return d.d;},AC,{yLabel:'difficulty'});
+draw('c-diff',function(d){return d.d;},AC,{yLabel:'difficulty',trendLine:true});
+
+// difficulty delta bar chart
+(function(){
+var c=document.getElementById('c-ddelta');
+if(!c||D.length<2)return;
+var dpr=window.devicePixelRatio||1;
+var rect=c.getBoundingClientRect();
+c.width=rect.width*dpr;c.height=rect.height*dpr;
+var ctx=c.getContext('2d');ctx.scale(dpr,dpr);
+var W=rect.width,H=rect.height;
+var pad={t:24,r:16,b:32,l:60};
+var dd=[];
+for(var i=1;i<D.length;i++){
+if(D[i-1].d>0&&D[i].h>100)dd.push({h:D[i].h,v:(D[i].d-D[i-1].d)/D[i-1].d*100});
+}
+if(dd.length<2){ctx.fillStyle='#333';ctx.font='13px monospace';ctx.textAlign='center';ctx.fillText('Not enough data',W/2,H/2);return;}
+var yMin=0,yMax=0;
+for(var i=0;i<dd.length;i++){if(dd[i].v<yMin)yMin=dd[i].v;if(dd[i].v>yMax)yMax=dd[i].v;}
+var yP=(yMax-yMin)*0.08||1;yMin-=yP;yMax+=yP;
+ctx.font='11px monospace';
+var maxLW=0;
+for(var i=0;i<=4;i++){var val=yMax-(yMax-yMin)*i/4;var tw=ctx.measureText(val.toFixed(1)+'%').width;if(tw>maxLW)maxLW=tw;}
+pad.l=Math.max(60,Math.ceil(maxLW+16));
+var pw=W-pad.l-pad.r,ph=H-pad.t-pad.b;
+var xMin=dd[0].h,xMax=dd[dd.length-1].h;
+if(xMin===xMax)xMax=xMin+1;
+function dsx(x){return pad.l+(x-xMin)/(xMax-xMin)*pw;}
+function dsy(y){return pad.t+ph-(y-yMin)/(yMax-yMin)*ph;}
+ctx.strokeStyle='#1a1a1a';ctx.lineWidth=1;
+for(var i=0;i<=4;i++){var y=pad.t+ph*i/4;ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(W-pad.r,y);ctx.stroke();}
+var zy=dsy(0);
+ctx.strokeStyle='#333';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(pad.l,zy);ctx.lineTo(W-pad.r,zy);ctx.stroke();
+ctx.fillStyle='#a0f';ctx.font='11px monospace';ctx.textAlign='left';
+ctx.fillText('% change',pad.l,pad.t-10);
+ctx.fillStyle='#555';ctx.font='11px monospace';ctx.textAlign='right';
+for(var i=0;i<=4;i++){var val=yMax-(yMax-yMin)*i/4;ctx.fillText(val.toFixed(1)+'%',pad.l-8,pad.t+ph*i/4+4);}
+ctx.textAlign='center';ctx.fillStyle='#444';
+for(var i=0;i<=4;i++){var val=xMin+(xMax-xMin)*i/4;ctx.fillText(Math.round(val).toString(),pad.l+pw*i/4,H-6);}
+var bw=Math.max(1,pw/dd.length);
+for(var i=0;i<dd.length;i++){
+var x=dsx(dd[i].h)-bw/2,pos=dd[i].v>=0;
+var top,bh;
+if(pos){top=dsy(dd[i].v);bh=zy-top;}else{top=zy;bh=dsy(dd[i].v)-zy;}
+ctx.fillStyle=pos?'#aa00ff50':'#ff00aa50';
+ctx.fillRect(x,top,Math.max(1,bw-1),Math.max(1,bh));
+ctx.fillStyle=pos?'#a0f':'#f0a';
+ctx.fillRect(x,pos?top:top+bh-Math.min(2,bh),Math.max(1,bw-1),Math.min(2,bh));
+}
+var base=ctx.getImageData(0,0,c.width,c.height);
+c.addEventListener('mousemove',function(e){
+var r=c.getBoundingClientRect();var mx=e.clientX-r.left;
+var best=null,bd=Infinity;
+for(var i=0;i<dd.length;i++){var dx=Math.abs(dsx(dd[i].h)-mx);if(dx<bd){bd=dx;best=dd[i];}}
+if(!best||bd>Math.max(20,pw/dd.length*2)){ctx.putImageData(base,0,0);hideTip();return;}
+ctx.putImageData(base,0,0);
+ctx.save();ctx.setTransform(dpr,0,0,dpr,0,0);
+var px=dsx(best.h),py=dsy(best.v);
+ctx.strokeStyle='#333';ctx.setLineDash([2,2]);ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(px,pad.t);ctx.lineTo(px,pad.t+ph);ctx.stroke();
+ctx.beginPath();ctx.moveTo(pad.l,py);ctx.lineTo(pad.l+pw,py);ctx.stroke();
+ctx.setLineDash([]);
+ctx.beginPath();ctx.arc(px,py,5,0,Math.PI*2);ctx.fillStyle='#000';ctx.fill();
+ctx.beginPath();ctx.arc(px,py,4,0,Math.PI*2);
+var hc=best.v>=0?'#a0f':'#f0a';
+ctx.fillStyle=hc;ctx.fill();ctx.restore();
+var sign=best.v>=0?'+':'';
+showTip(e,'<span style="color:'+hc+'">\u25CF difficulty delta</span> <b style="color:#eee">'+sign+best.v.toFixed(2)+'%</b><br><span style="color:#555">block '+Math.round(best.h)+'</span>');
+});
+c.addEventListener('mouseleave',function(){ctx.putImageData(base,0,0);hideTip();});
+})();
+
 var hrD=[],hrW=20;
 for(var i=1;i<D.length;i++){
 if(D[i].bt<=0)continue;
@@ -1556,7 +1646,7 @@ var sd=0,st=0;
 for(var j=Math.max(1,i-hrW+1);j<=i;j++){if(D[j].bt>0){sd+=D[j].d;st+=D[j].bt;}}
 if(st>0)hrD.push({h:D[i].h,hr:sd/st});
 }
-draw('c-hash',function(d){return d.hr;},'#fa0',{data:hrD,yLabel:'H/s ('+hrW+'-block avg)',yMin:0});
+draw('c-hash',function(d){return d.hr;},'#fa0',{data:hrD,yLabel:'H/s ('+hrW+'-block avg)',yMin:0,trendLine:true});
 var btSum=0,btCnt=0;
 for(var i=0;i<D.length;i++){if(D[i].h>100&&D[i].bt>0){btSum+=D[i].bt;btCnt++;}}
 var btAvg=btCnt>0?btSum/btCnt:0;
