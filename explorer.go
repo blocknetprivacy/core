@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"blocknet/protocol/params"
+	"blocknet/wallet"
 )
 
 const (
@@ -77,6 +78,8 @@ func NewExplorer(daemon *Daemon) *Explorer {
 	e.mux.HandleFunc("/tx/", e.handleTx)
 	e.mux.HandleFunc("/search", e.handleSearch)
 	e.mux.HandleFunc("/stats", e.handleStats)
+	e.mux.HandleFunc("/prove", e.handleProve)
+	e.mux.HandleFunc("/prove-send", e.handleProveSend)
 	e.startStatsPrecompute()
 	return e
 }
@@ -546,12 +549,13 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	var outputs []map[string]interface{}
 	for i, out := range tx.Outputs {
 		entry := map[string]interface{}{
-			"Index":      i,
-			"Commitment": fmt.Sprintf("%x", out.Commitment),
-			"PublicKey":  fmt.Sprintf("%x", out.PublicKey),
-			"RangeProof": len(out.RangeProof),
+			"Index":           i,
+			"Commitment":      fmt.Sprintf("%x", out.Commitment),
+			"PublicKey":       fmt.Sprintf("%x", out.PublicKey),
+			"RangeProof":      len(out.RangeProof),
+			"EncMemo":         fmt.Sprintf("%x", out.EncryptedMemo),
+			"EncryptedAmount": fmt.Sprintf("%x", out.EncryptedAmount),
 		}
-		entry["EncMemo"] = fmt.Sprintf("%x", out.EncryptedMemo)
 		outputs = append(outputs, entry)
 	}
 
@@ -660,6 +664,177 @@ func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Error(w, "Not found: "+q, http.StatusNotFound)
+}
+
+type proveResult struct {
+	Index  int     `json:"index"`
+	Match  bool    `json:"match"`
+	Amount float64 `json:"amount,omitempty"`
+	Memo   string  `json:"memo,omitempty"`
+}
+
+func (e *Explorer) findTxForProve(txHash string) (tx *Transaction, blockHeight uint64, isCoinbase bool, err error) {
+	tx, blockHeight, found := e.findTx(txHash)
+	if !found {
+		hashBytes, _ := hex.DecodeString(txHash)
+		if len(hashBytes) == 32 {
+			var txID [32]byte
+			copy(txID[:], hashBytes)
+			tx, found = e.daemon.mempool.GetTransaction(txID)
+		}
+	}
+	if !found {
+		return nil, 0, false, fmt.Errorf("transaction not found")
+	}
+	return tx, blockHeight, len(tx.Inputs) == 0, nil
+}
+
+func proveJSON(w http.ResponseWriter, code int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(v)
+}
+
+func (e *Explorer) handleProve(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	txHash := strings.TrimSpace(r.FormValue("tx"))
+	spendPubHex := strings.TrimSpace(r.FormValue("spend_pub"))
+	viewPrivHex := strings.TrimSpace(r.FormValue("view_priv"))
+
+	if len(txHash) != 64 || len(spendPubHex) != 64 || len(viewPrivHex) != 64 {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "tx, spend_pub, and view_priv must each be 64 hex characters"})
+		return
+	}
+
+	spendPubBytes, err := hex.DecodeString(spendPubHex)
+	if err != nil {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid spend_pub hex"})
+		return
+	}
+	viewPrivBytes, err := hex.DecodeString(viewPrivHex)
+	if err != nil {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid view_priv hex"})
+		return
+	}
+
+	var spendPub, viewPriv [32]byte
+	copy(spendPub[:], spendPubBytes)
+	copy(viewPriv[:], viewPrivBytes)
+
+	tx, blockHeight, isCoinbase, err := e.findTxForProve(txHash)
+	if err != nil {
+		proveJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	var results []proveResult
+	for i, out := range tx.Outputs {
+		if !CheckStealthOutput(spendPub, viewPriv, tx.TxPublicKey, out.PublicKey) {
+			results = append(results, proveResult{Index: i})
+			continue
+		}
+
+		po := proveResult{Index: i, Match: true}
+		var blinding [32]byte
+		if isCoinbase {
+			blinding = wallet.DeriveCoinbaseConsensusBlinding(tx.TxPublicKey, blockHeight, i)
+		} else {
+			secret, serr := DeriveStealthSecret(tx.TxPublicKey, viewPriv)
+			if serr == nil {
+				blinding = wallet.DeriveBlinding(secret, i)
+				if memo, ok := wallet.DecryptMemo(out.EncryptedMemo, secret, i); ok && len(memo) > 0 {
+					po.Memo = string(memo)
+				}
+			}
+		}
+		po.Amount = float64(wallet.DecryptAmount(out.EncryptedAmount, blinding, i)) / 100_000_000
+		results = append(results, po)
+	}
+
+	proveJSON(w, http.StatusOK, results)
+}
+
+func (e *Explorer) handleProveSend(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+
+	txHash := strings.TrimSpace(r.FormValue("tx"))
+	txPrivHex := strings.TrimSpace(r.FormValue("tx_priv"))
+	spendPubHex := strings.TrimSpace(r.FormValue("spend_pub"))
+	viewPubHex := strings.TrimSpace(r.FormValue("view_pub"))
+
+	if len(txHash) != 64 || len(txPrivHex) != 64 || len(spendPubHex) != 64 || len(viewPubHex) != 64 {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "all fields must be 64 hex characters"})
+		return
+	}
+
+	txPrivBytes, err := hex.DecodeString(txPrivHex)
+	if err != nil {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid tx_priv hex"})
+		return
+	}
+	spendPubBytes, err := hex.DecodeString(spendPubHex)
+	if err != nil {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid spend_pub hex"})
+		return
+	}
+	viewPubBytes, err := hex.DecodeString(viewPubHex)
+	if err != nil {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid view_pub hex"})
+		return
+	}
+
+	var txPriv, spendPub, viewPub [32]byte
+	copy(txPriv[:], txPrivBytes)
+	copy(spendPub[:], spendPubBytes)
+	copy(viewPub[:], viewPubBytes)
+
+	tx, blockHeight, isCoinbase, err := e.findTxForProve(txHash)
+	if err != nil {
+		proveJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+
+	// Verify the prover actually knows r: r * G must equal the on-chain tx public key
+	derivedPub, err := ScalarToPubKey(txPriv)
+	if err != nil || derivedPub != tx.TxPublicKey {
+		proveJSON(w, http.StatusBadRequest, map[string]string{"error": "tx private key does not match this transaction's public key"})
+		return
+	}
+
+	// ECDH is symmetric: H(tx_priv * view_pub) == H(view_priv * tx_pub)
+	// So we can reuse CheckStealthOutput by swapping the scalar/point roles.
+	var results []proveResult
+	for i, out := range tx.Outputs {
+		if !CheckStealthOutput(spendPub, txPriv, viewPub, out.PublicKey) {
+			results = append(results, proveResult{Index: i})
+			continue
+		}
+
+		po := proveResult{Index: i, Match: true}
+		var blinding [32]byte
+		if isCoinbase {
+			blinding = wallet.DeriveCoinbaseConsensusBlinding(tx.TxPublicKey, blockHeight, i)
+		} else {
+			secret, serr := DeriveStealthSecretSender(txPriv, viewPub)
+			if serr == nil {
+				blinding = wallet.DeriveBlinding(secret, i)
+				if memo, ok := wallet.DecryptMemo(out.EncryptedMemo, secret, i); ok && len(memo) > 0 {
+					po.Memo = string(memo)
+				}
+			}
+		}
+		po.Amount = float64(wallet.DecryptAmount(out.EncryptedAmount, blinding, i)) / 100_000_000
+		results = append(results, po)
+	}
+
+	proveJSON(w, http.StatusOK, results)
 }
 
 func timeAgo(timestamp int64) string {
@@ -992,6 +1167,88 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .EncMemo}}<div class="prop"><div class="prop-k">Memo</div><div class="prop-v mono"><span class="g">{{.EncMemo}}</span> <span class="d">(encrypted)</span></div></div>{{end}}
 </div>
 {{end}}
+
+<h2><span class="g">#</span> prove payment</h2>
+<div style="display:flex;gap:0;margin-bottom:0">
+<button id="tab-recv" onclick="switchProveTab('recv')" style="background:var(--ac);color:#000;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">I received</button>
+<button id="tab-send" onclick="switchProveTab('send')" style="background:#000;color:#666;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">I sent</button>
+</div>
+<div class="box" style="margin-top:0;border-top:1px solid #333">
+<div id="prove-recv">
+<p class="d" style="font-size:13px;margin-bottom:12px">Check if an output belongs to you. Your private view key is sent to this server.</p>
+<div style="display:flex;flex-direction:column;gap:8px">
+<input type="text" id="recv-spend" placeholder="Your spend public key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="recv-view" placeholder="Your private view key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<button id="recv-btn" onclick="doRecvProve()" style="background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit;align-self:flex-start">Check</button>
+</div>
+</div>
+<div id="prove-send" style="display:none">
+<p class="d" style="font-size:13px;margin-bottom:12px">Prove you sent funds to a recipient. Provide your tx private key and the recipient's public address. Anyone can independently verify this proof.</p>
+<div style="display:flex;flex-direction:column;gap:8px">
+<input type="text" id="send-txpriv" placeholder="Your tx private key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="send-spend" placeholder="Recipient spend public key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="send-view" placeholder="Recipient view public key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<button id="send-btn" onclick="doSendProve()" style="background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit;align-self:flex-start">Prove</button>
+</div>
+</div>
+<div id="prove-result" style="margin-top:16px;display:none"></div>
+</div>
+<script>
+function switchProveTab(tab){
+var rt=document.getElementById('tab-recv'),st=document.getElementById('tab-send');
+var rp=document.getElementById('prove-recv'),sp=document.getElementById('prove-send');
+document.getElementById('prove-result').style.display='none';
+if(tab==='recv'){
+rt.style.background='var(--ac)';rt.style.color='#000';
+st.style.background='#000';st.style.color='#666';
+rp.style.display='';sp.style.display='none';
+}else{
+st.style.background='var(--ac)';st.style.color='#000';
+rt.style.background='#000';rt.style.color='#666';
+sp.style.display='';rp.style.display='none';
+}
+}
+function renderProveResult(data){
+var res=document.getElementById('prove-result');
+res.style.display='block';
+if(data.error){res.innerHTML='<span style="color:#f44">'+data.error+'</span>';return;}
+var matched=data.filter(function(o){return o.match;});
+if(matched.length===0){res.innerHTML='<span class="d">No outputs in this transaction match the provided keys.</span>';return;}
+var html='<div style="color:var(--ac);margin-bottom:12px">'+matched.length+' output'+(matched.length>1?'s':'')+' matched</div>';
+for(var i=0;i<matched.length;i++){
+var o=matched[i];
+html+='<div style="border:1px solid #333;padding:12px;margin-bottom:8px">';
+html+='<div class="prop"><div class="prop-k">Output #'+o.index+'</div><div class="prop-v" style="color:var(--ac);font-size:18px">'+o.amount.toFixed(8)+' BNT</div></div>';
+if(o.memo){html+='<div class="prop"><div class="prop-k">Memo</div><div class="prop-v">'+o.memo.replace(/</g,'&lt;')+'</div></div>';}
+html+='</div>';
+}
+res.innerHTML=html;
+}
+function proveRequest(url,body,btn){
+btn.disabled=true;btn.textContent='Checking...';
+fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+.then(function(r){return r.json();})
+.then(function(data){btn.disabled=false;btn.textContent=btn.dataset.label;renderProveResult(data);})
+.catch(function(){btn.disabled=false;btn.textContent=btn.dataset.label;var r=document.getElementById('prove-result');r.style.display='block';r.innerHTML='<span style="color:#f44">Request failed</span>';});
+}
+document.getElementById('recv-btn').dataset.label='Check';
+document.getElementById('send-btn').dataset.label='Prove';
+function doRecvProve(){
+var sp=document.getElementById('recv-spend').value.trim();
+var vp=document.getElementById('recv-view').value.trim();
+var res=document.getElementById('prove-result');
+if(sp.length!==64||vp.length!==64){res.style.display='block';res.innerHTML='<span style="color:#f44">Both keys must be 64 hex characters</span>';return;}
+proveRequest('/prove','tx={{.Hash}}&spend_pub='+sp+'&view_priv='+vp,document.getElementById('recv-btn'));
+}
+function doSendProve(){
+var tp=document.getElementById('send-txpriv').value.trim();
+var sp=document.getElementById('send-spend').value.trim();
+var vp=document.getElementById('send-view').value.trim();
+var res=document.getElementById('prove-result');
+if(tp.length!==64||sp.length!==64||vp.length!==64){res.style.display='block';res.innerHTML='<span style="color:#f44">All keys must be 64 hex characters</span>';return;}
+proveRequest('/prove-send','tx={{.Hash}}&tx_priv='+tp+'&spend_pub='+sp+'&view_pub='+vp,document.getElementById('send-btn'));
+}
+</script>
 
 <footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 ` + explorerEggScript + `
