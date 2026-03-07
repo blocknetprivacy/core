@@ -1,90 +1,340 @@
-# Android Integration
+# Running Blocknet on Android
 
-## Prerequisites
+This covers everything you need to get a blocknet node running on a physical
+Android phone. No Android development experience required for the quick-start
+path (Termux). The later sections cover building an actual Android app.
 
-- Android NDK (set `ANDROID_NDK_HOME`)
-- Rust with Android targets (`rustup target add aarch64-linux-android`)
-- Go 1.22+ with CGO cross-compilation support
+---
 
-## Building
+## Quick Start: Run on a Phone with Termux
+
+The fastest way to test is with [Termux](https://f-droid.org/en/packages/com.termux/),
+a terminal emulator for Android. Install it from **F-Droid** (not Google Play —
+the Play Store version is outdated and broken).
+
+### 1. Get the binary
+
+Download the `blocknet-arm64-android-*.zip` from the
+[releases page](https://github.com/blocknetprivacy/blocknet/releases)
+on your phone, or pull it from a computer:
 
 ```bash
-# Build for arm64 (most devices)
-make android
+# On your computer — find your phone's IP and push the file:
+adb push blocknet-android-arm64 /data/local/tmp/
 
-# Build for x86_64 (emulators)
-make build-android-x86_64
-
-# Rust libraries only (all architectures)
-make build-rust-android
+# Or just download directly in Termux:
+curl -L -o blocknet https://github.com/blocknetprivacy/blocknet/releases/latest/download/blocknet-android-arm64
+chmod +x blocknet
 ```
 
-The `ANDROID_API` level defaults to 21 (Android 5.0) and can be overridden:
+### 2. Run it
 
 ```bash
+# In Termux
+./blocknet --daemon --api 127.0.0.1:8332 --data ~/blocknet-data
+```
+
+That's it. The node starts syncing. The `--daemon` flag skips the interactive
+CLI (no TTY tricks that might not work in Termux). The `--api` flag starts the
+REST API so you can poke at it.
+
+### 3. Talk to it
+
+The API writes a random auth token to `~/blocknet-data/api.cookie`. Read it
+and use it as a Bearer token:
+
+```bash
+TOKEN=$(cat ~/blocknet-data/api.cookie)
+
+# Check status
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8332/api/status | jq
+
+# Load a wallet
+curl -s -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"filename":"my.wallet.dat","password":"mypass"}' \
+  http://127.0.0.1:8332/api/wallet/load | jq
+
+# Check balance
+curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8332/api/wallet/balance | jq
+```
+
+### 4. Keep it alive
+
+Android kills background processes. If you switch apps or lock the screen,
+Termux gets killed and your node dies. To prevent this:
+
+1. Open Termux → swipe down from the top → tap the Termux notification →
+   **Acquire wakelock**
+2. Go to Android Settings → Apps → Termux → Battery → **Unrestricted**
+3. If your phone has a "battery saver" or "battery optimization" screen,
+   exempt Termux from it
+
+Even with all that, some phone manufacturers (Xiaomi, Samsung, Huawei, OnePlus)
+have aggressive background killers. Check [dontkillmyapp.com](https://dontkillmyapp.com)
+for your specific phone.
+
+---
+
+## What's in the Release Zip
+
+The `blocknet-arm64-android-*.zip` contains three files:
+
+| File | What it is | When to use it |
+|------|-----------|----------------|
+| `blocknet-android-arm64` | Standalone ELF binary | Termux, ADB shell, or launched as a subprocess from an Android app's Foreground Service |
+| `libblocknet.so` | Shared library (`.so`) with C-exported functions | Load directly into a Kotlin/Java Android app via JNI — no subprocess needed |
+| `libblocknet.h` | C header file for `libblocknet.so` | Reference for the exported function signatures when writing JNI bindings |
+
+### The standalone binary
+
+Same blocknet you'd run on Linux, cross-compiled for Android arm64. Accepts all
+the same flags (`--daemon`, `--api`, `--data`, `--wallet`, `--testnet`, etc.).
+Works in Termux, via `adb shell`, or launched as a child process from an Android
+app.
+
+### The shared library
+
+`libblocknet.so` is a Go shared library built with `-buildmode=c-shared`. It
+embeds the entire node and exposes a small C API that an Android app loads via
+`System.loadLibrary()`. The exported functions:
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `BlocknetStart` | `(dataDir *char, configDir *char, apiAddr *char) → int` | Start the node in daemon mode with the API server. Returns `0` on success, `-1` if already running, `-2` on error |
+| `BlocknetStop` | `() → int` | Graceful shutdown. Blocks until the node has fully stopped. Returns `0` on success, `-1` if not running |
+| `BlocknetIsRunning` | `() → int` | Returns `1` if the node is running, `0` otherwise |
+| `BlocknetVersion` | `() → *char` | Returns the version string. **Caller must free the pointer** with `BlocknetFree` |
+| `BlocknetLastError` | `() → *char` | Returns the last error message, or `NULL` if no error. **Caller must free** |
+| `BlocknetFree` | `(ptr *void)` | Frees a C string returned by `BlocknetVersion` or `BlocknetLastError` |
+
+Once started, all wallet and node operations go through the REST API at
+`http://<apiAddr>/api/...` — the `.so` just handles lifecycle.
+
+### The header file
+
+`libblocknet.h` is auto-generated by Go and contains the C function signatures
+for everything exported by `libblocknet.so`. You'd use it if writing a JNI
+bridge in C/C++, or as reference when writing Kotlin JNI declarations.
+
+---
+
+## REST API Reference
+
+The API uses Bearer token auth. On startup, the node writes a random 64-char
+hex token to `<dataDir>/api.cookie`. Every request must include:
+
+```
+Authorization: Bearer <token>
+```
+
+### Node
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/status` | Node status (height, peers, syncing, version) |
+| GET | `/api/block/{height_or_hash}` | Get block by height or hash |
+| GET | `/api/tx/{hash}` | Get transaction by hash |
+| GET | `/api/mempool` | Mempool summary |
+| GET | `/api/mempool/txs` | List mempool transactions |
+| GET | `/api/peers` | Connected peers |
+| GET | `/api/peers/banned` | Banned peers |
+| GET | `/api/events` | SSE stream (new blocks, tx confirmations) |
+| POST | `/api/verify` | Verify a signed message |
+| POST | `/api/purge` | Purge chain data and resync |
+
+### Wallet
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/wallet/load` | Load/create wallet (body: `{"filename","password"}`) |
+| POST | `/api/wallet/import` | Import wallet from keys |
+| GET | `/api/wallet/balance` | Spendable + pending balance |
+| GET | `/api/wallet/address` | Stealth address |
+| GET | `/api/wallet/history` | Send/receive history |
+| GET | `/api/wallet/outputs` | UTXO list |
+| POST | `/api/wallet/send` | Send BNT (body: `{"address","amount"}`) |
+| POST | `/api/wallet/send/advanced` | Send with coin control |
+| POST | `/api/wallet/sign` | Sign a message |
+| POST | `/api/wallet/lock` | Lock wallet |
+| POST | `/api/wallet/unlock` | Unlock wallet (body: `{"password"}`) |
+| POST | `/api/wallet/seed` | Show recovery seed (requires unlock) |
+| POST | `/api/wallet/sync` | Force wallet rescan |
+
+### Mining (disabled on Android)
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/mining` | Mining status |
+| POST | `/api/mining/start` | Start mining (returns 403 on Android) |
+| POST | `/api/mining/stop` | Stop mining |
+| POST | `/api/mining/threads` | Set thread count |
+| GET | `/api/mining/blocktemplate` | Get block template for pool mining |
+| POST | `/api/mining/submitblock` | Submit a mined block |
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+- **Android NDK**: install via Android Studio SDK Manager, or download from
+  [developer.android.com/ndk](https://developer.android.com/ndk/downloads).
+  Set `ANDROID_NDK_HOME` to the installation path.
+- **Rust**: `rustup` with Android targets
+- **Go 1.26+**: with CGO support
+
+### Build commands
+
+```bash
+# Set your NDK path
+export ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/29.0.14206865
+
+# Build standalone binary (arm64)
+make android
+
+# Build shared library (.so + .h)
+make build-android-lib
+
+# Build for emulator (x86_64)
+make build-android-x86_64
+
+# Build Rust crypto library only (all architectures)
+make build-rust-android
+
+# Override the minimum Android API level (default: 21 = Android 5.0)
 ANDROID_API=26 make android
 ```
 
-## Integration Architecture
+The output goes to `releases/`.
 
-The Go node runs as a background service in the Android app. The recommended
-integration path is to bundle the binary and communicate with it via the
-built-in API server (`--api 127.0.0.1:8332`).
+### CI
 
-### Option A: Bundled Binary (simplest)
+The GitHub Actions workflow (`.github/workflows/release.yml`) builds the
+Android artifacts automatically on every tagged release. It runs on
+`ubuntu-latest` which has the NDK pre-installed.
 
-1. Place the `blocknet-android-arm64` binary in `app/src/main/jniLibs/arm64-v8a/`
-2. Start it as a subprocess from your Foreground Service
-3. Communicate via `http://127.0.0.1:8332/api/...`
+---
 
-### Option B: Shared Library (c-shared)
+## Building an Android App (Kotlin)
 
-Build as a shared library with exported C functions for JNI:
+If you want to go beyond Termux and build an actual app, here's the full setup.
 
-```bash
-make build-android-lib
-# produces releases/libblocknet.so + releases/libblocknet.h
+### Project structure
+
+```
+app/
+├── src/main/
+│   ├── java/com/blocknet/node/
+│   │   ├── MainActivity.kt
+│   │   ├── NodeService.kt        # Foreground Service
+│   │   └── NodeBridge.kt          # JNI bindings
+│   ├── jniLibs/
+│   │   └── arm64-v8a/
+│   │       └── libblocknet.so     # from the release zip
+│   └── AndroidManifest.xml
 ```
 
-Place `libblocknet.so` in `app/src/main/jniLibs/arm64-v8a/`. The library
-exports the following functions:
-
-| Export | Signature | Description |
-|--------|-----------|-------------|
-| `BlocknetStart` | `(dataDir, configDir, apiAddr *char) int` | Start node in daemon mode with API. Returns 0=ok, -1=already running, -2=error |
-| `BlocknetStop` | `() int` | Graceful shutdown (blocks until stopped). Returns 0=ok, -1=not running |
-| `BlocknetIsRunning` | `() int` | Returns 1 if running, 0 otherwise |
-| `BlocknetVersion` | `() *char` | Returns version string (caller must free) |
-| `BlocknetLastError` | `() *char` | Returns last error string or NULL (caller must free) |
-| `BlocknetFree` | `(ptr *void)` | Free a string returned by other exports |
-
-Once started, use the REST API at `http://<apiAddr>/api/...` for all
-wallet and node operations (send, balance, status, wallet load, etc.).
-
-## Foreground Service Requirements
-
-Android kills background processes aggressively. The node **must** run inside
-a Foreground Service with a persistent notification. Without this, the OS will
-terminate the process within minutes of the app leaving the foreground.
-
-### Required Android Manifest Entries
+### AndroidManifest.xml
 
 ```xml
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.INTERNET" />
 
-<service
-    android:name=".NodeService"
-    android:foregroundServiceType="dataSync"
-    android:exported="false" />
+<application ...>
+    <service
+        android:name=".NodeService"
+        android:foregroundServiceType="dataSync"
+        android:exported="false" />
+</application>
 ```
 
-### Battery Optimization
+### JNI bridge (Kotlin)
 
-Request the user to exempt the app from battery optimization (Doze mode).
-Without this exemption, the OS will throttle network access and defer
-wakeups when the device is idle.
+```kotlin
+object NodeBridge {
+    init {
+        System.loadLibrary("blocknet")
+    }
+
+    external fun BlocknetStart(dataDir: String, configDir: String, apiAddr: String): Int
+    external fun BlocknetStop(): Int
+    external fun BlocknetIsRunning(): Int
+    external fun BlocknetVersion(): String?
+    external fun BlocknetLastError(): String?
+}
+```
+
+### Foreground Service
+
+```kotlin
+class NodeService : Service() {
+    private val API_ADDR = "127.0.0.1:8332"
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Required: show a persistent notification so Android doesn't kill us
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("Blocknet")
+            .setContentText("Node running")
+            .setSmallIcon(R.drawable.ic_node)
+            .setOngoing(true)
+            .build()
+        startForeground(1, notification)
+
+        // Start the node
+        val dataDir = filesDir.resolve("blocknet-data").absolutePath
+        val configDir = filesDir.absolutePath
+        val result = NodeBridge.BlocknetStart(dataDir, configDir, API_ADDR)
+        if (result != 0) {
+            val err = NodeBridge.BlocknetLastError() ?: "unknown error"
+            Log.e("NodeService", "Failed to start: $err")
+            stopSelf()
+        }
+
+        return START_STICKY
+    }
+
+    override fun onDestroy() {
+        NodeBridge.BlocknetStop()
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?) = null
+}
+```
+
+### Talking to the API from Kotlin
+
+Once the service is running, read the auth token and make HTTP requests
+to localhost:
+
+```kotlin
+val tokenFile = File(filesDir, "blocknet-data/api.cookie")
+val token = tokenFile.readText()
+
+val client = OkHttpClient()
+val request = Request.Builder()
+    .url("http://127.0.0.1:8332/api/status")
+    .header("Authorization", "Bearer $token")
+    .build()
+
+client.newCall(request).enqueue(object : Callback {
+    override fun onResponse(call: Call, response: Response) {
+        val json = response.body?.string()
+        // parse and update UI
+    }
+    override fun onFailure(call: Call, e: IOException) {
+        // handle error
+    }
+})
+```
+
+### Battery optimization
+
+Android aggressively throttles background network and CPU for apps not
+in the foreground. Request exemption:
 
 ```kotlin
 val pm = getSystemService(PowerManager::class.java)
@@ -95,52 +345,59 @@ if (!pm.isIgnoringBatteryOptimizations(packageName)) {
 }
 ```
 
-### Service Lifecycle
-
-```kotlin
-class NodeService : Service() {
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val notification = buildPersistentNotification()
-        startForeground(NOTIFICATION_ID, notification)
-
-        // Start the node with app-specific directories
-        val dataDir = filesDir.resolve("blocknet-data").absolutePath
-        val configDir = filesDir.absolutePath
-        // ... start node process or call native library ...
-
-        return START_STICKY
-    }
-
-    override fun onDestroy() {
-        // Trigger graceful shutdown (CLI.Shutdown() or send SIGTERM)
-        super.onDestroy()
-    }
-}
-```
+---
 
 ## Platform Differences
 
 | Feature | Desktop | Android |
 |---------|---------|---------|
 | Mining | Supported | Disabled (2GB RAM per hash) |
-| UPnP/NAT-PMP | Enabled | Disabled (carrier NAT) |
-| Relay client | Disabled | Enabled (NAT traversal) |
+| UPnP/NAT-PMP | Enabled | Disabled (useless on carrier NAT) |
+| Relay client | Disabled | Enabled (NAT traversal via relay peers) |
 | Hole punching | Enabled | Enabled |
-| Config dir | `os.UserConfigDir()` | Passed from host app via `SetConfigDir()` |
-| Shutdown | Unix signals | `CLI.Shutdown()` or context cancellation |
-| Data dir | `./blocknet-data-mainnet` | App-specific `filesDir` |
+| Config dir | Auto-detected (`~/.config/` etc.) | Passed from host app via `SetConfigDir()` |
+| Shutdown | Ctrl+C / SIGTERM | `CLI.Shutdown()` / `BlocknetStop()` |
+| Data dir | `./blocknet-data-mainnet` | App-private `filesDir` |
+| Interactive CLI | Full | Not used (daemon mode only) |
 
-## Storage
+## What to Expect
 
-Pass the Android app's `filesDir` as both `--data` and `ConfigDir` when
-starting the node. Do not use external storage — it may be removable and
-is not protected by the app sandbox.
+- **Sync time**: initial sync downloads and verifies the full chain. On Wi-Fi
+  this takes a while. Each block requires a 2GB Argon2id PoW verification hash,
+  so it's CPU/memory intensive. With checkpoints enabled (the default), most
+  blocks are skipped.
+- **Storage**: the chain database grows over time. Budget at least 1-2GB of
+  free space.
+- **Battery**: the node does continuous network I/O and periodic computation.
+  It will drain battery faster than a typical app. Keep the phone plugged in
+  for long sync sessions.
+- **RAM**: PoW verification allocates 2GB per block during sync. Modern phones
+  with 6GB+ RAM handle this fine. Older phones with 3-4GB may struggle or get
+  killed by the OOM killer.
+- **Network**: on mobile data, the node uses bandwidth for block/tx relay and
+  peer discovery. Use `--p2p-max-inbound 8 --p2p-max-outbound 4` to limit
+  connections on metered networks.
 
-## Network Considerations
+## Troubleshooting
 
-- Mobile networks are heavily NATed; the node relies on relay peers and
-  hole punching for inbound connectivity.
-- Wi-Fi networks may support direct connections but UPnP is still unreliable.
-- The libp2p relay client is enabled automatically on Android builds.
-- Bandwidth usage should be monitored — consider limiting peer counts
-  via `--p2p-max-inbound` and `--p2p-max-outbound` on metered connections.
+**Node gets killed after a few minutes**
+→ Battery optimization is killing it. Exempt the app/Termux from battery
+restrictions. Check [dontkillmyapp.com](https://dontkillmyapp.com) for your
+phone manufacturer.
+
+**"permission denied" when running the binary**
+→ `chmod +x blocknet-android-arm64` — the file needs to be executable.
+
+**Can't bind to port 28080**
+→ Another instance might be running. Or try a different port:
+`--listen /ip4/0.0.0.0/tcp/38080`
+
+**Out of memory during sync**
+→ The 2GB PoW verification is too much for your phone's RAM. Try closing
+other apps, or use `--full-sync` to skip checkpoint-based fast sync (slower
+but uses less peak memory since it processes blocks sequentially).
+
+**No peers found**
+→ If on a restrictive mobile network, peers might not be able to reach you.
+The relay client is enabled by default on Android, but it needs seed nodes
+to be reachable. Check your network connection and try Wi-Fi instead.
