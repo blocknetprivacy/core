@@ -1,0 +1,136 @@
+name: Nightly Build
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux-amd64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Build Rust library
+        run: cd crypto-rs && cargo build --release
+      
+      - name: Build Go binary
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o core .
+      
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp core dist/
+          cd dist && zip -q ../core-amd64-linux-nightly.zip core
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-amd64-linux-nightly
+          path: core-amd64-linux-nightly.zip
+
+  build-macos-arm64:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Build Rust library
+        run: cd crypto-rs && cargo build --release
+      
+      - name: Build Go binary
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o core .
+      
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp core dist/
+          cd dist && zip -q ../core-arm64-darwin-nightly.zip core
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-arm64-darwin-nightly
+          path: core-arm64-darwin-nightly.zip
+
+  build-windows-amd64:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-rust
+            mingw-w64-x86_64-go
+            zip
+      
+      - name: Build Rust library
+        run: cd crypto-rs && cargo build --release
+      
+      - name: Build Go binary
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o core.exe .
+      
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp core.exe dist/
+          cd dist && zip -q ../core-amd64-windows-nightly.zip core.exe
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-amd64-windows-nightly
+          path: core-amd64-windows-nightly.zip
+
+  release-nightly:
+    needs: [build-linux-amd64, build-macos-arm64, build-windows-amd64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: releases
+          merge-multiple: true
+      
+      - name: Generate checksums
+        run: |
+          cd releases
+          sha256sum *.zip > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing nightly release
+        run: gh release delete nightly --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create nightly release
+        run: |
+          gh release create nightly \
+            --title "Nightly (${{ steps.commit.outputs.date }} · ${{ steps.commit.outputs.sha_short }})" \
+            --notes "Automated nightly build from master at ${{ github.sha }}" \
+            --prerelease \
+            releases/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
