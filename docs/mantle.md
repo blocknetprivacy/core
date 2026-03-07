@@ -114,9 +114,36 @@ The core (`blocknet-core`) is the current `blocknet` binary with the following r
 
 Everything else stays: the HTTP API, wallet, chain, mempool, miner, p2p, sync manager, stealth keys, SSE events, mining API, and all existing API routes.
 
-## Open Questions
+## Distribution
 
-- **Self-update**: should mantle be able to upgrade itself, not just cores? This is a harder problem since mantle must replace its own running binary. One approach: mantle downloads the new version, spawns it, and the new version takes over the old one's cores.
-- **Systemd / launchd integration**: ship a service file so mantle itself is managed by the OS init system? This gives boot-on-start, watchdog, and log management for free.
-- **Remote management**: should `mantle attach` be able to connect to a core on a remote machine (via its API), or is it always local?
-- **Binary distribution**: ship mantle and core as separate downloads, or have mantle download the core binary on first run?
+Mantle is the primary distribution artifact. Users download mantle, which ships with a bundled core binary. Users never need to think about "core" as a separate thing — mantle is the product, core is an internal implementation detail.
+
+Mantle can then download newer core versions for upgrades, but the initial download is fully self-contained and works offline.
+
+## Target Platforms
+
+Mantle targets Windows, macOS (Apple Silicon), Linux, and Android.
+
+### Platform-Specific Init Integration
+
+Each platform has its own mechanism for running mantle as a background service that starts on boot and restarts on failure:
+
+- **Linux**: systemd service file (`mantle.service`)
+- **macOS**: launchd plist (`~/Library/LaunchAgents/com.blocknet.mantle.plist`)
+- **Windows**: Windows Service (via `golang.org/x/sys/windows/svc`) or Task Scheduler
+
+### Android
+
+Android is a special case. On Android, the daemon is always embedded into a host app (wallet, game, etc.), and the app itself manages the process lifecycle. Mantle as a standalone binary doesn't fit Android's model — there's no terminal, no init system, and users don't launch binaries directly. On Android, the host app manages core directly without mantle, or mantle is embedded as a library rather than a standalone supervisor.
+
+## Self-Update
+
+Mantle supports self-update, but keeps it simple. Mantle is a thin supervisor — it changes rarely compared to the core (which has consensus rules, protocol changes, wallet features, etc.). The worst case of running an old mantle is missing a new mantle feature, not forking off the network.
+
+Self-update mechanism: mantle downloads the new mantle binary, replaces itself on disk, and picks up the new version on next restart. If running behind a system service (systemd, launchd, Windows Service), mantle triggers a service restart after replacing the binary. Cores are gracefully stopped on shutdown and auto-started by the new mantle on startup. Not a priority for the MVP.
+
+## Decisions
+
+- **Remote `mantle attach`** is not in scope for the MVP. `attach` connects to local cores only. Remote management can be added later since the HTTP API transport makes it trivial — it's just a matter of pointing at a different address.
+- **Binary distribution**: mantle ships bundled with a core binary. Single download, works immediately, no first-run network dependency.
+- **Init integration**: ship platform-specific service files for Linux, macOS, and Windows. Android apps manage core directly.
