@@ -44,6 +44,75 @@ func TestStealthAddressFlow(t *testing.T) {
 	}
 }
 
+func TestIndexedStealthSecretAgreement(t *testing.T) {
+	keys, err := GenerateStealthKeys()
+	if err != nil {
+		t.Fatalf("GenerateStealthKeys: %v", err)
+	}
+
+	out, err := DeriveStealthAddress(keys.SpendPubKey, keys.ViewPubKey)
+	if err != nil {
+		t.Fatalf("DeriveStealthAddress: %v", err)
+	}
+
+	for _, idx := range []uint32{0, 1, 5, 100} {
+		sender, err := DeriveStealthSecretSenderIndexed(out.TxPrivKey, keys.ViewPubKey, idx)
+		if err != nil {
+			t.Fatalf("DeriveStealthSecretSenderIndexed(idx=%d): %v", idx, err)
+		}
+		receiver, err := DeriveStealthSecretIndexed(out.TxPubKey, keys.ViewPrivKey, idx)
+		if err != nil {
+			t.Fatalf("DeriveStealthSecretIndexed(idx=%d): %v", idx, err)
+		}
+		if sender != receiver {
+			t.Fatalf("indexed secret mismatch at index %d", idx)
+		}
+	}
+}
+
+func TestIndexedStealthSecretDiffersByIndex(t *testing.T) {
+	keys, err := GenerateStealthKeys()
+	if err != nil {
+		t.Fatalf("GenerateStealthKeys: %v", err)
+	}
+
+	out, err := DeriveStealthAddress(keys.SpendPubKey, keys.ViewPubKey)
+	if err != nil {
+		t.Fatalf("DeriveStealthAddress: %v", err)
+	}
+
+	s0, _ := DeriveStealthSecretSenderIndexed(out.TxPrivKey, keys.ViewPubKey, 0)
+	s1, _ := DeriveStealthSecretSenderIndexed(out.TxPrivKey, keys.ViewPubKey, 1)
+	if s0 == s1 {
+		t.Fatal("different indices must produce different secrets")
+	}
+}
+
+func TestSelfSendDistinctOneTimeKeys(t *testing.T) {
+	keys, err := GenerateStealthKeys()
+	if err != nil {
+		t.Fatalf("GenerateStealthKeys: %v", err)
+	}
+
+	out, err := DeriveStealthAddress(keys.SpendPubKey, keys.ViewPubKey)
+	if err != nil {
+		t.Fatalf("DeriveStealthAddress: %v", err)
+	}
+
+	s0, _ := DeriveStealthSecretSenderIndexed(out.TxPrivKey, keys.ViewPubKey, 0)
+	s1, _ := DeriveStealthSecretSenderIndexed(out.TxPrivKey, keys.ViewPubKey, 1)
+
+	p0, _ := ScalarToPubKey(s0)
+	p1, _ := ScalarToPubKey(s1)
+
+	otp0, _ := CommitmentAdd(p0, keys.SpendPubKey)
+	otp1, _ := CommitmentAdd(p1, keys.SpendPubKey)
+
+	if otp0 == otp1 {
+		t.Fatal("self-send outputs must get distinct one-time public keys")
+	}
+}
+
 func TestRingSignatureSignVerify(t *testing.T) {
 	var ring [][32]byte
 	var privs [][32]byte

@@ -364,12 +364,13 @@ type Wallet struct {
 	memoDecryptLastHeight atomic.Uint64
 
 	// Callbacks for crypto operations (set by main package)
-	generateStealthKeys     func() (*StealthKeys, error)
-	deriveStealthAddress    func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
-	checkStealthOutput      func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
-	deriveSpendKey          func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
-	deriveOutputSecret      func(txPub, viewPriv [32]byte) ([32]byte, error)
-	generateKeypairFromSeed func(seed [32]byte) (priv, pub [32]byte, err error)
+	generateStealthKeys        func() (*StealthKeys, error)
+	deriveStealthAddress       func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
+	checkStealthOutput         func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
+	deriveSpendKey             func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
+	deriveOutputSecret         func(txPub, viewPriv [32]byte) ([32]byte, error)
+	deriveOutputSecretIndexed  func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error)
+	generateKeypairFromSeed    func(seed [32]byte) (priv, pub [32]byte, err error)
 }
 
 // PendingCredit tracks a credit we expect to receive but haven't yet scanned
@@ -393,11 +394,12 @@ type inputReservation struct {
 
 // WalletConfig holds wallet configuration
 type WalletConfig struct {
-	GenerateStealthKeys  func() (*StealthKeys, error)
-	DeriveStealthAddress func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
-	CheckStealthOutput   func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
-	DeriveSpendKey       func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
-	DeriveOutputSecret   func(txPub, viewPriv [32]byte) ([32]byte, error)
+	GenerateStealthKeys       func() (*StealthKeys, error)
+	DeriveStealthAddress      func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
+	CheckStealthOutput        func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
+	DeriveSpendKey            func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
+	DeriveOutputSecret        func(txPub, viewPriv [32]byte) ([32]byte, error)
+	DeriveOutputSecretIndexed func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error)
 
 	// For deterministic key derivation from BIP39 seed
 	GenerateKeypairFromSeed func(seed [32]byte) (priv, pub [32]byte, err error)
@@ -429,15 +431,16 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 	}
 
 	w := &Wallet{
-		filename:                filename,
-		password:                cloneBytes(password),
-		inputReservations:       make(map[reservedOutpoint]inputReservation),
-		generateStealthKeys:     cfg.GenerateStealthKeys,
-		deriveStealthAddress:    cfg.DeriveStealthAddress,
-		checkStealthOutput:      cfg.CheckStealthOutput,
-		deriveSpendKey:          cfg.DeriveSpendKey,
-		deriveOutputSecret:      cfg.DeriveOutputSecret,
-		generateKeypairFromSeed: cfg.GenerateKeypairFromSeed,
+		filename:                   filename,
+		password:                   cloneBytes(password),
+		inputReservations:          make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:        cfg.GenerateStealthKeys,
+		deriveStealthAddress:       cfg.DeriveStealthAddress,
+		checkStealthOutput:         cfg.CheckStealthOutput,
+		deriveSpendKey:             cfg.DeriveSpendKey,
+		deriveOutputSecret:         cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
+		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
 	}
 
 	w.data = WalletData{
@@ -465,15 +468,16 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 // This path does not include a BIP39 mnemonic in the wallet file.
 func NewWalletFromStealthKeys(filename string, password []byte, keys StealthKeys, cfg WalletConfig) (*Wallet, error) {
 	w := &Wallet{
-		filename:                filename,
-		password:                cloneBytes(password),
-		inputReservations:       make(map[reservedOutpoint]inputReservation),
-		generateStealthKeys:     cfg.GenerateStealthKeys,
-		deriveStealthAddress:    cfg.DeriveStealthAddress,
-		checkStealthOutput:      cfg.CheckStealthOutput,
-		deriveSpendKey:          cfg.DeriveSpendKey,
-		deriveOutputSecret:      cfg.DeriveOutputSecret,
-		generateKeypairFromSeed: cfg.GenerateKeypairFromSeed,
+		filename:                   filename,
+		password:                   cloneBytes(password),
+		inputReservations:          make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:        cfg.GenerateStealthKeys,
+		deriveStealthAddress:       cfg.DeriveStealthAddress,
+		checkStealthOutput:         cfg.CheckStealthOutput,
+		deriveSpendKey:             cfg.DeriveSpendKey,
+		deriveOutputSecret:         cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
+		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
 	}
 
 	w.data = WalletData{
@@ -515,16 +519,17 @@ func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, er
 	data.Mnemonic = ""
 
 	return &Wallet{
-		data:                    data,
-		filename:                filename,
-		password:                cloneBytes(password),
-		inputReservations:       make(map[reservedOutpoint]inputReservation),
-		generateStealthKeys:     cfg.GenerateStealthKeys,
-		deriveStealthAddress:    cfg.DeriveStealthAddress,
-		generateKeypairFromSeed: cfg.GenerateKeypairFromSeed,
-		checkStealthOutput:      cfg.CheckStealthOutput,
-		deriveSpendKey:          cfg.DeriveSpendKey,
-		deriveOutputSecret:      cfg.DeriveOutputSecret,
+		data:                       data,
+		filename:                   filename,
+		password:                   cloneBytes(password),
+		inputReservations:          make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:        cfg.GenerateStealthKeys,
+		deriveStealthAddress:       cfg.DeriveStealthAddress,
+		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
+		checkStealthOutput:         cfg.CheckStealthOutput,
+		deriveSpendKey:             cfg.DeriveSpendKey,
+		deriveOutputSecret:         cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
 	}, nil
 }
 
@@ -532,12 +537,13 @@ func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, er
 // View-only wallets can scan for incoming funds but cannot spend
 func NewViewOnlyWallet(filename string, password []byte, keys ViewOnlyKeys, cfg WalletConfig) (*Wallet, error) {
 	w := &Wallet{
-		filename:             filename,
-		password:             cloneBytes(password),
-		inputReservations:    make(map[reservedOutpoint]inputReservation),
-		deriveStealthAddress: cfg.DeriveStealthAddress,
-		checkStealthOutput:   cfg.CheckStealthOutput,
-		deriveOutputSecret:   cfg.DeriveOutputSecret,
+		filename:                  filename,
+		password:                  cloneBytes(password),
+		inputReservations:         make(map[reservedOutpoint]inputReservation),
+		deriveStealthAddress:      cfg.DeriveStealthAddress,
+		checkStealthOutput:        cfg.CheckStealthOutput,
+		deriveOutputSecret:        cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
 	}
 
 	// Create wallet data with view-only flag

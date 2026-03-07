@@ -103,16 +103,6 @@ func (c *CLI) cmdSend(args []string) error {
 		return fmt.Errorf("invalid address: %w", err)
 	}
 
-	// Block self-sends: the stealth key derivation does not incorporate the
-	// output index, so multiple outputs to the same (spendPub, viewPub) in a
-	// single tx get identical one-time keys. Only one can ever be spent; the
-	// rest are permanently burned. Until the derivation is fixed, refuse
-	// transactions where the recipient is the wallet's own address.
-	keys := c.wallet.Keys()
-	if spendPub == keys.SpendPubKey && viewPub == keys.ViewPubKey {
-		return fmt.Errorf("self-sends are temporarily disabled (key derivation bug would burn funds)")
-	}
-
 	// Parse amount
 	sendAll := strings.EqualFold(args[1], "all")
 	var amount uint64

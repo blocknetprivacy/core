@@ -12,6 +12,11 @@ var NetworkID = "blocknet_mainnet"
 // accidental changes if genesis mechanics are refactored later.
 var ChainID uint32 = 0x20260215
 
+// IndexedDerivationHeight is the block height at which the builder switches
+// to per-output indexed shared secret derivation: H(r * viewPub || outputIndex).
+// Before this height the old derivation H(r * viewPub) is used.
+var IndexedDerivationHeight uint64 = 6500
+
 // InitTestnet switches all network parameters to testnet values.
 // Must be called before any other package reads these variables.
 func InitTestnet() {
@@ -27,4 +32,5 @@ func InitTestnet() {
 	ProtocolDandelion = P2PProtocolBase + "/dandelion/1.0.0"
 
 	MemoBlockDomainSep = NetworkID
+	IndexedDerivationHeight = 375
 }

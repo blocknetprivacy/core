@@ -507,6 +507,44 @@ func DeriveStealthSecretSender(txPrivKey, viewPubKey [32]byte) ([32]byte, error)
 	return secret, nil
 }
 
+// DeriveStealthSecretIndexed derives the per-output shared secret (receiver side)
+// shared_secret = H(view_privkey * tx_pubkey || output_index)
+func DeriveStealthSecretIndexed(txPubKey, viewPrivKey [32]byte, outputIndex uint32) ([32]byte, error) {
+	var secret [32]byte
+
+	result := C.blocknet_stealth_derive_secret_indexed(
+		(*C.uint8_t)(unsafe.Pointer(&txPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&viewPrivKey[0])),
+		C.uint32_t(outputIndex),
+		(*C.uint8_t)(unsafe.Pointer(&secret[0])),
+	)
+
+	if result != 0 {
+		return secret, fmt.Errorf("failed to derive indexed stealth secret")
+	}
+
+	return secret, nil
+}
+
+// DeriveStealthSecretSenderIndexed derives the per-output shared secret (sender side)
+// shared_secret = H(tx_privkey * view_pubkey || output_index)
+func DeriveStealthSecretSenderIndexed(txPrivKey, viewPubKey [32]byte, outputIndex uint32) ([32]byte, error) {
+	var secret [32]byte
+
+	result := C.blocknet_stealth_derive_secret_sender_indexed(
+		(*C.uint8_t)(unsafe.Pointer(&txPrivKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&viewPubKey[0])),
+		C.uint32_t(outputIndex),
+		(*C.uint8_t)(unsafe.Pointer(&secret[0])),
+	)
+
+	if result != 0 {
+		return secret, fmt.Errorf("failed to derive indexed stealth secret (sender)")
+	}
+
+	return secret, nil
+}
+
 // ScalarToPubKey converts a scalar private key to its public key
 func ScalarToPubKey(privKey [32]byte) ([32]byte, error) {
 	var pubKey [32]byte

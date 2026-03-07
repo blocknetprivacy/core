@@ -499,14 +499,13 @@ type validatedRecipient struct {
 
 const maxChangeSplit = 4
 
-// validateRecipients resolves addresses, rejects self-sends, parses memos,
+// validateRecipients resolves addresses, parses memos,
 // and returns wallet.Recipient values ready for the builder.
 func (s *APIServer) validateRecipients(raw []recipientRequest) ([]validatedRecipient, uint64, error) {
 	if len(raw) == 0 {
 		return nil, 0, errors.New("recipients array is required")
 	}
 
-	walletKeys := s.wallet.Keys()
 	var totalSend uint64
 	out := make([]validatedRecipient, len(raw))
 
@@ -524,10 +523,6 @@ func (s *APIServer) validateRecipients(raw []recipientRequest) ([]validatedRecip
 		spendPub, viewPub, err := wallet.ParseAddress(resolvedAddr)
 		if err != nil {
 			return nil, 0, fmt.Errorf("recipient %d: invalid address", i)
-		}
-
-		if spendPub == walletKeys.SpendPubKey && viewPub == walletKeys.ViewPubKey {
-			return nil, 0, fmt.Errorf("recipient %d: self-sends are temporarily disabled (key derivation bug would burn funds)", i)
 		}
 
 		if rr.Amount == 0 {
@@ -948,7 +943,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 
 	releaseLease = false
 	builder := s.createTxBuilder()
-	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit)
+	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit, height)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
@@ -1913,6 +1908,7 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		DeriveDeterministicTxKey:    DeriveDeterministicTxKey,
 		GenerateKeyImage:            GenerateKeyImage,
 		DeriveSharedSecret:          DeriveStealthSecretSender,
+		DeriveSharedSecretIndexed:   DeriveStealthSecretSenderIndexed,
 		ScalarToPoint:               ScalarToPubKey,
 		PointAdd: func(p1, p2 [32]byte) ([32]byte, error) {
 			return CommitmentAdd(p1, p2)

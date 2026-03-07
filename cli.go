@@ -108,6 +108,9 @@ func defaultWalletConfig() wallet.WalletConfig {
 		DeriveOutputSecret: func(txPub, viewPriv [32]byte) ([32]byte, error) {
 			return DeriveStealthSecret(txPub, viewPriv)
 		},
+		DeriveOutputSecretIndexed: func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error) {
+			return DeriveStealthSecretIndexed(txPub, viewPriv, outputIndex)
+		},
 		GenerateKeypairFromSeed: func(seed [32]byte) (priv, pub [32]byte, err error) {
 			kp, err := GenerateRistrettoKeypairFromSeed(seed)
 			if err != nil {
@@ -125,6 +128,11 @@ func defaultScannerConfig() wallet.ScannerConfig {
 		CreateCommitment: func(amount uint64, blinding [32]byte) ([32]byte, error) {
 			return CreatePedersenCommitmentWithBlinding(amount, blinding)
 		},
+		ScalarToPoint: ScalarToPubKey,
+		PointAdd: func(p1, p2 [32]byte) ([32]byte, error) {
+			return CommitmentAdd(p1, p2)
+		},
+		BlindingAdd: BlindingAdd,
 	}
 }
 
@@ -1047,6 +1055,7 @@ func (c *CLI) createTxBuilder() *wallet.Builder {
 		DeriveDeterministicTxKey:    DeriveDeterministicTxKey,
 		GenerateKeyImage:            GenerateKeyImage,
 		DeriveSharedSecret:          DeriveStealthSecretSender,
+		DeriveSharedSecretIndexed:   DeriveStealthSecretSenderIndexed,
 		ScalarToPoint:               ScalarToPubKey,
 		PointAdd: func(p1, p2 [32]byte) ([32]byte, error) {
 			return CommitmentAdd(p1, p2)

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/bits"
 	"time"
+
+	"blocknet/protocol/params"
 )
 
 // AddU64 returns a + b and true if the result does not overflow uint64.
@@ -73,6 +75,9 @@ type TransferConfig struct {
 	// ECDH shared secret derivation (sender side): H(txPriv * viewPub)
 	DeriveSharedSecret func(txPriv, viewPub [32]byte) ([32]byte, error)
 
+	// Indexed shared secret derivation (sender side): H(txPriv * viewPub || outputIndex)
+	DeriveSharedSecretIndexed func(txPriv, viewPub [32]byte, outputIndex uint32) ([32]byte, error)
+
 	// Point operations for deriving one-time keys from an existing txPriv
 	ScalarToPoint func(scalar [32]byte) ([32]byte, error) // scalar * G
 	PointAdd      func(p1, p2 [32]byte) ([32]byte, error) // p1 + p2
@@ -89,19 +94,21 @@ type Builder struct {
 	config TransferConfig
 }
 
-// deriveDeterministicTxKey computes key images for the selected inputs and
-// derives a deterministic tx private key. Falls back to random derivation
-// if the deterministic callbacks are not configured.
-func (b *Builder) deriveDeterministicTxKey(inputs []*OwnedOutput, spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error) {
-	if b.config.DeriveDeterministicTxKey == nil || b.config.GenerateKeyImage == nil || b.config.DeriveStealthAddressWithKey == nil {
-		return b.config.DeriveStealthAddress(spendPub, viewPub)
+// deriveDeterministicR computes key images for the selected inputs and derives
+// a deterministic tx private key r and public key R = r * G. Falls back to
+// random r via DeriveStealthAddress if deterministic callbacks are not configured.
+func (b *Builder) deriveDeterministicR(inputs []*OwnedOutput) (txPriv, txPub [32]byte, err error) {
+	if b.config.DeriveDeterministicTxKey == nil || b.config.GenerateKeyImage == nil || b.config.ScalarToPoint == nil {
+		keys := b.wallet.Keys()
+		rPriv, rPub, _, fallbackErr := b.config.DeriveStealthAddress(keys.SpendPubKey, keys.ViewPubKey)
+		return rPriv, rPub, fallbackErr
 	}
 
 	keyImages := make([][32]byte, len(inputs))
 	for i, inp := range inputs {
 		ki, kiErr := b.config.GenerateKeyImage(inp.OneTimePrivKey)
 		if kiErr != nil {
-			return txPriv, txPub, oneTimePub, fmt.Errorf("key image for input %d: %w", i, kiErr)
+			return txPriv, txPub, fmt.Errorf("key image for input %d: %w", i, kiErr)
 		}
 		keyImages[i] = ki
 	}
@@ -109,14 +116,14 @@ func (b *Builder) deriveDeterministicTxKey(inputs []*OwnedOutput, spendPub, view
 	viewPriv := b.wallet.Keys().ViewPrivKey
 	txPriv, err = b.config.DeriveDeterministicTxKey(viewPriv, keyImages)
 	if err != nil {
-		return txPriv, txPub, oneTimePub, fmt.Errorf("deterministic tx key: %w", err)
+		return txPriv, txPub, fmt.Errorf("deterministic tx key: %w", err)
 	}
 
-	txPub, oneTimePub, err = b.config.DeriveStealthAddressWithKey(spendPub, viewPub, txPriv)
+	txPub, err = b.config.ScalarToPoint(txPriv)
 	if err != nil {
-		return txPriv, txPub, oneTimePub, fmt.Errorf("stealth address with key: %w", err)
+		return txPriv, txPub, fmt.Errorf("scalar to point for R: %w", err)
 	}
-	return txPriv, txPub, oneTimePub, nil
+	return txPriv, txPub, nil
 }
 
 // NewBuilder creates a transaction builder
@@ -195,14 +202,14 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 		fee = requiredFee
 	}
 
-	return b.buildTransaction(inputs, recipients, totalSend, fee, lease, 1)
+	return b.buildTransaction(inputs, recipients, totalSend, fee, lease, 1, currentHeight)
 }
 
 // TransferWithInputs builds a transaction using caller-specified inputs (coin control).
 // The inputs must already be reserved via ReserveSpecificInputs; the lease is released
 // on build failure. changeSplit controls how many outputs the change is distributed
 // across (1-4, clamped internally).
-func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipients []Recipient, feeRate uint64, changeSplit int) (res *TransferResult, retErr error) {
+func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipients []Recipient, feeRate uint64, changeSplit int, currentHeight uint64) (res *TransferResult, retErr error) {
 	defer func() {
 		if retErr != nil && lease != 0 {
 			b.wallet.ReleaseInputLease(lease)
@@ -236,14 +243,14 @@ func (b *Builder) TransferWithInputs(inputs []*OwnedOutput, lease uint64, recipi
 	estimatedSize := estimateTxSizeBytes(len(inputs), outputCount, b.config.RingSize)
 	fee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
 
-	return b.buildTransaction(inputs, recipients, totalSend, fee, lease, changeSplit)
+	return b.buildTransaction(inputs, recipients, totalSend, fee, lease, changeSplit, currentHeight)
 }
 
 // buildTransaction is the shared core that constructs outputs, ring signatures,
 // and serializes the transaction. Both Transfer and TransferWithInputs delegate here
 // after input selection and fee computation. changeSplit controls how many outputs
 // the change is distributed across (clamped to min(changeSplit, change) and >= 1).
-func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient, totalSend, fee, lease uint64, changeSplit int) (*TransferResult, error) {
+func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient, totalSend, fee, lease uint64, changeSplit int, currentHeight uint64) (*TransferResult, error) {
 	var totalInput uint64
 	for _, inp := range inputs {
 		var ok bool
@@ -265,35 +272,38 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 		changeSplit = 1
 	}
 
+	useIndexed := currentHeight >= params.IndexedDerivationHeight && b.config.DeriveSharedSecretIndexed != nil
+
 	outputs := make([]outputData, 0, len(recipients)+changeSplit)
 
-	txPrivKey, txPubKey, firstOneTimePub, err := b.deriveDeterministicTxKey(
-		inputs, recipients[0].SpendPubKey, recipients[0].ViewPubKey,
-	)
+	txPrivKey, txPubKey, err := b.deriveDeterministicR(inputs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive stealth address: %w", err)
+		return nil, fmt.Errorf("failed to derive tx key: %w", err)
 	}
 
 	var allBlindings [][32]byte
 
+	// deriveSecret picks the right derivation based on activation height.
+	deriveSecret := func(viewPub [32]byte, outputIndex int) ([32]byte, error) {
+		if useIndexed {
+			return b.config.DeriveSharedSecretIndexed(txPrivKey, viewPub, uint32(outputIndex))
+		}
+		return b.config.DeriveSharedSecret(txPrivKey, viewPub)
+	}
+
 	for i, r := range recipients {
-		sharedSecret, err := b.config.DeriveSharedSecret(txPrivKey, r.ViewPubKey)
+		sharedSecret, err := deriveSecret(r.ViewPubKey, i)
 		if err != nil {
 			return nil, fmt.Errorf("failed to derive shared secret for recipient %d: %w", i, err)
 		}
 
-		var oneTimePub [32]byte
-		if i == 0 {
-			oneTimePub = firstOneTimePub
-		} else {
-			sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
-			if err != nil {
-				return nil, fmt.Errorf("failed to derive shared point for recipient %d: %w", i, err)
-			}
-			oneTimePub, err = b.config.PointAdd(sharedPoint, r.SpendPubKey)
-			if err != nil {
-				return nil, fmt.Errorf("failed to derive one-time key for recipient %d: %w", i, err)
-			}
+		sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive shared point for recipient %d: %w", i, err)
+		}
+		oneTimePub, err := b.config.PointAdd(sharedPoint, r.SpendPubKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to derive one-time key for recipient %d: %w", i, err)
 		}
 
 		blinding := DeriveBlinding(sharedSecret, i)
@@ -337,7 +347,7 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 				amt += remainder
 			}
 
-			changeSecret, err := b.config.DeriveSharedSecret(txPrivKey, keys.ViewPubKey)
+			changeSecret, err := deriveSecret(keys.ViewPubKey, outputIndex)
 			if err != nil {
 				return nil, fmt.Errorf("failed to derive shared secret for change output %d: %w", c, err)
 			}
@@ -475,16 +485,30 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 
 	sendAmount := totalInput - fee
 
-	txPrivKey, txPubKey, oneTimePub, err := b.deriveDeterministicTxKey(
-		inputs, recipient.SpendPubKey, recipient.ViewPubKey,
-	)
+	txPrivKey, txPubKey, err := b.deriveDeterministicR(inputs)
 	if err != nil {
-		return nil, fmt.Errorf("failed to derive stealth address: %w", err)
+		return nil, fmt.Errorf("failed to derive tx key: %w", err)
 	}
 
-	sharedSecret, err := b.config.DeriveSharedSecret(txPrivKey, recipient.ViewPubKey)
+	useIndexed := currentHeight >= params.IndexedDerivationHeight && b.config.DeriveSharedSecretIndexed != nil
+
+	var sharedSecret [32]byte
+	if useIndexed {
+		sharedSecret, err = b.config.DeriveSharedSecretIndexed(txPrivKey, recipient.ViewPubKey, 0)
+	} else {
+		sharedSecret, err = b.config.DeriveSharedSecret(txPrivKey, recipient.ViewPubKey)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive shared secret: %w", err)
+	}
+
+	sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive shared point: %w", err)
+	}
+	oneTimePub, err := b.config.PointAdd(sharedPoint, recipient.SpendPubKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to derive one-time key: %w", err)
 	}
 
 	blinding := DeriveBlinding(sharedSecret, 0)

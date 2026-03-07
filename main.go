@@ -307,6 +307,9 @@ func createViewOnlyWallet(filename, spendPubHex, viewPrivHex string) error {
 			return CheckStealthOutput(spendPub, viewPriv, txPub, outputPub)
 		},
 		DeriveOutputSecret: DeriveStealthSecret,
+		DeriveOutputSecretIndexed: func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error) {
+			return DeriveStealthSecretIndexed(txPub, viewPriv, outputIndex)
+		},
 	}
 
 	// Create view-only wallet
