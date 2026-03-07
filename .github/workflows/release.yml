@@ -17,7 +17,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
       
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
@@ -43,7 +43,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
       
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
@@ -104,7 +104,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
 
       - name: Install Rust Android target
         run: rustup target add aarch64-linux-android
@@ -131,13 +131,13 @@ jobs:
         run: |
           CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
           CC="${NDK_TOOLCHAIN}/aarch64-linux-android21-clang" \
-            go build -buildmode=c-shared -ldflags="-s -w" -o libblocknet.so .
+            go build -buildmode=c-shared -ldflags="-s -w -checklinkname=0" -o libblocknet.so .
 
       - name: Build standalone binary
         run: |
           CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
           CC="${NDK_TOOLCHAIN}/aarch64-linux-android21-clang" \
-            go build -ldflags="-s -w" -o blocknet-android-arm64 .
+            go build -ldflags="-s -w -checklinkname=0" -o blocknet-android-arm64 .
 
       - name: Package
         run: |
