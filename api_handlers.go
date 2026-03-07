@@ -1469,6 +1469,10 @@ func (s *APIServer) handleMiningStatus(w http.ResponseWriter, r *http.Request) {
 // handleMiningStart starts the miner.
 // POST /api/mining/start
 func (s *APIServer) handleMiningStart(w http.ResponseWriter, r *http.Request) {
+	if !MiningSupported {
+		writeError(w, http.StatusForbidden, "mining not supported on this platform")
+		return
+	}
 	if s.daemon.IsMining() {
 		writeError(w, http.StatusConflict, "mining already running")
 		return

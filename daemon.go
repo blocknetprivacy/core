@@ -206,6 +206,9 @@ type DaemonConfig struct {
 	// Mining
 	EnableMining bool
 
+	// Mobile enables mobile-optimized P2P transport settings
+	Mobile bool
+
 	// Data directory
 	DataDir string
 
@@ -380,6 +383,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		nodeCfg.MaxOutbound = cfg.P2PMaxOutbound
 	}
 	nodeCfg.SeedMode = cfg.SeedMode
+	nodeCfg.Mobile = cfg.Mobile
 
 	node, err := p2p.NewNode(nodeCfg)
 	if err != nil {

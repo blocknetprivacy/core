@@ -51,6 +51,10 @@ type NodeConfig struct {
 
 	// SeedMode allows startup even when other seeds are unreachable
 	SeedMode bool
+
+	// Mobile enables transport optimizations for mobile devices:
+	// disables UPnP/NAT-PMP, enables relay client, lowers connection limits.
+	Mobile bool
 }
 
 // DefaultNodeConfig returns sensible defaults
@@ -195,20 +199,29 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		return node.IsBanned(pid)
 	})
 
-	// Create libp2p host with banned-peer admission gating enabled.
-	h, err := libp2p.New(
+	// Build libp2p options, adjusting for mobile vs desktop.
+	opts := []libp2p.Option{
 		libp2p.Identity(privKey),
 		libp2p.ListenAddrs(listenAddrs...),
 		libp2p.ConnectionManager(connMgr),
 		libp2p.ConnectionGater(banGater),
 		libp2p.UserAgent(cfg.UserAgent),
-		// Enable NAT port mapping
-		libp2p.NATPortMap(),
-		// Enable hole punching for NAT traversal
 		libp2p.EnableHolePunching(),
-		// Disable relay (we don't want to route others' traffic)
-		libp2p.DisableRelay(),
-	)
+	}
+	if cfg.Mobile {
+		// Mobile: skip UPnP (useless on carrier NAT), enable relay
+		// client so the node is reachable through relay peers.
+		opts = append(opts, libp2p.EnableRelay())
+	} else {
+		// Desktop: use UPnP/NAT-PMP for direct reachability,
+		// don't relay others' traffic.
+		opts = append(opts,
+			libp2p.NATPortMap(),
+			libp2p.DisableRelay(),
+		)
+	}
+
+	h, err := libp2p.New(opts...)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create libp2p host: %w", err)

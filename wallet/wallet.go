@@ -30,8 +30,22 @@ func wipeBytes(b []byte) {
 	}
 }
 
+var overrideConfigDir string
+
+// SetConfigDir overrides os.UserConfigDir() for wallet backup paths.
+// Call before any wallet operations. Intended for Android where the host
+// app provides its own files directory.
+func SetConfigDir(dir string) { overrideConfigDir = dir }
+
+func resolveConfigDir() (string, error) {
+	if overrideConfigDir != "" {
+		return overrideConfigDir, nil
+	}
+	return os.UserConfigDir()
+}
+
 func walletBackupDir() (string, error) {
-	configDir, err := os.UserConfigDir()
+	configDir, err := resolveConfigDir()
 	if err != nil {
 		return "", err
 	}

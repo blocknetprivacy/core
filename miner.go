@@ -239,6 +239,9 @@ func (m *Miner) MineBlock(ctx context.Context, mempool []*Transaction) (*Block, 
 
 // Start begins mining in a background goroutine
 func (m *Miner) Start(ctx context.Context, blockChan chan<- *Block) {
+	if !MiningSupported {
+		return
+	}
 	if m.running.Swap(true) {
 		return // Already running
 	}

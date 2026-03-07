@@ -97,8 +97,61 @@ jobs:
           name: blocknet-amd64-windows-${{ env.VERSION }}
           path: blocknet-amd64-windows-${{ env.VERSION }}.zip
 
+  build-android-arm64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Install Rust Android target
+        run: rustup target add aarch64-linux-android
+
+      - name: Set NDK toolchain path
+        run: |
+          NDK=$ANDROID_NDK_LATEST_HOME
+          echo "NDK_TOOLCHAIN=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
+          echo "ANDROID_NDK_HOME=$NDK" >> $GITHUB_ENV
+
+      - name: Build Rust library for Android
+        run: |
+          CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="${NDK_TOOLCHAIN}/aarch64-linux-android21-clang" \
+          CC_aarch64_linux_android="${NDK_TOOLCHAIN}/aarch64-linux-android21-clang" \
+          AR_aarch64_linux_android="${NDK_TOOLCHAIN}/llvm-ar" \
+            cargo build --manifest-path crypto-rs/Cargo.toml --target aarch64-linux-android --release
+
+      - name: Stage library for CGO
+        run: |
+          mkdir -p crypto-rs/target/release
+          cp crypto-rs/target/aarch64-linux-android/release/libblocknet_crypto.a crypto-rs/target/release/libblocknet_crypto.a
+
+      - name: Build shared library (.so)
+        run: |
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+          CC="${NDK_TOOLCHAIN}/aarch64-linux-android21-clang" \
+            go build -buildmode=c-shared -ldflags="-s -w" -o libblocknet.so .
+
+      - name: Build standalone binary
+        run: |
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 \
+          CC="${NDK_TOOLCHAIN}/aarch64-linux-android21-clang" \
+            go build -ldflags="-s -w" -o blocknet-android-arm64 .
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp libblocknet.so libblocknet.h blocknet-android-arm64 dist/
+          cd dist && zip -q ../blocknet-arm64-android-${{ env.VERSION }}.zip libblocknet.so libblocknet.h blocknet-android-arm64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blocknet-arm64-android-${{ env.VERSION }}
+          path: blocknet-arm64-android-${{ env.VERSION }}.zip
+
   create-checksums:
-    needs: [build-linux-amd64, build-macos-arm64, build-windows-amd64]
+    needs: [build-linux-amd64, build-macos-arm64, build-windows-amd64, build-android-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

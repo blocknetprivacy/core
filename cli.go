@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"blocknet/p2p"
 	"blocknet/protocol/params"
 	"blocknet/wallet"
 
@@ -54,6 +55,7 @@ type CLI struct {
 type CLIConfig struct {
 	WalletFile      string
 	DataDir         string
+	ConfigDir       string // Override os.UserConfigDir(); set by Android host
 	ListenAddrs     []string
 	SeedNodes       []string
 	P2PWhitelistPeers []string
@@ -130,6 +132,11 @@ func defaultScannerConfig() wallet.ScannerConfig {
 
 // NewCLI creates and initializes the CLI
 func NewCLI(cfg CLIConfig) (*CLI, error) {
+	if cfg.ConfigDir != "" {
+		wallet.SetConfigDir(cfg.ConfigDir)
+		p2p.SetConfigDir(cfg.ConfigDir)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	cli := &CLI{
@@ -153,6 +160,7 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		P2PMaxInbound:   cfg.P2PMaxInbound,
 		P2PMaxOutbound:  cfg.P2PMaxOutbound,
 		SeedMode:        cfg.SeedMode,
+		Mobile:          IsMobile,
 		ExplorerAddr:    cfg.ExplorerAddr,
 		SaveCheckpoints: cfg.SaveCheckpoints,
 		FullSync:        cfg.FullSync,
@@ -359,6 +367,12 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 	return cli, nil
 }
 
+// Shutdown triggers a graceful shutdown from external callers (e.g. Android host).
+func (c *CLI) Shutdown() error {
+	c.cancel()
+	return c.shutdown()
+}
+
 // Run starts the CLI
 func (c *CLI) Run() error {
 	// Handle Ctrl+C gracefully
@@ -367,6 +381,7 @@ func (c *CLI) Run() error {
 
 	go func() {
 		<-sigChan
+		c.cancel()
 		if err := c.shutdown(); err != nil {
 			fmt.Printf("  Warning: %v\n", err)
 		}

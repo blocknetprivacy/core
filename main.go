@@ -21,6 +21,15 @@ import (
 
 const Version = "0.7.0"
 
+var mainConfigDir string
+
+func configDir() (string, error) {
+	if mainConfigDir != "" {
+		return mainConfigDir, nil
+	}
+	return os.UserConfigDir()
+}
+
 type peerIDListFlag []string
 
 func (f *peerIDListFlag) String() string {
@@ -176,7 +185,7 @@ func main() {
 	// Seed mode: ensure P2P identity is persistent (and stable across restarts).
 	// Store in XDG config with network separation so mainnet/testnet don't clobber.
 	if *seedMode && strings.TrimSpace(os.Getenv("BLOCKNET_P2P_KEY")) == "" {
-		configDir, err := os.UserConfigDir()
+		configDir, err := configDir()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to get config dir for seed identity: %v\n", err)
 		} else {
@@ -216,7 +225,7 @@ func main() {
 	whitelistPeers := []string(p2pWhitelistPeers)
 	whitelistPath := *p2pWhitelistFile
 	if whitelistPath == "" {
-		if configDir, err := os.UserConfigDir(); err == nil {
+		if configDir, err := configDir(); err == nil {
 			network := "mainnet"
 			if *testnet {
 				network = "testnet"

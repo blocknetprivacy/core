@@ -187,6 +187,10 @@ func (c *CLI) cmdMining(args []string) error {
 	switch args[0] {
 	case "start":
 		fmt.Printf("\n%s\n", c.sectionHead("Mining"))
+		if !MiningSupported {
+			fmt.Println("  Mining is not supported on this platform")
+			return nil
+		}
 		if c.daemon.IsMining() {
 			fmt.Println("  Already running")
 			return nil

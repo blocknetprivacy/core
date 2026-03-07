@@ -118,9 +118,23 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 	}, nil
 }
 
+var overrideConfigDir string
+
+// SetConfigDir overrides os.UserConfigDir() for identity key paths.
+// Call before creating an IdentityManager. Intended for Android where
+// the host app provides its own files directory.
+func SetConfigDir(dir string) { overrideConfigDir = dir }
+
+func resolveConfigDir() (string, error) {
+	if overrideConfigDir != "" {
+		return overrideConfigDir, nil
+	}
+	return os.UserConfigDir()
+}
+
 // defaultIdentityPath returns the XDG config path for the identity key
 func defaultIdentityPath() (string, error) {
-	configDir, err := os.UserConfigDir()
+	configDir, err := resolveConfigDir()
 	if err != nil {
 		return "", err
 	}
