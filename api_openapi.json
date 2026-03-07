@@ -864,6 +864,85 @@
         }
       }
     },
+    "/api/wallet/outputs": {
+      "get": {
+        "operationId": "getOutputs",
+        "tags": ["Wallet"],
+        "summary": "All wallet outputs with full detail",
+        "description": "Returns every output owned by the wallet with computed status (spent/unspent/pending), confirmations, type, cryptographic keys, and summary counts. Sorted ascending by block height, then txid, then output index. Requires unlocked wallet.",
+        "responses": {
+          "200": {
+            "description": "Comprehensive output listing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "chain_height": { "type": "integer", "description": "Chain height used for confirmations/maturity" },
+                    "synced_height": { "type": "integer", "description": "Last block height scanned by the wallet" },
+                    "total": { "type": "integer", "description": "Total output count" },
+                    "spent": { "type": "integer", "description": "Number of spent outputs" },
+                    "unspent": { "type": "integer", "description": "Number of mature unspent outputs" },
+                    "pending": { "type": "integer", "description": "Number of immature (not yet spendable) outputs" },
+                    "outputs": {
+                      "type": "array",
+                      "items": { "$ref": "#/components/schemas/OutputDetail" }
+                    }
+                  }
+                },
+                "example": {
+                  "chain_height": 14207,
+                  "synced_height": 14207,
+                  "total": 3,
+                  "spent": 1,
+                  "unspent": 1,
+                  "pending": 1,
+                  "outputs": [
+                    {
+                      "txid": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d",
+                      "output_index": 1,
+                      "amount": 750000000,
+                      "status": "spent",
+                      "type": "regular",
+                      "confirmations": 217,
+                      "block_height": 13990,
+                      "spent_height": 14050,
+                      "one_time_pub": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                      "commitment": "c7f2e1d3a4b596870123456789abcdef0123456789abcdef0123456789abcdef"
+                    },
+                    {
+                      "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                      "output_index": 0,
+                      "amount": 500000000,
+                      "status": "unspent",
+                      "type": "regular",
+                      "confirmations": 107,
+                      "block_height": 14100,
+                      "one_time_pub": "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+                      "commitment": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6"
+                    },
+                    {
+                      "txid": "c7f2e1d3a4b596870123456789abcdef0123456789abcdef0123456789abcdef",
+                      "output_index": 0,
+                      "amount": 72325093035,
+                      "status": "pending",
+                      "type": "coinbase",
+                      "confirmations": 7,
+                      "block_height": 14200,
+                      "one_time_pub": "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9",
+                      "commitment": "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/WalletLocked" },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
     "/api/wallet/send": {
       "post": {
         "operationId": "sendFunds",
@@ -2010,6 +2089,38 @@
           "block_height": 14200,
           "is_coinbase": true,
           "spent": false
+        }
+      },
+      "OutputDetail": {
+        "type": "object",
+        "properties": {
+          "txid": { "type": "string", "description": "Transaction hash (hex)" },
+          "output_index": { "type": "integer", "description": "Output position within the transaction" },
+          "amount": { "type": "integer", "description": "Amount in atomic units" },
+          "status": { "type": "string", "enum": ["spent", "unspent", "pending"], "description": "Computed status: spent (already used), unspent (mature, spendable), pending (immature, awaiting confirmations)" },
+          "type": { "type": "string", "enum": ["coinbase", "regular"], "description": "Output type: coinbase (mining reward) or regular (transfer)" },
+          "confirmations": { "type": "integer", "description": "Number of confirmations (chain_height - block_height)" },
+          "block_height": { "type": "integer", "description": "Block height where this output was confirmed" },
+          "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent)" },
+          "one_time_pub": { "type": "string", "description": "One-time public key (64 hex chars)" },
+          "commitment": { "type": "string", "description": "Pedersen commitment (64 hex chars)" },
+          "memo_hex": {
+            "type": "string",
+            "pattern": "^(?:[A-Fa-f0-9]{2})*$",
+            "maxLength": 248,
+            "description": "Hex-encoded decrypted memo payload (present only when the output carried a non-empty memo). Max 248 hex chars (124 bytes)."
+          }
+        },
+        "example": {
+          "txid": "c7f2e1d3a4b596870123456789abcdef0123456789abcdef0123456789abcdef",
+          "output_index": 0,
+          "amount": 72325093035,
+          "status": "pending",
+          "type": "coinbase",
+          "confirmations": 7,
+          "block_height": 14200,
+          "one_time_pub": "b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9",
+          "commitment": "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7"
         }
       },
       "SignResponse": {

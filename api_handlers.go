@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -336,6 +337,99 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"count":   len(entries),
 		"outputs": entries,
+	})
+}
+
+// handleOutputs returns a comprehensive view of all wallet outputs.
+// GET /api/wallet/outputs
+func (s *APIServer) handleOutputs(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	outputs := s.wallet.AllOutputs()
+	chainHeight := s.daemon.Chain().Height()
+	syncedHeight := s.wallet.SyncedHeight()
+
+	sort.Slice(outputs, func(i, j int) bool {
+		if outputs[i].BlockHeight == outputs[j].BlockHeight {
+			if outputs[i].TxID == outputs[j].TxID {
+				return outputs[i].OutputIndex < outputs[j].OutputIndex
+			}
+			return strings.Compare(fmt.Sprintf("%x", outputs[i].TxID), fmt.Sprintf("%x", outputs[j].TxID)) < 0
+		}
+		return outputs[i].BlockHeight < outputs[j].BlockHeight
+	})
+
+	type outputEntry struct {
+		TxID          string `json:"txid"`
+		OutputIndex   int    `json:"output_index"`
+		Amount        uint64 `json:"amount"`
+		Status        string `json:"status"`
+		Type          string `json:"type"`
+		Confirmations uint64 `json:"confirmations"`
+		BlockHeight   uint64 `json:"block_height"`
+		SpentHeight   uint64 `json:"spent_height,omitempty"`
+		OneTimePub    string `json:"one_time_pub"`
+		Commitment    string `json:"commitment"`
+		MemoHex       string `json:"memo_hex,omitempty"`
+	}
+
+	var spentCount, unspentCount, pendingCount int
+
+	entries := make([]outputEntry, len(outputs))
+	for i, out := range outputs {
+		status := "unspent"
+		if out.Spent {
+			status = "spent"
+		} else if !wallet.IsOutputMature(out, chainHeight) {
+			status = "pending"
+		}
+
+		switch status {
+		case "spent":
+			spentCount++
+		case "unspent":
+			unspentCount++
+		case "pending":
+			pendingCount++
+		}
+
+		conf := uint64(0)
+		if chainHeight >= out.BlockHeight {
+			conf = chainHeight - out.BlockHeight
+		}
+
+		outType := "regular"
+		if out.IsCoinbase {
+			outType = "coinbase"
+		}
+
+		entries[i] = outputEntry{
+			TxID:          fmt.Sprintf("%x", out.TxID),
+			OutputIndex:   out.OutputIndex,
+			Amount:        out.Amount,
+			Status:        status,
+			Type:          outType,
+			Confirmations: conf,
+			BlockHeight:   out.BlockHeight,
+			SpentHeight:   out.SpentHeight,
+			OneTimePub:    fmt.Sprintf("%x", out.OneTimePubKey),
+			Commitment:    fmt.Sprintf("%x", out.Commitment),
+		}
+		if len(out.Memo) > 0 {
+			entries[i].MemoHex = hex.EncodeToString(out.Memo)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"chain_height":  chainHeight,
+		"synced_height": syncedHeight,
+		"total":         len(entries),
+		"spent":         spentCount,
+		"unspent":       unspentCount,
+		"pending":       pendingCount,
+		"outputs":       entries,
 	})
 }
 

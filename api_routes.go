@@ -24,6 +24,7 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/wallet/balance", s.handleBalance)
 	mux.HandleFunc("GET /api/wallet/address", s.handleAddress)
 	mux.HandleFunc("GET /api/wallet/history", s.handleHistory)
+	mux.HandleFunc("GET /api/wallet/outputs", s.handleOutputs)
 	mux.HandleFunc("POST /api/wallet/send", s.handleSend)
 	mux.HandleFunc("POST /api/wallet/sign", s.handleSign)
 	mux.HandleFunc("POST /api/wallet/lock", s.handleLock)
