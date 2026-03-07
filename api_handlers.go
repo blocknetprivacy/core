@@ -1425,15 +1425,53 @@ func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleWalletSync triggers a blockchain sync check.
+// handleWalletSync rescans blocks from the wallet's synced height to the chain
+// tip, scanning for owned outputs and spent key images.
 // POST /api/wallet/sync
 func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWallet(w, r) {
 		return
 	}
 
-	s.daemon.TriggerSync()
-	writeJSON(w, http.StatusOK, map[string]any{"status": "sync triggered"})
+	chainHeight := s.daemon.Chain().Height()
+	walletHeight := s.wallet.SyncedHeight()
+
+	if walletHeight >= chainHeight {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":        "already synced",
+			"synced_height": walletHeight,
+			"chain_height":  chainHeight,
+		})
+		return
+	}
+
+	blocks := s.daemon.Chain().GetBlocksByHeightRange(walletHeight+1, chainHeight)
+
+	totalFound, totalSpent := 0, 0
+	scannedTo := walletHeight
+	for _, block := range blocks {
+		if block == nil {
+			break
+		}
+		blockData := blockToScanData(block)
+		found, spent := s.scanner.ScanBlock(blockData)
+		totalFound += found
+		totalSpent += spent
+		scannedTo = block.Header.Height
+	}
+
+	if scannedTo > walletHeight {
+		s.wallet.SetSyncedHeight(scannedTo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "synced",
+		"synced_height": scannedTo,
+		"chain_height":  chainHeight,
+		"blocks_scanned": scannedTo - walletHeight,
+		"outputs_found": totalFound,
+		"outputs_spent": totalSpent,
+	})
 }
 
 // ============================================================================
