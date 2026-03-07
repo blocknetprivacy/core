@@ -1513,12 +1513,19 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 
 func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 	isSpent := c.isKeyImageSpentLocked
+	isCanonicalRingMember := c.isCanonicalRingMemberLocked
 	if block != nil && block.Header.Height > 0 {
 		branchAwareSpent, err := c.branchAwareSpentCheckerLocked(block.Header.PrevHash)
 		if err != nil {
 			return err
 		}
 		isSpent = branchAwareSpent
+
+		branchAwareRingMember, err := c.branchAwareRingMemberCheckerLocked(block.Header.PrevHash)
+		if err != nil {
+			return err
+		}
+		isCanonicalRingMember = branchAwareRingMember
 	}
 
 	// If checkpoints are enabled for fast sync, enforce checkpoint pinning.
@@ -1546,7 +1553,7 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		c.height,
 		c.getBlockByHashLocked,
 		isSpent,
-		c.isCanonicalRingMemberLocked,
+		isCanonicalRingMember,
 		skipPoW,
 	)
 }
@@ -1556,7 +1563,9 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 // ancestors are currently off-main-chain.
 func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChecker, error) {
 	branchSpent := make(map[[32]byte]struct{})
+	ignoreMainSpent := make(map[[32]byte]struct{})
 	currentHash := parentHash
+	var forkHeight uint64
 
 	for {
 		parent := c.getBlockByHashLocked(currentHash)
@@ -1566,6 +1575,7 @@ func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChec
 
 		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
 		if onMainHeight && mainHashAtHeight == currentHash {
+			forkHeight = parent.Header.Height
 			break
 		}
 
@@ -1584,11 +1594,105 @@ func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChec
 		currentHash = parent.Header.PrevHash
 	}
 
+	// If this block does not extend the current tip, it belongs to a competing
+	// branch. Key images spent only on the current main-chain segment above the
+	// fork point must be ignored so branch validation can succeed pre-reorg.
+	if parentHash != c.bestHash {
+		for h := c.height; h > forkHeight; h-- {
+			mainHash, ok := c.byHeight[h]
+			if !ok {
+				return nil, fmt.Errorf("incomplete chain: missing main-chain hash at height %d", h)
+			}
+
+			mainBlock := c.getBlockByHashLocked(mainHash)
+			if mainBlock == nil {
+				return nil, fmt.Errorf("incomplete chain: missing main-chain block at height %d", h)
+			}
+
+			for _, tx := range mainBlock.Transactions {
+				if tx.IsCoinbase() {
+					continue
+				}
+				for _, input := range tx.Inputs {
+					ignoreMainSpent[input.KeyImage] = struct{}{}
+				}
+			}
+		}
+	}
+
 	return func(keyImage [32]byte) bool {
 		if _, exists := branchSpent[keyImage]; exists {
 			return true
 		}
+		if _, ignored := ignoreMainSpent[keyImage]; ignored {
+			return false
+		}
 		return c.isKeyImageSpentLocked(keyImage)
+	}, nil
+}
+
+// branchAwareRingMemberCheckerLocked returns a ring-member checker that accepts
+// outputs on the candidate branch and excludes outputs that only exist on the
+// current main-chain segment above the fork point.
+func (c *Chain) branchAwareRingMemberCheckerLocked(parentHash [32]byte) (RingMemberChecker, error) {
+	branchOutputs := make(map[[64]byte]struct{})
+	ignoreMainOutputs := make(map[[64]byte]struct{})
+	currentHash := parentHash
+	var forkHeight uint64
+
+	for {
+		parent := c.getBlockByHashLocked(currentHash)
+		if parent == nil {
+			return nil, ErrOrphanBlock
+		}
+
+		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
+		if onMainHeight && mainHashAtHeight == currentHash {
+			forkHeight = parent.Header.Height
+			break
+		}
+
+		for _, tx := range parent.Transactions {
+			for _, out := range tx.Outputs {
+				branchOutputs[canonicalRingIndexKey(out.PublicKey, out.Commitment)] = struct{}{}
+			}
+		}
+
+		if parent.Header.Height == 0 {
+			break
+		}
+		currentHash = parent.Header.PrevHash
+	}
+
+	if parentHash != c.bestHash {
+		for h := c.height; h > forkHeight; h-- {
+			mainHash, ok := c.byHeight[h]
+			if !ok {
+				return nil, fmt.Errorf("incomplete chain: missing main-chain hash at height %d", h)
+			}
+
+			mainBlock := c.getBlockByHashLocked(mainHash)
+			if mainBlock == nil {
+				return nil, fmt.Errorf("incomplete chain: missing main-chain block at height %d", h)
+			}
+
+			for _, tx := range mainBlock.Transactions {
+				for _, out := range tx.Outputs {
+					ignoreMainOutputs[canonicalRingIndexKey(out.PublicKey, out.Commitment)] = struct{}{}
+				}
+			}
+		}
+	}
+
+	return func(pubKey, commitment [32]byte) bool {
+		key := canonicalRingIndexKey(pubKey, commitment)
+		if _, exists := branchOutputs[key]; exists {
+			return true
+		}
+		if _, ignored := ignoreMainOutputs[key]; ignored {
+			return false
+		}
+		return c.isCanonicalRingMemberLocked(pubKey, commitment)
 	}, nil
 }
 
