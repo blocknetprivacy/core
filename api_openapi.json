@@ -617,6 +617,32 @@
         }
       }
     },
+    "/api/wallet/unload": {
+      "post": {
+        "operationId": "unloadWallet",
+        "tags": ["Wallet"],
+        "summary": "Unload wallet",
+        "description": "Locks and unloads the currently loaded wallet, releasing all in-memory key material. After this call the node returns to the same state as before load was called — all /api/wallet/* endpoints return 503 until a wallet is loaded again. Mining reward keys are cleared. No request body required.",
+        "responses": {
+          "200": {
+            "description": "Wallet unloaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "unloaded": { "type": "boolean" }
+                  }
+                },
+                "example": { "unloaded": true }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
     "/api/wallet/import": {
       "post": {
         "operationId": "importWallet",

@@ -1060,6 +1060,37 @@ func (c *capturingResponseWriter) Write(p []byte) (int, error) {
 	return c.w.Write(p)
 }
 
+// handleUnloadWallet locks and unloads the currently loaded wallet.
+// POST /api/wallet/unload
+func (s *APIServer) handleUnloadWallet(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.wallet == nil {
+		s.mu.Unlock()
+		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+		return
+	}
+	s.wallet = nil
+	s.scanner = nil
+	s.locked = true
+	s.passwordHash = [32]byte{}
+	s.passwordHashSet = false
+	s.walletLoading = false
+	s.mu.Unlock()
+
+	// Clear mining reward keys
+	s.daemon.Miner().SetRewardKeys([32]byte{}, [32]byte{})
+
+	// Clear CLI wallet references
+	s.cli.mu.Lock()
+	s.cli.wallet = nil
+	s.cli.scanner = nil
+	s.cli.passwordHash = [32]byte{}
+	s.cli.passwordHashSet = false
+	s.cli.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{"unloaded": true})
+}
+
 // handleLock locks the wallet.
 // POST /api/wallet/lock
 func (s *APIServer) handleLock(w http.ResponseWriter, r *http.Request) {
