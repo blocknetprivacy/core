@@ -774,7 +774,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, spent := range result.SpentOutputs {
-		s.wallet.MarkSpent(spent.OneTimePubKey, height)
+		s.wallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
 	}
 
 	s.wallet.RecordSend(&wallet.SendRecord{
@@ -1006,7 +1006,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, spent := range result.SpentOutputs {
-		s.wallet.MarkSpent(spent.OneTimePubKey, height)
+		s.wallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
 	}
 
 	s.wallet.RecordSend(&wallet.SendRecord{

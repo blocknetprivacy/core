@@ -947,6 +947,7 @@ func (d *Daemon) updateMempoolForAcceptedMainChain(block *Block, previousBest [3
 	// Fast path: direct extension with a single new main-chain block.
 	if block.Header.PrevHash == previousBest {
 		d.mempool.OnBlockConnected(block)
+		d.mempool.RemoveExpired()
 		return
 	}
 
@@ -956,6 +957,7 @@ func (d *Daemon) updateMempoolForAcceptedMainChain(block *Block, previousBest [3
 		// Fallback to the accepted block if chain traversal failed unexpectedly.
 		log.Printf("[reorg] mempool fallback: could not walk reorg diff (prevBest=%x newBest=%x), only connecting tip block", previousBest[:8], newBest[:8])
 		d.mempool.OnBlockConnected(block)
+		d.mempool.RemoveExpired()
 		return
 	}
 
@@ -968,6 +970,8 @@ func (d *Daemon) updateMempoolForAcceptedMainChain(block *Block, previousBest [3
 	for _, b := range connected {
 		d.mempool.OnBlockConnected(b)
 	}
+
+	d.mempool.RemoveExpired()
 }
 
 func (d *Daemon) collectReorgDiffBlocks(oldTip, newTip [32]byte) (disconnected []*Block, connected []*Block) {

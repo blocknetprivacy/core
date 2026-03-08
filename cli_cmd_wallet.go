@@ -197,9 +197,8 @@ func (c *CLI) cmdSend(args []string) error {
 		return fmt.Errorf("failed to submit transaction: %w", err)
 	}
 
-	// Mark outputs as spent
 	for _, spent := range result.SpentOutputs {
-		c.wallet.MarkSpent(spent.OneTimePubKey, c.daemon.Chain().Height())
+		c.wallet.MarkSpentByTx(spent.OneTimePubKey, result.TxID)
 	}
 
 	// Record send for history tracking

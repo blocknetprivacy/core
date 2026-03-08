@@ -1094,7 +1094,12 @@ func (c *CLI) autoScanBlocks() {
 
 			blockData := blockToScanData(block)
 			found, spent := scanner.ScanBlock(blockData)
-			if found > 0 || spent > 0 {
+
+			restored := w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
+				return c.daemon.Mempool().HasTransaction(txID)
+			})
+
+			if found > 0 || spent > 0 || restored > 0 {
 				if err := w.Save(); err != nil {
 					fmt.Printf("  Warning: failed to persist wallet scan updates: %v\n", err)
 				}

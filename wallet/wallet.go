@@ -268,7 +268,8 @@ type OwnedOutput struct {
 	IsCoinbase     bool     `json:"is_coinbase"` // True if from mining reward
 	Spent          bool     `json:"spent"`
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
-	Memo           []byte   `json:"memo,omitempty"` // Decrypted memo payload
+	SpentTxID      [32]byte `json:"spent_txid,omitempty"` // Non-zero while spend is unconfirmed; cleared on block confirmation.
+	Memo           []byte   `json:"memo,omitempty"`       // Decrypted memo payload
 }
 
 // SendRecipient stores per-recipient details in a send record.
@@ -879,16 +880,46 @@ func (w *Wallet) PendingUnconfirmedBalance() uint64 {
 	return total
 }
 
-// MarkSpent marks an output as spent by its one-time pubkey
+// MarkSpent marks an output as spent by the block scanner (confirmed spend).
+// If the output was already marked as an unconfirmed spend (via MarkSpentByTx),
+// this promotes it to confirmed and sets the real block height.
 func (w *Wallet) MarkSpent(oneTimePubKey [32]byte, height uint64) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, out := range w.data.Outputs {
+		if out.OneTimePubKey != oneTimePubKey {
+			continue
+		}
+		if out.Spent && out.SpentTxID != ([32]byte{}) {
+			out.SpentHeight = height
+			out.SpentTxID = [32]byte{}
+			return true
+		}
+		if !out.Spent {
+			out.Spent = true
+			out.SpentHeight = height
+			if w.inputReservations != nil {
+				delete(w.inputReservations, reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex})
+			}
+			return true
+		}
+		return false
+	}
+	return false
+}
+
+// MarkSpentByTx marks an output as spent by an unconfirmed transaction.
+// The spend is reversible via ReconcileUnconfirmedSpends if the tx disappears.
+func (w *Wallet) MarkSpentByTx(oneTimePubKey [32]byte, txID [32]byte) bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	for _, out := range w.data.Outputs {
 		if out.OneTimePubKey == oneTimePubKey && !out.Spent {
 			out.Spent = true
-			out.SpentHeight = height
-			// Clear any pending reservation for this outpoint.
+			out.SpentHeight = 0
+			out.SpentTxID = txID
 			if w.inputReservations != nil {
 				delete(w.inputReservations, reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex})
 			}
@@ -896,6 +927,53 @@ func (w *Wallet) MarkSpent(oneTimePubKey [32]byte, height uint64) bool {
 		}
 	}
 	return false
+}
+
+// ReconcileUnconfirmedSpends restores outputs whose unconfirmed spending tx
+// is no longer alive (not in mempool, not confirmed on chain). Returns the
+// number of outputs restored.
+func (w *Wallet) ReconcileUnconfirmedSpends(isTxAlive func([32]byte) bool) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	restored := 0
+	var deadTxIDs [][32]byte
+
+	for _, out := range w.data.Outputs {
+		if !out.Spent || out.SpentTxID == ([32]byte{}) {
+			continue
+		}
+		if !isTxAlive(out.SpentTxID) {
+			deadTxIDs = append(deadTxIDs, out.SpentTxID)
+			out.Spent = false
+			out.SpentHeight = 0
+			out.SpentTxID = [32]byte{}
+			restored++
+		}
+	}
+
+	if len(deadTxIDs) > 0 && len(w.data.PendingCredits) > 0 {
+		dead := make(map[[32]byte]struct{}, len(deadTxIDs))
+		for _, id := range deadTxIDs {
+			dead[id] = struct{}{}
+		}
+		kept := w.data.PendingCredits[:0]
+		for _, pc := range w.data.PendingCredits {
+			if pc == nil {
+				continue
+			}
+			if _, ok := dead[pc.TxID]; !ok {
+				kept = append(kept, pc)
+			}
+		}
+		if len(kept) == 0 {
+			w.data.PendingCredits = nil
+		} else {
+			w.data.PendingCredits = kept
+		}
+	}
+
+	return restored
 }
 
 // ReserveMatureInputs selects spendable mature outputs and reserves them under a lease.
