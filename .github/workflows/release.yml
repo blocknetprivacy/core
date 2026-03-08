@@ -36,6 +36,32 @@ jobs:
           name: blocknet-core-amd64-linux-${{ env.VERSION }}
           path: blocknet-core-amd64-linux-${{ env.VERSION }}.zip
 
+  build-linux-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Build Rust library
+        run: cd crypto-rs && cargo build --release
+      
+      - name: Build Go binary
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-arm64-linux .
+      
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp blocknet-core-arm64-linux dist/
+          cd dist && zip -q ../blocknet-core-arm64-linux-${{ env.VERSION }}.zip blocknet-core-arm64-linux
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blocknet-core-arm64-linux-${{ env.VERSION }}
+          path: blocknet-core-arm64-linux-${{ env.VERSION }}.zip
+
   build-macos-arm64:
     runs-on: macos-14
     steps:
@@ -61,6 +87,32 @@ jobs:
         with:
           name: blocknet-core-arm64-macos-${{ env.VERSION }}
           path: blocknet-core-arm64-macos-${{ env.VERSION }}.zip
+
+  build-macos-amd64:
+    runs-on: macos-13
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      
+      - name: Build Rust library
+        run: cd crypto-rs && cargo build --release
+      
+      - name: Build Go binary
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-macos .
+      
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp blocknet-core-amd64-macos dist/
+          cd dist && zip -q ../blocknet-core-amd64-macos-${{ env.VERSION }}.zip blocknet-core-amd64-macos
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blocknet-core-amd64-macos-${{ env.VERSION }}
+          path: blocknet-core-amd64-macos-${{ env.VERSION }}.zip
 
   build-windows-amd64:
     runs-on: windows-latest
@@ -98,7 +150,7 @@ jobs:
           path: blocknet-core-amd64-windows-${{ env.VERSION }}.zip
 
   create-checksums:
-    needs: [build-linux-amd64, build-macos-arm64, build-windows-amd64]
+    needs: [build-linux-amd64, build-linux-arm64, build-macos-arm64, build-macos-amd64, build-windows-amd64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
