@@ -615,8 +615,8 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 				}
 			}
 
-			// Note: Outputs are NOT deleted - they're still needed for ring selection
-			// A reorged block's outputs may still be referenced by other blocks
+			// Outputs are NOT deleted — they may still be referenced by other blocks.
+			// Ring selection filters to canonical-only via IsCanonicalRingMember.
 		}
 
 		// Connect new blocks (forward order)

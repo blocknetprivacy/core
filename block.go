@@ -2276,13 +2276,15 @@ func (c *Chain) SelectRingMembersWithCommitments(realPubKey, realCommitment [32]
 
 	ringSize := RingSize
 
-	// Filter out the real key from decoy selection
+	c.mu.RLock()
 	decoyPool := make([]*UTXO, 0, len(allOutputs))
 	for _, utxo := range allOutputs {
-		if utxo.Output.PublicKey != realPubKey {
+		if utxo.Output.PublicKey != realPubKey &&
+			c.isCanonicalRingMemberLocked(utxo.Output.PublicKey, utxo.Output.Commitment) {
 			decoyPool = append(decoyPool, utxo)
 		}
 	}
+	c.mu.RUnlock()
 
 	if len(decoyPool) < ringSize-1 {
 		return nil, fmt.Errorf("not enough outputs for ring (need %d, have %d)", ringSize-1, len(decoyPool))

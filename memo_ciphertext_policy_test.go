@@ -28,16 +28,17 @@ func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testi
 	defer cleanup()
 	mustAddGenesisBlock(t, chain)
 
-	// Make our synthetic wallet output mature.
-	chain.mu.Lock()
-	chain.height = 100
-	chain.mu.Unlock()
-
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)
 	defer stopDaemon()
 
-	// Populate storage with enough decoy outputs for ring selection.
-	// The wallet builder uses chain.SelectRingMembersWithCommitments which pulls from storage.
+	genesis := chain.GetBlockByHeight(0)
+	if genesis == nil {
+		t.Fatal("expected genesis block")
+	}
+	prevHash := genesis.Hash()
+	var cumulativeWork uint64 = 1
+
+	// Populate canonical blocks with enough decoy outputs for ring selection.
 	for i := 0; i < RingSize*3; i++ {
 		kp, err := GenerateRistrettoKeypair()
 		if err != nil {
@@ -49,21 +50,54 @@ func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testi
 		}
 		var memo [wallet.MemoSize]byte
 		memo[0] = 0x01
-		var txid [32]byte
-		txid[0] = byte(i + 1)
-		if err := storage.SaveOutput(&UTXO{
-			TxID:        txid,
-			OutputIndex: 0,
-			BlockHeight: 1,
-			Output: TxOutput{
+
+		height := uint64(i + 1)
+		tx := &Transaction{
+			Version: 1,
+			Outputs: []TxOutput{{
 				PublicKey:     kp.PublicKey,
 				Commitment:    commit.Commitment,
 				EncryptedMemo: memo,
-			},
-		}); err != nil {
-			t.Fatalf("failed to save decoy output %d: %v", i, err)
+			}},
 		}
+		block := &Block{
+			Header: BlockHeader{
+				Version:    1,
+				Height:     height,
+				PrevHash:   prevHash,
+				Timestamp:  genesis.Header.Timestamp + int64(height)*BlockIntervalSec,
+				Difficulty: MinDifficulty,
+			},
+			Transactions: []*Transaction{tx},
+		}
+		blockHash := block.Hash()
+		txid, _ := tx.TxID()
+		cumulativeWork += MinDifficulty
+
+		if err := storage.CommitBlock(&BlockCommit{
+			Block:     block,
+			Height:    height,
+			Hash:      blockHash,
+			Work:      cumulativeWork,
+			IsMainTip: true,
+			NewOutputs: []*UTXO{{
+				TxID:        txid,
+				OutputIndex: 0,
+				Output:      tx.Outputs[0],
+				BlockHeight: height,
+			}},
+		}); err != nil {
+			t.Fatalf("failed to commit decoy block %d: %v", i, err)
+		}
+		prevHash = blockHash
 	}
+
+	// Update in-memory chain height to match committed blocks + maturity buffer.
+	topHeight := uint64(RingSize * 3)
+	chain.mu.Lock()
+	chain.height = topHeight + 100
+	chain.canonicalRingIndexDirty = true
+	chain.mu.Unlock()
 
 	walletFile := filepath.Join(t.TempDir(), "wallet.dat")
 	w, err := wallet.NewWallet(walletFile, []byte("pw"), defaultWalletConfig())
