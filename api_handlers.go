@@ -1524,6 +1524,251 @@ func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleProve derives the deterministic tx private key to prove a transaction
+// was sent by this wallet. Works on both full and view-only wallets (uses ViewPrivKey).
+// POST /api/wallet/prove
+func (s *APIServer) handleProve(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	var req struct {
+		TxID string `json:"txid"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.TxID) != 64 {
+		writeError(w, http.StatusBadRequest, "txid must be 64 hex characters")
+		return
+	}
+
+	tx, _, found := s.daemon.Chain().FindTxByHashStr(req.TxID)
+	if !found {
+		writeError(w, http.StatusNotFound, "transaction not found on chain")
+		return
+	}
+	if len(tx.Inputs) == 0 {
+		writeError(w, http.StatusBadRequest, "coinbase transactions have no sender proof")
+		return
+	}
+
+	keyImages := make([][32]byte, len(tx.Inputs))
+	for i, inp := range tx.Inputs {
+		keyImages[i] = inp.KeyImage
+	}
+
+	keys := s.wallet.Keys()
+	txPriv, err := DeriveDeterministicTxKey(keys.ViewPrivKey, keyImages)
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "failed to derive tx key", err)
+		return
+	}
+
+	derivedPub, err := ScalarToPubKey(txPriv)
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "failed to derive public key", err)
+		return
+	}
+
+	if derivedPub != tx.TxPublicKey {
+		writeError(w, http.StatusConflict, "transaction was not sent by this wallet")
+		return
+	}
+
+	w.Header().Set("Cache-Control", "no-store")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"txid":   req.TxID,
+		"tx_key": hex.EncodeToString(txPriv[:]),
+	})
+}
+
+// handleAudit scans all wallet outputs for duplicate key images, which indicate
+// burned (permanently unspendable) funds from a historical self-send bug.
+// POST /api/wallet/audit
+func (s *APIServer) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	outputs := s.wallet.AllOutputs()
+
+	type keyImageGroup struct {
+		keyImage [32]byte
+		outputs  []*wallet.OwnedOutput
+	}
+
+	groups := make(map[[32]byte]*keyImageGroup)
+	var failedCount int
+
+	for _, out := range outputs {
+		ki, err := GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			failedCount++
+			continue
+		}
+		g, ok := groups[ki]
+		if !ok {
+			g = &keyImageGroup{keyImage: ki}
+			groups[ki] = g
+		}
+		g.outputs = append(g.outputs, out)
+	}
+
+	var duplicates []map[string]any
+	var totalBurned uint64
+	var burnedOutputs int
+
+	for _, g := range groups {
+		if len(g.outputs) <= 1 {
+			continue
+		}
+
+		var groupTotal uint64
+		var maxAmount uint64
+		outs := make([]map[string]any, len(g.outputs))
+		for i, out := range g.outputs {
+			groupTotal += out.Amount
+			if out.Amount > maxAmount {
+				maxAmount = out.Amount
+			}
+			outs[i] = map[string]any{
+				"txid":         hex.EncodeToString(out.TxID[:]),
+				"output_index": out.OutputIndex,
+				"amount":       out.Amount,
+				"spent":        out.Spent,
+				"block_height": out.BlockHeight,
+			}
+		}
+		burned := groupTotal - maxAmount
+		totalBurned += burned
+		burnedOutputs += len(g.outputs) - 1
+
+		duplicates = append(duplicates, map[string]any{
+			"key_image":         hex.EncodeToString(g.keyImage[:]),
+			"outputs":           outs,
+			"burned_amount":     burned,
+			"unspendable_count": len(g.outputs) - 1,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_outputs":     len(outputs),
+		"unique_key_images": len(groups),
+		"failed_key_images": failedCount,
+		"duplicate_groups":  duplicates,
+		"total_burned":      totalBurned,
+		"burned_outputs":    burnedOutputs,
+	})
+}
+
+// handleViewKeys returns the wallet's view-only keys (spend public, view private,
+// view public). Requires password confirmation and brute-force protection, like seed.
+// POST /api/wallet/viewkeys
+func (s *APIServer) handleViewKeys(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+	if s.wallet.IsViewOnly() {
+		writeError(w, http.StatusForbidden, "this is already a view-only wallet")
+		return
+	}
+
+	ip := clientIP(r)
+	if wait, lockedUntil := s.unlockAttempts.precheck(ip); !lockedUntil.IsZero() {
+		retryAfter := int(time.Until(lockedUntil).Seconds())
+		retryAfter = max(retryAfter, 1)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
+		return
+	} else if wait > 0 {
+		retryAfter := int(wait.Seconds())
+		retryAfter = max(retryAfter, 1)
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeError(w, http.StatusTooManyRequests, "attempt backoff active; retry later")
+		return
+	}
+
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	s.mu.RLock()
+	hashSet := s.passwordHashSet
+	expectedHash := s.passwordHash
+	s.mu.RUnlock()
+	if !hashSet {
+		writeError(w, http.StatusServiceUnavailable, "viewkeys unavailable: password state not initialized")
+		return
+	}
+	pw := []byte(req.Password)
+	actualHash := passwordHash(pw)
+	wipeBytes(pw)
+	if subtle.ConstantTimeCompare(actualHash[:], expectedHash[:]) != 1 {
+		delay, lockedUntil := s.unlockAttempts.recordFailure(ip)
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-r.Context().Done():
+			}
+		}
+		if !lockedUntil.IsZero() {
+			retryAfter := int(time.Until(lockedUntil).Seconds())
+			retryAfter = max(retryAfter, 1)
+			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
+			return
+		}
+		writeError(w, http.StatusUnauthorized, "incorrect password")
+		return
+	}
+	s.unlockAttempts.recordSuccess(ip)
+
+	keys := s.wallet.ExportViewOnlyKeys()
+
+	w.Header().Set("Cache-Control", "no-store")
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"spend_pub": hex.EncodeToString(keys.SpendPubKey[:]),
+		"view_priv": hex.EncodeToString(keys.ViewPrivKey[:]),
+		"view_pub":  hex.EncodeToString(keys.ViewPubKey[:]),
+	})
+}
+
+// handleCertify verifies the entire chain for difficulty, timestamp, and linkage
+// violations. This is an arithmetic-only check (no PoW re-hashing).
+// GET /api/certify
+func (s *APIServer) handleCertify(w http.ResponseWriter, r *http.Request) {
+	chain := s.daemon.Chain()
+	height := chain.Height()
+
+	violations := chain.VerifyChain()
+
+	result := map[string]any{
+		"height": height,
+		"clean":  len(violations) == 0,
+	}
+
+	if len(violations) > 0 {
+		vList := make([]map[string]any, len(violations))
+		for i, v := range violations {
+			vList[i] = map[string]any{
+				"height":  v.Height,
+				"message": v.Message,
+			}
+		}
+		result["violations"] = vList
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
 // ============================================================================
 // Mining handlers
 // ============================================================================
