@@ -183,6 +183,17 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	if _, ok := sendReqProps["recipients"]; !ok {
 		t.Fatal("SendRequest missing recipients in OpenAPI")
 	}
+	if _, ok := sendReqProps["dry_run"]; !ok {
+		t.Fatal("SendRequest missing dry_run in OpenAPI")
+	}
+
+	sendResp := mustGetMap(t, allSchemas, "SendResponse")
+	sendRespProps := mustGetMap(t, sendResp, "properties")
+	for _, field := range []string{"txid", "fee", "change", "dry_run", "input_total", "input_count", "recipients"} {
+		if _, ok := sendRespProps[field]; !ok {
+			t.Fatalf("SendResponse missing %q in OpenAPI", field)
+		}
+	}
 
 	// Memo fields live in the shared SendRecipient schema.
 	recipientSchema := mustGetMap(t, allSchemas, "SendRecipient")

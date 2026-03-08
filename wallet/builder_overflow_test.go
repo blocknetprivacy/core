@@ -55,7 +55,7 @@ func TestBuilderTransferWithInputs_RejectsRecipientSumOverflow(t *testing.T) {
 		[]*OwnedOutput{{Amount: 1}},
 		0,
 		[]Recipient{{Amount: math.MaxUint64}, {Amount: 1}},
-		1, 1,
+		1, 1, 0,
 	)
 	if err == nil {
 		t.Fatal("expected error")
@@ -71,7 +71,7 @@ func TestBuilderTransferWithInputs_RejectsNoInputs(t *testing.T) {
 		config: TransferConfig{},
 	}
 
-	_, err := b.TransferWithInputs(nil, 0, []Recipient{{Amount: 1}}, 1, 1)
+	_, err := b.TransferWithInputs(nil, 0, []Recipient{{Amount: 1}}, 1, 1, 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -86,7 +86,7 @@ func TestBuilderTransferWithInputs_RejectsNoRecipients(t *testing.T) {
 		config: TransferConfig{},
 	}
 
-	_, err := b.TransferWithInputs([]*OwnedOutput{{Amount: 1}}, 0, nil, 1, 1)
+	_, err := b.TransferWithInputs([]*OwnedOutput{{Amount: 1}}, 0, nil, 1, 1, 0)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -108,7 +108,7 @@ func TestBuilderTransferWithInputs_RejectsInsufficientInputs(t *testing.T) {
 		[]*OwnedOutput{{Amount: 500}},
 		0,
 		[]Recipient{{Amount: 500}},
-		10, 1,
+		10, 1, 0,
 	)
 	if err == nil {
 		t.Fatal("expected error")

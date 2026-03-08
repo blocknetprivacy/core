@@ -40,6 +40,11 @@ type ScannerConfig struct {
 	// commitment before recording the output. This prevents garbage balances when
 	// amount decryption produces wrong results (e.g. legacy broken transactions).
 	CreateCommitment func(amount uint64, blinding [32]byte) ([32]byte, error)
+
+	// Primitives used to compose stealth derivation in the scanner.
+	ScalarToPoint func(scalar [32]byte) ([32]byte, error)
+	PointAdd      func(p1, p2 [32]byte) ([32]byte, error)
+	BlindingAdd   func(a, b [32]byte) ([32]byte, error)
 }
 
 // Scanner scans blocks for wallet-relevant transactions
@@ -56,81 +61,127 @@ func NewScanner(w *Wallet, cfg ScannerConfig) *Scanner {
 	}
 }
 
-// ScanBlock scans a block for owned outputs and spent outputs
+// ScanBlock scans a block for owned outputs and spent outputs.
+// It tries indexed derivation first, then falls back to non-indexed.
 func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 	keys := s.wallet.Keys()
 	spendableByKeyImage := s.buildSpendableKeyImageIndex()
 
+	canCompose := s.config.ScalarToPoint != nil && s.config.PointAdd != nil && s.config.BlindingAdd != nil
+
 	for _, tx := range block.Transactions {
-		// Check each output - is it ours?
 		for _, out := range tx.Outputs {
-			if s.wallet.checkStealthOutput(tx.TxPubKey, out.PubKey, keys.ViewPrivKey, keys.SpendPubKey) {
-				// This output is ours!
-				// Derive the one-time private key so we can spend it
-				oneTimePriv, err := s.wallet.deriveSpendKey(tx.TxPubKey, keys.ViewPrivKey, keys.SpendPrivKey)
+			var secret [32]byte
+			var matched bool
+
+			if canCompose {
+				// Try indexed derivation first.
+				if s.wallet.deriveOutputSecretIndexed != nil {
+					indexed, err := s.wallet.deriveOutputSecretIndexed(tx.TxPubKey, keys.ViewPrivKey, uint32(out.Index))
+					if err == nil {
+						point, err2 := s.config.ScalarToPoint(indexed)
+						if err2 == nil {
+							expected, err3 := s.config.PointAdd(point, keys.SpendPubKey)
+							if err3 == nil && expected == out.PubKey {
+								secret = indexed
+								matched = true
+							}
+						}
+					}
+				}
+
+				// Fall back to non-indexed.
+				if !matched {
+					legacy, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
+					if err == nil {
+						point, err2 := s.config.ScalarToPoint(legacy)
+						if err2 == nil {
+							expected, err3 := s.config.PointAdd(point, keys.SpendPubKey)
+							if err3 == nil && expected == out.PubKey {
+								secret = legacy
+								matched = true
+							}
+						}
+					}
+				}
+			} else {
+				// Legacy path for callers that haven't wired the primitives.
+				if s.wallet.checkStealthOutput(tx.TxPubKey, out.PubKey, keys.ViewPrivKey, keys.SpendPubKey) {
+					sec, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
+					if err == nil {
+						secret = sec
+						matched = true
+					}
+				}
+			}
+
+			if !matched {
+				continue
+			}
+
+			// Derive one-time private key: secret + spendPriv (scalar add).
+			var oneTimePriv [32]byte
+			if canCompose {
+				otp, err := s.config.BlindingAdd(secret, keys.SpendPrivKey)
 				if err != nil {
 					continue
 				}
-
-				var outputSecret [32]byte
-				var blinding [32]byte
-				if tx.IsCoinbase {
-					blinding = DeriveCoinbaseConsensusBlinding(tx.TxPubKey, block.Height, out.Index)
-				} else {
-					// Derive the shared secret for amount decryption.
-					outputSecret, err = s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
-					if err != nil {
-						continue
-					}
-					// Derive the blinding factor from shared secret.
-					blinding = DeriveBlinding(outputSecret, out.Index)
+				oneTimePriv = otp
+			} else {
+				otp, err := s.wallet.deriveSpendKey(tx.TxPubKey, keys.ViewPrivKey, keys.SpendPrivKey)
+				if err != nil {
+					continue
 				}
-
-				// Decrypt the amount
-				amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
-
-				// Verify the decrypted amount and derived blinding reopen the
-				// on-chain Pedersen commitment. This catches cases where the
-				// derivation path is wrong (e.g. legacy broken transactions)
-				// and prevents garbage amounts from polluting the balance.
-				if s.config.CreateCommitment != nil {
-					commitment, err := s.config.CreateCommitment(amount, blinding)
-					if err != nil {
-						continue
-					}
-					if commitment != out.Commitment {
-						continue
-					}
-				}
-
-				owned := &OwnedOutput{
-					TxID:           tx.TxID,
-					OutputIndex:    out.Index,
-					Amount:         amount,
-					Blinding:       blinding,
-					OneTimePrivKey: oneTimePriv,
-					OneTimePubKey:  out.PubKey,
-					Commitment:     out.Commitment,
-					BlockHeight:    block.Height,
-					IsCoinbase:     tx.IsCoinbase,
-					Spent:          false,
-				}
-
-				// Decrypt memo from the canonical output field.
-				if !tx.IsCoinbase {
-					if memo, ok := DecryptMemo(out.EncryptedMemo, outputSecret, out.Index); ok {
-						owned.Memo = memo
-					} else {
-						s.wallet.recordMemoDecryptFailure(block.Height)
-					}
-				}
-
-				s.wallet.AddOutput(owned)
-				if keyImage, err := s.config.GenerateKeyImage(owned.OneTimePrivKey); err == nil {
-					spendableByKeyImage[keyImage] = append(spendableByKeyImage[keyImage], owned.OneTimePubKey)
-				}
-				found++
+				oneTimePriv = otp
 			}
+
+			var outputSecret [32]byte
+			var blinding [32]byte
+			if tx.IsCoinbase {
+				blinding = DeriveCoinbaseConsensusBlinding(tx.TxPubKey, block.Height, out.Index)
+			} else {
+				outputSecret = secret
+				blinding = DeriveBlinding(outputSecret, out.Index)
+			}
+
+			amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
+
+			if s.config.CreateCommitment != nil {
+				commitment, err := s.config.CreateCommitment(amount, blinding)
+				if err != nil {
+					continue
+				}
+				if commitment != out.Commitment {
+					continue
+				}
+			}
+
+			owned := &OwnedOutput{
+				TxID:           tx.TxID,
+				OutputIndex:    out.Index,
+				Amount:         amount,
+				Blinding:       blinding,
+				OneTimePrivKey: oneTimePriv,
+				OneTimePubKey:  out.PubKey,
+				Commitment:     out.Commitment,
+				BlockHeight:    block.Height,
+				IsCoinbase:     tx.IsCoinbase,
+				Spent:          false,
+			}
+
+			if !tx.IsCoinbase {
+				if memo, ok := DecryptMemo(out.EncryptedMemo, outputSecret, out.Index); ok {
+					owned.Memo = memo
+				} else {
+					s.wallet.recordMemoDecryptFailure(block.Height)
+				}
+			}
+
+			s.wallet.AddOutput(owned)
+			if keyImage, err := s.config.GenerateKeyImage(owned.OneTimePrivKey); err == nil {
+				spendableByKeyImage[keyImage] = append(spendableByKeyImage[keyImage], owned.OneTimePubKey)
+			}
+			found++
 		}
 
 		// Check key images - did we spend something?

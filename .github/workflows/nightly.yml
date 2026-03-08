@@ -1,13 +1,13 @@
-name: Build Releases
+name: Nightly Build
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - master
   workflow_dispatch:
 
-env:
-  VERSION: "0.7.0"
+permissions:
+  contents: write
 
 jobs:
   build-linux-amd64:
@@ -29,12 +29,12 @@ jobs:
         run: |
           mkdir -p dist
           cp blocknet-core-amd64-linux dist/
-          cd dist && zip -q ../blocknet-core-amd64-linux-${{ env.VERSION }}.zip blocknet-core-amd64-linux
+          cd dist && zip -q ../blocknet-core-amd64-linux-nightly.zip blocknet-core-amd64-linux
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-core-amd64-linux-${{ env.VERSION }}
-          path: blocknet-core-amd64-linux-${{ env.VERSION }}.zip
+          name: blocknet-core-amd64-linux-nightly
+          path: blocknet-core-amd64-linux-nightly.zip
 
   build-macos-arm64:
     runs-on: macos-14
@@ -55,12 +55,12 @@ jobs:
         run: |
           mkdir -p dist
           cp blocknet-core-arm64-macos dist/
-          cd dist && zip -q ../blocknet-core-arm64-macos-${{ env.VERSION }}.zip blocknet-core-arm64-macos
+          cd dist && zip -q ../blocknet-core-arm64-macos-nightly.zip blocknet-core-arm64-macos
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-core-arm64-macos-${{ env.VERSION }}
-          path: blocknet-core-arm64-macos-${{ env.VERSION }}.zip
+          name: blocknet-core-arm64-macos-nightly
+          path: blocknet-core-arm64-macos-nightly.zip
 
   build-windows-amd64:
     runs-on: windows-latest
@@ -90,17 +90,19 @@ jobs:
         run: |
           mkdir -p dist
           cp blocknet-core-amd64-windows.exe dist/
-          cd dist && zip -q ../blocknet-core-amd64-windows-${{ env.VERSION }}.zip blocknet-core-amd64-windows.exe
+          cd dist && zip -q ../blocknet-core-amd64-windows-nightly.zip blocknet-core-amd64-windows.exe
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-core-amd64-windows-${{ env.VERSION }}
-          path: blocknet-core-amd64-windows-${{ env.VERSION }}.zip
+          name: blocknet-core-amd64-windows-nightly
+          path: blocknet-core-amd64-windows-nightly.zip
 
-  create-checksums:
+  release-nightly:
     needs: [build-linux-amd64, build-macos-arm64, build-windows-amd64]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: releases
@@ -111,27 +113,24 @@ jobs:
           cd releases
           sha256sum *.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
-      
-      - uses: actions/upload-artifact@v4
-        with:
-          name: blocknet-core-releases-${{ env.VERSION }}
-          path: releases/
 
-  release:
-    needs: create-checksums
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: blocknet-core-releases-${{ env.VERSION }}
-          path: releases
-      
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: releases/*
-          draft: false
-          prerelease: false
+      - name: Get commit info
+        id: commit
+        run: |
+          echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Delete existing nightly release
+        run: gh release delete nightly --yes --cleanup-tag || true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create nightly release
+        run: |
+          gh release create nightly \
+            --title "Nightly (${{ steps.commit.outputs.date }} · ${{ steps.commit.outputs.sha_short }})" \
+            --notes "Automated nightly build from master at ${{ github.sha }}" \
+            --prerelease \
+            releases/*
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

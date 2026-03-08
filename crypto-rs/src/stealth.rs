@@ -269,6 +269,21 @@ fn hash_to_scalar(data: &[u8]) -> Scalar {
     Scalar::from_bytes_mod_order_wide(&wide)
 }
 
+/// Hash bytes + output index to a per-output scalar.
+/// Produces a unique shared secret per output in a transaction, preventing
+/// key collisions when multiple outputs go to the same recipient.
+fn hash_to_scalar_indexed(data: &[u8], output_index: u32) -> Scalar {
+    let mut hasher = Sha256::new();
+    hasher.update(b"blocknet_stealth_hs");
+    hasher.update(data);
+    hasher.update(&output_index.to_le_bytes());
+    let hash = hasher.finalize();
+
+    let mut wide = [0u8; 64];
+    wide[..32].copy_from_slice(&hash);
+    Scalar::from_bytes_mod_order_wide(&wide)
+}
+
 /// Derive the shared secret from tx_pubkey and view_privkey
 /// shared_secret = H(view_privkey * tx_pubkey)
 /// Used for amount decryption and blinding factor derivation
@@ -355,6 +370,96 @@ pub extern "C" fn blocknet_stealth_derive_secret_sender(
         // shared_secret = H(tx_privkey * view_pubkey)
         let shared_point = tx_priv * view_pub;
         let shared_secret = hash_to_scalar(shared_point.compress().as_bytes());
+
+        let out = slice::from_raw_parts_mut(secret_out, 32);
+        out.copy_from_slice(shared_secret.as_bytes());
+    }
+
+    0
+}
+
+/// Derive the indexed shared secret from tx_pubkey and view_privkey (receiver side)
+/// shared_secret = H(view_privkey * tx_pubkey || output_index)
+/// Per-output unique secret that prevents key collisions in self-sends.
+#[no_mangle]
+pub extern "C" fn blocknet_stealth_derive_secret_indexed(
+    tx_pubkey: *const u8,
+    view_privkey: *const u8,
+    output_index: u32,
+    secret_out: *mut u8,
+) -> i32 {
+    if tx_pubkey.is_null() || view_privkey.is_null() || secret_out.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let tx_pub_bytes = slice::from_raw_parts(tx_pubkey, 32);
+        let view_priv_bytes = slice::from_raw_parts(view_privkey, 32);
+
+        let tx_pub = match CompressedRistretto::from_slice(tx_pub_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        let view_priv = match Scalar::from_canonical_bytes(
+            view_priv_bytes.try_into().expect("slice length")
+        )
+        .into_option()
+        {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        let shared_point = view_priv * tx_pub;
+        let shared_secret = hash_to_scalar_indexed(shared_point.compress().as_bytes(), output_index);
+
+        let out = slice::from_raw_parts_mut(secret_out, 32);
+        out.copy_from_slice(shared_secret.as_bytes());
+    }
+
+    0
+}
+
+/// Derive the indexed shared secret from tx_privkey and view_pubkey (sender side)
+/// shared_secret = H(tx_privkey * view_pubkey || output_index)
+/// Per-output unique secret that prevents key collisions in self-sends.
+#[no_mangle]
+pub extern "C" fn blocknet_stealth_derive_secret_sender_indexed(
+    tx_privkey: *const u8,
+    view_pubkey: *const u8,
+    output_index: u32,
+    secret_out: *mut u8,
+) -> i32 {
+    if tx_privkey.is_null() || view_pubkey.is_null() || secret_out.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let tx_priv_bytes = slice::from_raw_parts(tx_privkey, 32);
+        let view_pub_bytes = slice::from_raw_parts(view_pubkey, 32);
+
+        let tx_priv = match Scalar::from_canonical_bytes(
+            tx_priv_bytes.try_into().expect("slice length")
+        )
+        .into_option()
+        {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        let view_pub = match CompressedRistretto::from_slice(view_pub_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        let shared_point = tx_priv * view_pub;
+        let shared_secret = hash_to_scalar_indexed(shared_point.compress().as_bytes(), output_index);
 
         let out = slice::from_raw_parts_mut(secret_out, 32);
         out.copy_from_slice(shared_secret.as_bytes());
@@ -700,6 +805,99 @@ mod tests {
         blocknet_derive_deterministic_tx_key(view_priv.as_ptr(), images_b.as_ptr(), 2, r_b.as_mut_ptr());
 
         assert_eq!(r_a, r_b, "key image order must not affect derived r");
+    }
+
+    #[test]
+    fn test_indexed_secret_sender_receiver_agree() {
+        let mut keys = [0u8; 128];
+        blocknet_stealth_keygen(keys.as_mut_ptr());
+        let view_priv = &keys[64..96];
+        let view_pub = &keys[96..128];
+
+        let r = Scalar::random(&mut rand::thread_rng());
+        let tx_pub = &r * RISTRETTO_BASEPOINT_TABLE;
+
+        let mut tx_priv_bytes = [0u8; 32];
+        tx_priv_bytes.copy_from_slice(r.as_bytes());
+        let mut tx_pub_bytes = [0u8; 32];
+        tx_pub_bytes.copy_from_slice(tx_pub.compress().as_bytes());
+
+        for idx in [0u32, 1, 5, 100] {
+            let mut sender_secret = [0u8; 32];
+            let mut receiver_secret = [0u8; 32];
+
+            assert_eq!(
+                blocknet_stealth_derive_secret_sender_indexed(
+                    tx_priv_bytes.as_ptr(), view_pub.as_ptr(), idx, sender_secret.as_mut_ptr(),
+                ), 0
+            );
+            assert_eq!(
+                blocknet_stealth_derive_secret_indexed(
+                    tx_pub_bytes.as_ptr(), view_priv.as_ptr(), idx, receiver_secret.as_mut_ptr(),
+                ), 0
+            );
+            assert_eq!(sender_secret, receiver_secret, "sender and receiver must agree for index {idx}");
+        }
+    }
+
+    #[test]
+    fn test_indexed_secret_differs_by_index() {
+        let mut keys = [0u8; 128];
+        blocknet_stealth_keygen(keys.as_mut_ptr());
+        let view_pub = &keys[96..128];
+
+        let r = Scalar::random(&mut rand::thread_rng());
+        let mut tx_priv_bytes = [0u8; 32];
+        tx_priv_bytes.copy_from_slice(r.as_bytes());
+
+        let mut secret_0 = [0u8; 32];
+        let mut secret_1 = [0u8; 32];
+
+        blocknet_stealth_derive_secret_sender_indexed(
+            tx_priv_bytes.as_ptr(), view_pub.as_ptr(), 0, secret_0.as_mut_ptr(),
+        );
+        blocknet_stealth_derive_secret_sender_indexed(
+            tx_priv_bytes.as_ptr(), view_pub.as_ptr(), 1, secret_1.as_mut_ptr(),
+        );
+
+        assert_ne!(secret_0, secret_1, "different indices must produce different secrets");
+    }
+
+    #[test]
+    fn test_self_send_distinct_keys() {
+        let mut keys = [0u8; 128];
+        blocknet_stealth_keygen(keys.as_mut_ptr());
+        let spend_pub = &keys[32..64];
+        let view_pub = &keys[96..128];
+
+        let r = Scalar::random(&mut rand::thread_rng());
+        let mut tx_priv_bytes = [0u8; 32];
+        tx_priv_bytes.copy_from_slice(r.as_bytes());
+
+        let spend_point = CompressedRistretto::from_slice(spend_pub)
+            .expect("slice length")
+            .decompress()
+            .expect("valid point");
+
+        let mut secret_0 = [0u8; 32];
+        let mut secret_1 = [0u8; 32];
+        blocknet_stealth_derive_secret_sender_indexed(
+            tx_priv_bytes.as_ptr(), view_pub.as_ptr(), 0, secret_0.as_mut_ptr(),
+        );
+        blocknet_stealth_derive_secret_sender_indexed(
+            tx_priv_bytes.as_ptr(), view_pub.as_ptr(), 1, secret_1.as_mut_ptr(),
+        );
+
+        let s0 = Scalar::from_canonical_bytes(secret_0).into_option().unwrap();
+        let s1 = Scalar::from_canonical_bytes(secret_1).into_option().unwrap();
+
+        let otp_0 = &s0 * RISTRETTO_BASEPOINT_TABLE + spend_point;
+        let otp_1 = &s1 * RISTRETTO_BASEPOINT_TABLE + spend_point;
+
+        assert_ne!(
+            otp_0.compress(), otp_1.compress(),
+            "self-send outputs must get distinct one-time keys"
+        );
     }
 }
 

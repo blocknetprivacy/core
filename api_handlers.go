@@ -499,14 +499,13 @@ type validatedRecipient struct {
 
 const maxChangeSplit = 4
 
-// validateRecipients resolves addresses, rejects self-sends, parses memos,
+// validateRecipients resolves addresses, parses memos,
 // and returns wallet.Recipient values ready for the builder.
 func (s *APIServer) validateRecipients(raw []recipientRequest) ([]validatedRecipient, uint64, error) {
 	if len(raw) == 0 {
 		return nil, 0, errors.New("recipients array is required")
 	}
 
-	walletKeys := s.wallet.Keys()
 	var totalSend uint64
 	out := make([]validatedRecipient, len(raw))
 
@@ -524,10 +523,6 @@ func (s *APIServer) validateRecipients(raw []recipientRequest) ([]validatedRecip
 		spendPub, viewPub, err := wallet.ParseAddress(resolvedAddr)
 		if err != nil {
 			return nil, 0, fmt.Errorf("recipient %d: invalid address", i)
-		}
-
-		if spendPub == walletKeys.SpendPubKey && viewPub == walletKeys.ViewPubKey {
-			return nil, 0, fmt.Errorf("recipient %d: self-sends are temporarily disabled (key derivation bug would burn funds)", i)
 		}
 
 		if rr.Amount == 0 {
@@ -693,6 +688,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Recipients []recipientRequest `json:"recipients"`
+		DryRun     bool               `json:"dry_run"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -709,6 +705,54 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	spendable := s.wallet.SpendableBalance(height)
 	if spendable < totalSend {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient spendable balance: have %d, need %d", spendable, totalSend))
+		return
+	}
+
+	if req.DryRun {
+		fee := sendMinFee
+		for i := 0; i < 4; i++ {
+			need, ok := wallet.AddU64(totalSend, fee)
+			if !ok {
+				writeError(w, http.StatusBadRequest, "send amount + fee overflows")
+				return
+			}
+			lease, inputs, err := s.wallet.ReserveMatureInputs(height, need, 2*time.Second)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient funds: %v", err))
+				return
+			}
+			s.wallet.ReleaseInputLease(lease)
+
+			var inputTotal uint64
+			for _, inp := range inputs {
+				inputTotal, ok = wallet.AddU64(inputTotal, inp.Amount)
+				if !ok {
+					writeError(w, http.StatusBadRequest, "input amount sum overflows")
+					return
+				}
+			}
+
+			outputCount := len(validated) + 1
+			if inputTotal == totalSend+fee {
+				outputCount = len(validated)
+			}
+			estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
+			requiredFee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+			if requiredFee <= fee {
+				change := inputTotal - totalSend - fee
+				writeJSON(w, http.StatusOK, map[string]any{
+					"dry_run":     true,
+					"fee":         fee,
+					"change":      change,
+					"input_total": inputTotal,
+					"input_count": len(inputs),
+					"recipients":  buildRecipientResults(validated),
+				})
+				return
+			}
+			fee = requiredFee
+		}
+		writeError(w, http.StatusBadRequest, "fee estimation did not converge")
 		return
 	}
 
@@ -751,6 +795,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		"txid":       fmt.Sprintf("%x", result.TxID),
 		"fee":        result.Fee,
 		"change":     result.Change,
+		"dry_run":    false,
 		"recipients": buildRecipientResults(validated),
 	}
 	respBody, err := encodeJSONResponse(resp)
@@ -948,7 +993,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 
 	releaseLease = false
 	builder := s.createTxBuilder()
-	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit)
+	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit, height)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
@@ -1430,15 +1475,53 @@ func (s *APIServer) handleSeed(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleWalletSync triggers a blockchain sync check.
+// handleWalletSync rescans blocks from the wallet's synced height to the chain
+// tip, scanning for owned outputs and spent key images.
 // POST /api/wallet/sync
 func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
 	if !s.requireWallet(w, r) {
 		return
 	}
 
-	s.daemon.TriggerSync()
-	writeJSON(w, http.StatusOK, map[string]any{"status": "sync triggered"})
+	chainHeight := s.daemon.Chain().Height()
+	walletHeight := s.wallet.SyncedHeight()
+
+	if walletHeight >= chainHeight {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":        "already synced",
+			"synced_height": walletHeight,
+			"chain_height":  chainHeight,
+		})
+		return
+	}
+
+	blocks := s.daemon.Chain().GetBlocksByHeightRange(walletHeight+1, chainHeight)
+
+	totalFound, totalSpent := 0, 0
+	scannedTo := walletHeight
+	for _, block := range blocks {
+		if block == nil {
+			break
+		}
+		blockData := blockToScanData(block)
+		found, spent := s.scanner.ScanBlock(blockData)
+		totalFound += found
+		totalSpent += spent
+		scannedTo = block.Header.Height
+	}
+
+	if scannedTo > walletHeight {
+		s.wallet.SetSyncedHeight(scannedTo)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":        "synced",
+		"synced_height": scannedTo,
+		"chain_height":  chainHeight,
+		"blocks_scanned": scannedTo - walletHeight,
+		"outputs_found": totalFound,
+		"outputs_spent": totalSpent,
+	})
 }
 
 // ============================================================================
@@ -1913,6 +1996,7 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		DeriveDeterministicTxKey:    DeriveDeterministicTxKey,
 		GenerateKeyImage:            GenerateKeyImage,
 		DeriveSharedSecret:          DeriveStealthSecretSender,
+		DeriveSharedSecretIndexed:   DeriveStealthSecretSenderIndexed,
 		ScalarToPoint:               ScalarToPubKey,
 		PointAdd: func(p1, p2 [32]byte) ([32]byte, error) {
 			return CommitmentAdd(p1, p2)

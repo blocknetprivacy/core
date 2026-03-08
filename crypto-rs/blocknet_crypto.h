@@ -234,6 +234,24 @@ int32_t blocknet_derive_deterministic_tx_key(
     uint8_t* tx_privkey_out
 );
 
+// Derive indexed shared secret from tx_pubkey and view_privkey (receiver side)
+// shared_secret = H(view_privkey * tx_pubkey || output_index)
+int32_t blocknet_stealth_derive_secret_indexed(
+    const uint8_t* tx_pubkey,
+    const uint8_t* view_privkey,
+    uint32_t output_index,
+    uint8_t* secret_out
+);
+
+// Derive indexed shared secret from tx_privkey and view_pubkey (sender side)
+// shared_secret = H(tx_privkey * view_pubkey || output_index)
+int32_t blocknet_stealth_derive_secret_sender_indexed(
+    const uint8_t* tx_privkey,
+    const uint8_t* view_pubkey,
+    uint32_t output_index,
+    uint8_t* secret_out
+);
+
 // Convert scalar private key to public key
 int32_t blocknet_scalar_to_pubkey(
     const uint8_t* privkey,
