@@ -77,7 +77,8 @@ func main() {
 	p2pMaxOutbound := flag.Int("p2p-max-outbound", 0, "Max outbound P2P peers (0 = default)")
 	seedMode := flag.Bool("seed", false, "Run as seed node (persistent P2P identity)")
 	recover := flag.Bool("recover", false, "Recover wallet from mnemonic seed")
-	daemonMode := flag.Bool("daemon", false, "Run headless (no interactive shell)")
+	daemonMode := flag.Bool("daemon", true, "Run headless (no interactive shell)")
+	cliMode := flag.Bool("cli", false, "Run with interactive shell")
 	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
 	noColor := flag.Bool("nocolor", false, "Disable colored output")
@@ -94,6 +95,10 @@ func main() {
 	viewPrivDeprecated := flag.String("view-priv", "", "DEPRECATED (insecure): do not pass view private key via CLI; use --view-priv-env/BLOCKNET_VIEW_PRIV")
 	viewPrivEnv := flag.String("view-priv-env", "BLOCKNET_VIEW_PRIV", "Environment variable name containing view private key (hex) for view-only wallet")
 	flag.Parse()
+
+	if *cliMode {
+		*daemonMode = false
+	}
 
 	if *version {
 		fmt.Println(Version)
@@ -237,22 +242,22 @@ func main() {
 	}
 
 	cfg := CLIConfig{
-		WalletFile:      *walletFile,
-		DataDir:         *dataDir,
-		ListenAddrs:     []string{*listen},
-		SeedNodes:       seedNodes,
+		WalletFile:        *walletFile,
+		DataDir:           *dataDir,
+		ListenAddrs:       []string{*listen},
+		SeedNodes:         seedNodes,
 		P2PWhitelistPeers: whitelistPeers,
-		P2PMaxInbound:   *p2pMaxInbound,
-		P2PMaxOutbound:  *p2pMaxOutbound,
-		RecoverMode:     *recover,
-		DaemonMode:      *daemonMode,
-		ExplorerAddr:    *explorerAddr,
-		APIAddr:         *apiAddr,
-		NoColor:         *noColor,
-		NoVersionCheck:  *noVersionCheck,
-		SaveCheckpoints: *saveCheckpoints,
-		FullSync:        *fullSync,
-		SeedMode:        *seedMode,
+		P2PMaxInbound:     *p2pMaxInbound,
+		P2PMaxOutbound:    *p2pMaxOutbound,
+		RecoverMode:       *recover,
+		DaemonMode:        *daemonMode,
+		ExplorerAddr:      *explorerAddr,
+		APIAddr:           *apiAddr,
+		NoColor:           *noColor,
+		NoVersionCheck:    *noVersionCheck,
+		SaveCheckpoints:   *saveCheckpoints,
+		FullSync:          *fullSync,
+		SeedMode:          *seedMode,
 	}
 
 	cli, err := NewCLI(cfg)

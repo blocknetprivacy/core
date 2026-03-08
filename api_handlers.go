@@ -688,6 +688,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Recipients []recipientRequest `json:"recipients"`
+		DryRun     bool               `json:"dry_run"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -704,6 +705,54 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	spendable := s.wallet.SpendableBalance(height)
 	if spendable < totalSend {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient spendable balance: have %d, need %d", spendable, totalSend))
+		return
+	}
+
+	if req.DryRun {
+		fee := sendMinFee
+		for i := 0; i < 4; i++ {
+			need, ok := wallet.AddU64(totalSend, fee)
+			if !ok {
+				writeError(w, http.StatusBadRequest, "send amount + fee overflows")
+				return
+			}
+			lease, inputs, err := s.wallet.ReserveMatureInputs(height, need, 2*time.Second)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient funds: %v", err))
+				return
+			}
+			s.wallet.ReleaseInputLease(lease)
+
+			var inputTotal uint64
+			for _, inp := range inputs {
+				inputTotal, ok = wallet.AddU64(inputTotal, inp.Amount)
+				if !ok {
+					writeError(w, http.StatusBadRequest, "input amount sum overflows")
+					return
+				}
+			}
+
+			outputCount := len(validated) + 1
+			if inputTotal == totalSend+fee {
+				outputCount = len(validated)
+			}
+			estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
+			requiredFee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+			if requiredFee <= fee {
+				change := inputTotal - totalSend - fee
+				writeJSON(w, http.StatusOK, map[string]any{
+					"dry_run":     true,
+					"fee":         fee,
+					"change":      change,
+					"input_total": inputTotal,
+					"input_count": len(inputs),
+					"recipients":  buildRecipientResults(validated),
+				})
+				return
+			}
+			fee = requiredFee
+		}
+		writeError(w, http.StatusBadRequest, "fee estimation did not converge")
 		return
 	}
 
@@ -746,6 +795,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		"txid":       fmt.Sprintf("%x", result.TxID),
 		"fee":        result.Fee,
 		"change":     result.Change,
+		"dry_run":    false,
 		"recipients": buildRecipientResults(validated),
 	}
 	respBody, err := encodeJSONResponse(resp)

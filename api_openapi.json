@@ -2443,6 +2443,11 @@
             "minItems": 1,
             "items": { "$ref": "#/components/schemas/SendRecipient" },
             "description": "One or more recipients. Total amount must not exceed spendable balance."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, estimate the fee and return a preview without broadcasting. No transaction is created."
           }
         },
         "example": {
@@ -2458,9 +2463,12 @@
       "SendResponse": {
         "type": "object",
         "properties": {
-          "txid": { "type": "string", "description": "Transaction hash (64 hex chars)" },
-          "fee": { "type": "integer", "description": "Fee paid in atomic units" },
+          "txid": { "type": "string", "description": "Transaction hash (64 hex chars). Absent when dry_run is true." },
+          "fee": { "type": "integer", "description": "Fee paid (or estimated) in atomic units" },
           "change": { "type": "integer", "description": "Change returned to wallet in atomic units" },
+          "dry_run": { "type": "boolean", "description": "Whether this was a dry run (fee preview only)" },
+          "input_total": { "type": "integer", "description": "Total value of selected inputs in atomic units. Present when dry_run is true." },
+          "input_count": { "type": "integer", "description": "Number of inputs selected. Present when dry_run is true." },
           "recipients": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/SendRecipientResult" },
@@ -2471,6 +2479,7 @@
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
           "fee": 15000,
           "change": 734850000,
+          "dry_run": false,
           "recipients": [
             {
               "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",

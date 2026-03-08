@@ -23,18 +23,18 @@ jobs:
         run: cd crypto-rs && cargo build --release
       
       - name: Build Go binary
-        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet .
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-linux .
       
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet dist/
-          cd dist && zip -q ../blocknet-amd64-linux-${{ env.VERSION }}.zip blocknet
+          cp blocknet-core-amd64-linux dist/
+          cd dist && zip -q ../blocknet-core-amd64-linux-${{ env.VERSION }}.zip blocknet-core-amd64-linux
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-amd64-linux-${{ env.VERSION }}
-          path: blocknet-amd64-linux-${{ env.VERSION }}.zip
+          name: blocknet-core-amd64-linux-${{ env.VERSION }}
+          path: blocknet-core-amd64-linux-${{ env.VERSION }}.zip
 
   build-macos-arm64:
     runs-on: macos-14
@@ -49,18 +49,18 @@ jobs:
         run: cd crypto-rs && cargo build --release
       
       - name: Build Go binary
-        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet .
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-arm64-macos .
       
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet dist/
-          cd dist && zip -q ../blocknet-arm64-darwin-${{ env.VERSION }}.zip blocknet
+          cp blocknet-core-arm64-macos dist/
+          cd dist && zip -q ../blocknet-core-arm64-macos-${{ env.VERSION }}.zip blocknet-core-arm64-macos
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-arm64-darwin-${{ env.VERSION }}
-          path: blocknet-arm64-darwin-${{ env.VERSION }}.zip
+          name: blocknet-core-arm64-macos-${{ env.VERSION }}
+          path: blocknet-core-arm64-macos-${{ env.VERSION }}.zip
 
   build-windows-amd64:
     runs-on: windows-latest
@@ -84,18 +84,18 @@ jobs:
         run: cd crypto-rs && cargo build --release
       
       - name: Build Go binary
-        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet.exe .
+        run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-windows.exe .
       
       - name: Package
         run: |
           mkdir -p dist
-          cp blocknet.exe dist/
-          cd dist && zip -q ../blocknet-amd64-windows-${{ env.VERSION }}.zip blocknet.exe
+          cp blocknet-core-amd64-windows.exe dist/
+          cd dist && zip -q ../blocknet-core-amd64-windows-${{ env.VERSION }}.zip blocknet-core-amd64-windows.exe
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-amd64-windows-${{ env.VERSION }}
-          path: blocknet-amd64-windows-${{ env.VERSION }}.zip
+          name: blocknet-core-amd64-windows-${{ env.VERSION }}
+          path: blocknet-core-amd64-windows-${{ env.VERSION }}.zip
 
   create-checksums:
     needs: [build-linux-amd64, build-macos-arm64, build-windows-amd64]
@@ -114,7 +114,7 @@ jobs:
       
       - uses: actions/upload-artifact@v4
         with:
-          name: blocknet-releases-${{ env.VERSION }}
+          name: blocknet-core-releases-${{ env.VERSION }}
           path: releases/
 
   release:
@@ -126,7 +126,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: blocknet-releases-${{ env.VERSION }}
+          name: blocknet-core-releases-${{ env.VERSION }}
           path: releases
       
       - name: Create Release

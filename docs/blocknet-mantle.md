@@ -21,6 +21,17 @@ Mantle never needs to stop for a core upgrade. It downloads the new core binary,
 - Each core instance is fully isolated: separate data directory, ports, wallet, and chain database.
 - Mantle propagates signals — when mantle receives SIGTERM/SIGINT, it gracefully stops all managed cores before exiting.
 
+### Process Model
+
+`blocknet start` runs in the **foreground**. Mantle writes a pidfile at `~/.config/mantle/mantle.pid` so other subcommands (`stop`, `status`, `attach`) can find the running instance. Daemonizing is left to the init system (systemd, launchd, Windows Service).
+
+- `blocknet stop` reads the pidfile and sends SIGTERM to the mantle process, which gracefully stops all cores.
+- `blocknet status` and `blocknet attach` connect directly to the core's HTTP API (address is known from config). They don't need to talk to mantle itself.
+
+### Cookie Auth
+
+Core writes an `api.cookie` file to its data directory on API startup. Mantle reads this cookie after spawning a core to authenticate API requests. When `data_dir` is empty in config, mantle resolves the default: `./blocknet-data-mainnet` for mainnet, `./blocknet-data-testnet` for testnet (relative to mantle's working directory).
+
 ## Core Lifecycle Management
 
 - **Start, stop, restart** individual cores by network (mainnet, testnet).
@@ -65,23 +76,96 @@ Sensible defaults allow a zero-config start: mainnet on default ports, testnet o
 ```json
 {
   // mantle-level settings
+
+  // automatically upgrade cores when a new release is available
   "auto_upgrade": true,
+  // how often to check for new core releases
   "check_interval": "24h",
 
   "cores": {
     "mainnet": {
+      // general
+
+      // auto-start this core when mantle starts
       "enabled": true,
-      "api": "127.0.0.1:8332",
-      "listen": "0.0.0.0:8333",
-      "wallet": true,
-      "version": "latest"
+      // core version to run ("latest", "nightly", or a specific tag like "v0.7.0")
+      "version": "latest",
+
+      // paths — empty = default, absolute path to override
+
+      // chain database and node state
+      "data_dir": "",
+      // wallet file (ignored when daemon is true)
+      "wallet_file": "",
+
+      // mode
+
+      // run as a daemon (no wallet, pure network node)
+      "daemon": false,
+
+      // sync
+
+      // bypass checkpoint sync and download all blocks from peers
+      "full_sync": false,
+      // write a checkpoint record every 100 blocks
+      "save_checkpoints": false,
+
+      // network
+
+      // p2p listen address — empty = network default (mainnet :28080, testnet :38080)
+      "listen": "",
+      // run as a seed node with persistent p2p identity
+      "seed": false,
+      // max inbound p2p connections (0 = default)
+      "p2p_max_inbound": 0,
+      // max outbound p2p connections (0 = default)
+      "p2p_max_outbound": 0,
+      // peer IDs exempt from bans
+      "p2p_whitelist_peers": [],
+      // path to JSON file of peer IDs exempt from bans
+      "p2p_whitelist_file": "",
+
+      // services — empty = disabled
+
+      // HTTP API listen address
+      "api_addr": "127.0.0.1:8332",
+      // block explorer listen address
+      "explorer_addr": ""
     },
     "testnet": {
+      // general
+
       "enabled": false,
-      "api": "127.0.0.1:18332",
-      "listen": "0.0.0.0:18333",
-      "wallet": true,
-      "version": "latest"
+      "version": "latest",
+
+      // paths — empty = default, absolute path to override
+      // e.g. "/mnt/blocknet/testnet-data"
+      // e.g. "/mnt/blocknet/testnet.wallet.dat"
+      "data_dir": "",
+      "wallet_file": "",
+
+      // mode
+
+      "daemon": false,
+
+      // sync
+
+      "full_sync": true,
+      "save_checkpoints": false,
+
+      // network
+
+      "listen": "",
+      "seed": false,
+      "p2p_max_inbound": 0,
+      "p2p_max_outbound": 0,
+      "p2p_whitelist_peers": [],
+      "p2p_whitelist_file": "",
+
+      // services — empty = disabled
+
+      "api_addr": "127.0.0.1:18332",
+      "explorer_addr": ""
     }
   }
 }
@@ -95,11 +179,11 @@ All mantle data lives under XDG config:
 ~/.config/mantle/
 ├── cores/
 │   ├── v0.7.0/
-│   │   └── core          # core binary for this version
+│   │   └── blocknet-core-<arch>-<os>
 │   ├── v0.6.9/
-│   │   └── core
+│   │   └── blocknet-core-<arch>-<os>
 │   └── nightly/
-│       └── core
+│       └── blocknet-core-<arch>-<os>
 ├── config.json
 ├── mantle.log
 ├── mantle.mainnet.log
@@ -129,7 +213,7 @@ The binary responds to both `blocknet` and `bnt`.
 | `blocknet install <version>` | Download a core version to local storage |
 | `blocknet uninstall <version>` | Remove a core version from local storage |
 | `blocknet use <version> [network]` | Set which core version to use (globally or per-network) |
-| `blocknet config` | Show or edit configuration |
+| `blocknet config` | Print the current configuration |
 
 ### `blocknet list` Output
 
@@ -158,23 +242,68 @@ Default target is mainnet if not specified and only one core is running.
 
 Not in scope for the MVP — local only, no remote attach.
 
-### Existing Commands (moved from core)
+### Wallet Lock State
 
-These commands are available inside `blocknet attach`:
+Mantle queries the core's API to check lock state rather than tracking it locally. This avoids desync if someone hits the API directly. The core tracks `locked` server-side and exposes it via `GET /api/status`. One loopback round-trip per command is negligible.
 
-| Category | Commands |
+### Live Events (SSE)
+
+Attach mode opens a persistent connection to `GET /api/events` (Server-Sent Events) for live notifications. The core emits `new_block` and `mined_block` events over this stream. Mantle prints these asynchronously into the attach prompt, replicating the current CLI behavior where "Mined block N" appears in real time.
+
+### Attach Commands (moved from core)
+
+These commands are available inside `blocknet attach`. Each is routed to the target core over its HTTP API.
+
+#### Wallet
+
+| Command | Description |
 |---|---|
-| Wallet | `help`, `balance`, `address`, `send`, `sign`, `verify`, `history`, `outputs`, `seed`, `import`, `viewkeys`, `lock`, `unlock`, `save`, `sync` |
-| Daemon | `status`, `peers`, `banned`, `export-peer`, `mining`, `certify`, `purge` |
-| Meta | `version`, `about`, `license`, `quit` |
+| `balance` | Show wallet balance |
+| `address` | Show receiving address |
+| `send <addr> <amt> [memo\|hex:<hex>]` | Send funds with optional memo |
+| `sign` | Sign a message with your spend key |
+| `verify` | Verify a signed message against an address |
+| `history` | Show transaction history |
+| `outputs` | Show wallet outputs (spent and unspent) |
+| `seed` | Show wallet recovery seed |
+| `import` | Create wallet file from seed or spend/view keys |
+| `viewkeys` | Create a view-only wallet file |
+| `lock` | Lock wallet |
+| `unlock` | Unlock wallet |
+| `save` | Save wallet to disk |
+| `sync` | Rescan blocks for outputs |
+| `prove <txid>` | Generate a proof that you sent a transaction |
+| `audit` | Audit wallet key images for duplicates |
+
+#### Daemon
+
+| Command | Description |
+|---|---|
+| `status` | Show node and wallet status |
+| `peers` | List connected peers |
+| `banned` | List banned peers |
+| `export-peer` | Export peer address to peer.txt |
+| `mining` | Manage mining |
+| `certify` | Check chain integrity (difficulty + timestamps) |
+| `purge` | Delete all blockchain data (cannot be undone) |
+
+#### Meta
+
+| Command | Description |
+|---|---|
+| `help [command]` | Show help or detailed help for a command |
+| `version` | Print version |
+| `about` | About this software |
+| `license` | Show license |
+| `quit` | Exit (saves automatically) |
 
 ## What Changes in the Core
 
-The core is the current `blocknet` binary with the following removed:
+The core is the current `blocknet` binary with the following changes:
 
-- Interactive CLI and prompt loop
-- Periodic version check and upgrade notification (mantle handles this)
-- The `--daemon` flag becomes unnecessary since the core always runs headless
+- `--daemon` now defaults to `true`. A `--cli` flag (default `false`) is available to get the interactive shell during the transition period. Once mantle has ported all CLI commands, `cli.go` and `--cli` are removed from core entirely.
+- Mantle always passes `--no-version-check` when spawning a core. Mantle owns version management; the core should not check on its own.
+- Periodic version check and upgrade notification are removed (mantle handles this).
 
 Everything else stays: the HTTP API, wallet, chain, mempool, miner, p2p, sync manager, stealth keys, SSE events, mining API, and all existing API routes.
 
