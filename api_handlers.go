@@ -1512,6 +1512,10 @@ func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
 
 	if scannedTo > walletHeight {
 		s.wallet.SetSyncedHeight(scannedTo)
+		if err := s.wallet.Save(); err != nil {
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
