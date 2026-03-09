@@ -765,6 +765,32 @@ func (w *Wallet) AllOutputs() []*OwnedOutput {
 	return outputs
 }
 
+// outputsForKeyImageScan returns outputs that should be included in the
+// scanner's key-image index: unspent outputs and outputs with unconfirmed
+// spends (Spent=true, SpentTxID != zero). Confirmed spends are excluded.
+func (w *Wallet) outputsForKeyImageScan() []*OwnedOutput {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+
+	var outputs []*OwnedOutput
+	for _, out := range w.data.Outputs {
+		if out == nil {
+			continue
+		}
+		if out.Spent && out.SpentTxID == ([32]byte{}) {
+			continue
+		}
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		outputs = append(outputs, &c)
+	}
+	return outputs
+}
+
 // SpendableOutputs returns all unspent outputs (regardless of maturity)
 func (w *Wallet) SpendableOutputs() []*OwnedOutput {
 	w.mu.RLock()

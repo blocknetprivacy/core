@@ -201,7 +201,7 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 
 func (s *Scanner) buildSpendableKeyImageIndex() map[[32]byte][][32]byte {
 	spendableByKeyImage := make(map[[32]byte][][32]byte)
-	for _, out := range s.wallet.SpendableOutputs() {
+	for _, out := range s.wallet.outputsForKeyImageScan() {
 		keyImage, err := s.config.GenerateKeyImage(out.OneTimePrivKey)
 		if err != nil {
 			continue
