@@ -532,8 +532,8 @@
       "post": {
         "operationId": "loadWallet",
         "tags": ["Wallet"],
-        "summary": "Load or create wallet",
-        "description": "Loads an existing wallet from disk (decrypting with the given password) or creates a new one if no wallet file exists. Primarily used in `--daemon` mode where the app starts without a wallet. After loading, all wallet endpoints become available, miner reward keys are pointed at this wallet, and any blocks that arrived before the wallet was loaded are scanned automatically. Can only be called once — returns 409 if a wallet is already loaded.",
+        "summary": "Load wallet",
+        "description": "Loads an existing wallet from disk, decrypting with the given password. Primarily used in `--daemon` mode where the app starts without a wallet. If `filepath` is provided, only the basename is used and the file is resolved relative to the configured `--wallet` directory; if omitted, the default wallet path is used. After loading, the wallet is unlocked, all wallet endpoints become available, miner reward keys are pointed at this wallet, and any blocks that arrived before the wallet was loaded are scanned automatically. Can only be called once — returns 409 if a wallet is already loaded.",
         "requestBody": {
           "required": true,
           "content": {
@@ -545,19 +545,24 @@
                   "password": {
                     "type": "string",
                     "minLength": 3,
-                    "description": "Wallet encryption password (min 3 characters). Used to decrypt an existing wallet or encrypt a newly created one."
+                    "description": "Wallet encryption password (min 3 characters). Used to decrypt the wallet file."
+                  },
+                  "filepath": {
+                    "type": "string",
+                    "description": "Optional wallet filename (basename only, no path separators). Resolved relative to the configured `--wallet` directory. Defaults to the configured `--wallet` path."
                   }
                 }
               },
               "example": {
-                "password": "my-wallet-passphrase"
+                "password": "my-wallet-passphrase",
+                "filepath": "mywallet.dat"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Wallet loaded (or created) successfully",
+            "description": "Wallet loaded successfully",
             "content": {
               "application/json": {
                 "schema": {
@@ -567,12 +572,17 @@
                     "address": {
                       "type": "string",
                       "description": "Wallet stealth address (base58-encoded)"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "description": "Basename of the loaded wallet file"
                     }
                   }
                 },
                 "example": {
                   "loaded": true,
-                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF"
+                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "filename": "mywallet.dat"
                 }
               }
             }
@@ -590,12 +600,25 @@
                   "short_password": {
                     "summary": "Password too short",
                     "value": { "error": "password must be at least 3 characters" }
+                  },
+                  "bad_filepath": {
+                    "summary": "Invalid filepath",
+                    "value": { "error": "invalid filepath" }
                   }
                 }
               }
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "Wallet file not found at the resolved path",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "wallet file not found" }
+              }
+            }
+          },
           "409": {
             "description": "Wallet already loaded",
             "content": {
@@ -605,12 +628,132 @@
               }
             }
           },
-          "500": {
-            "description": "Failed to load or create wallet (wrong password, corrupt file, etc.)",
+          "422": {
+            "description": "Wallet file is corrupted or unreadable",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "failed to load wallet: cipher: message authentication failed" }
+                "example": { "error": "wallet file is corrupted" }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to load wallet (wrong password, internal error, etc.)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "wrong password" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/wallet/create": {
+      "post": {
+        "operationId": "createWallet",
+        "tags": ["Wallet"],
+        "summary": "Create new wallet",
+        "description": "Generates a new wallet with a fresh BIP39 seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon. Since this is a brand-new wallet, no chain scanning is needed — the synced height is set to the current chain tip. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["password"],
+                "properties": {
+                  "password": {
+                    "type": "string",
+                    "minLength": 3,
+                    "description": "Encryption password for the wallet file (min 3 characters)."
+                  },
+                  "filename": {
+                    "type": "string",
+                    "description": "Optional wallet filename (basename only, no path separators). Defaults to the configured `--wallet` path."
+                  }
+                }
+              },
+              "example": {
+                "password": "my-wallet-passphrase"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Wallet created and loaded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": { "type": "boolean" },
+                    "address": {
+                      "type": "string",
+                      "description": "Wallet stealth address (base58-encoded)"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "description": "Basename of the created wallet file"
+                    }
+                  }
+                },
+                "example": {
+                  "created": true,
+                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "filename": "wallet.dat"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "bad_json": {
+                    "summary": "Malformed JSON",
+                    "value": { "error": "invalid JSON body" }
+                  },
+                  "short_password": {
+                    "summary": "Password too short",
+                    "value": { "error": "password must be at least 3 characters" }
+                  },
+                  "bad_filename": {
+                    "summary": "Invalid filename",
+                    "value": { "error": "invalid filename" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "409": {
+            "description": "Wallet already loaded or file already exists",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "already_loaded": {
+                    "summary": "A wallet is already active",
+                    "value": { "error": "wallet already loaded" }
+                  },
+                  "file_exists": {
+                    "summary": "File already exists at target path",
+                    "value": { "error": "wallet file already exists: wallet.dat" }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error during wallet creation",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
               }
             }
           }
@@ -648,7 +791,7 @@
         "operationId": "importWallet",
         "tags": ["Wallet"],
         "summary": "Import wallet from recovery seed",
-        "description": "Creates a new wallet from a BIP39 12-word recovery seed, encrypts it with the given password, and saves it to disk. The wallet is loaded into the running daemon and the entire blockchain is scanned for outputs belonging to this seed. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "description": "Creates a new wallet from a BIP39 12-word recovery seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and the entire blockchain is scanned for outputs belonging to this seed. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
         "requestBody": {
           "required": true,
           "content": {

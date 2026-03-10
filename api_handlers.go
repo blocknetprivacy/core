@@ -1177,7 +1177,7 @@ func (s *APIServer) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"locked": false})
 }
 
-// handleLoadWallet loads (or creates) a wallet at runtime.
+// handleLoadWallet loads an existing wallet from disk at runtime.
 // Used in daemon mode where the app starts without a wallet.
 // POST /api/wallet/load
 func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
@@ -1201,6 +1201,7 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Password string `json:"password"`
+		Filepath string `json:"filepath"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -1211,12 +1212,26 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	walletPath := s.cli.walletFile
+	if req.Filepath != "" {
+		base := filepath.Base(req.Filepath)
+		if base == "." || base == "/" {
+			writeError(w, http.StatusBadRequest, "invalid filepath")
+			return
+		}
+		walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+	}
+
 	password := []byte(req.Password)
 	passHash := passwordHash(password)
-	wl, err := wallet.LoadOrCreateWallet(s.cli.walletFile, password, defaultWalletConfig())
+	wl, err := wallet.LoadWallet(walletPath, password, defaultWalletConfig())
 	wipeBytes(password)
 	if err != nil {
-		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		if status, msg, ok := walletLoadClientError(err); ok {
+			writeError(w, status, msg)
+		} else {
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		}
 		return
 	}
 
@@ -1274,10 +1289,11 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		return s.daemon.Mempool().HasKeyImage(ki)
 	})
 
-	// Publish to API server
+	// Publish to API server — unlock since the caller proved the password.
 	s.mu.Lock()
 	s.wallet = wl
 	s.scanner = scanner
+	s.locked = false
 	s.passwordHash = passHash
 	s.passwordHashSet = true
 	s.walletLoading = false
@@ -1293,8 +1309,112 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 	s.cli.mu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"loaded":  true,
-		"address": wl.Address(),
+		"loaded":   true,
+		"address":  wl.Address(),
+		"filename": filepath.Base(walletPath),
+	})
+}
+
+// handleCreateWallet generates a new wallet with a fresh BIP39 seed.
+// POST /api/wallet/create
+func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	if s.wallet != nil || s.walletLoading {
+		s.mu.Unlock()
+		writeError(w, http.StatusConflict, "wallet already loaded")
+		return
+	}
+	s.walletLoading = true
+	s.mu.Unlock()
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		s.mu.Lock()
+		s.walletLoading = false
+		s.mu.Unlock()
+	}()
+
+	var req struct {
+		Password string `json:"password"`
+		Filename string `json:"filename"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.Password) < 3 {
+		writeError(w, http.StatusBadRequest, "password must be at least 3 characters")
+		return
+	}
+
+	walletPath := s.cli.walletFile
+	if req.Filename != "" {
+		base := filepath.Base(req.Filename)
+		if base == "." || base == "/" {
+			writeError(w, http.StatusBadRequest, "invalid filename")
+			return
+		}
+		walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+	}
+
+	if _, err := os.Stat(walletPath); err == nil {
+		writeError(w, http.StatusConflict, "wallet file already exists: "+filepath.Base(walletPath))
+		return
+	}
+
+	password := []byte(req.Password)
+	passHash := passwordHash(password)
+	wl, err := wallet.NewWallet(walletPath, password, defaultWalletConfig())
+	wipeBytes(password)
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
+
+	scanner := wallet.NewScanner(wl, defaultScannerConfig())
+
+	s.daemon.Miner().SetRewardKeys(wl.Keys().SpendPubKey, wl.Keys().ViewPubKey)
+
+	chainHeight := s.daemon.Chain().Height()
+	if chainHeight > 0 {
+		wl.SetSyncedHeight(chainHeight)
+		if err := wl.Save(); err != nil {
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+			return
+		}
+	}
+
+	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
+		ki, err := GenerateKeyImage(out.OneTimePrivKey)
+		if err != nil {
+			return false
+		}
+		return s.daemon.Mempool().HasKeyImage(ki)
+	})
+
+	s.mu.Lock()
+	s.wallet = wl
+	s.scanner = scanner
+	s.locked = false
+	s.passwordHash = passHash
+	s.passwordHashSet = true
+	s.walletLoading = false
+	s.mu.Unlock()
+	committed = true
+
+	s.cli.mu.Lock()
+	s.cli.wallet = wl
+	s.cli.scanner = scanner
+	s.cli.passwordHash = passHash
+	s.cli.passwordHashSet = true
+	s.cli.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"created":  true,
+		"address":  wl.Address(),
+		"filename": filepath.Base(walletPath),
 	})
 }
 
@@ -1401,10 +1521,11 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 		return s.daemon.Mempool().HasKeyImage(ki)
 	})
 
-	// Publish to API server
+	// Publish to API server — unlock since the caller proved the password.
 	s.mu.Lock()
 	s.wallet = wl
 	s.scanner = scanner
+	s.locked = false
 	s.passwordHash = passHash
 	s.passwordHashSet = true
 	s.walletLoading = false
@@ -2169,6 +2290,31 @@ func writeInternal(w http.ResponseWriter, r *http.Request, status int, clientMsg
 	}
 	log.Printf("API internal error: %s %s: %v", method, path, err)
 	writeError(w, status, clientMsg)
+}
+
+func walletLoadClientError(err error) (int, string, bool) {
+	if err == nil {
+		return 0, "", false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "wrong password") || strings.Contains(msg, "message authentication failed") {
+		return http.StatusUnauthorized, "wrong password", true
+	}
+	if strings.Contains(msg, "failed to read wallet file") {
+		if errors.Is(err, os.ErrNotExist) {
+			return http.StatusNotFound, "wallet file not found", true
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return http.StatusForbidden, "wallet file not readable (permission denied)", true
+		}
+	}
+	if strings.Contains(msg, "failed to parse wallet data") {
+		return http.StatusUnprocessableEntity, "wallet file is corrupted", true
+	}
+	if strings.Contains(msg, "ciphertext too short") {
+		return http.StatusUnprocessableEntity, "wallet file is corrupted or truncated", true
+	}
+	return 0, "", false
 }
 
 func walletSendClientError(err error) (int, string, bool) {
