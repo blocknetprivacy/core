@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
-    "version": "0.10.0",
+    "version": "0.11.0",
     "license": {
       "name": "MIT"
     }
@@ -609,7 +609,33 @@
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "401": {
+            "description": "Unauthorized — missing/invalid Bearer token, or wrong wallet password",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "no_token": {
+                    "summary": "Missing or invalid Bearer token",
+                    "value": { "error": "unauthorized" }
+                  },
+                  "wrong_password": {
+                    "summary": "Incorrect wallet decryption password",
+                    "value": { "error": "wrong password" }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wallet file not readable",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "wallet file not readable (permission denied)" }
+              }
+            }
+          },
           "404": {
             "description": "Wallet file not found at the resolved path",
             "content": {
@@ -638,11 +664,11 @@
             }
           },
           "500": {
-            "description": "Failed to load wallet (wrong password, internal error, etc.)",
+            "description": "Internal error during wallet load",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "wrong password" }
+                "example": { "error": "internal error" }
               }
             }
           }
@@ -856,6 +882,14 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
+                  "bad_json": {
+                    "summary": "Malformed JSON",
+                    "value": { "error": "invalid JSON body" }
+                  },
+                  "missing_mnemonic": {
+                    "summary": "Missing mnemonic",
+                    "value": { "error": "mnemonic is required" }
+                  },
                   "bad_mnemonic": {
                     "summary": "Invalid seed phrase",
                     "value": { "error": "invalid mnemonic phrase" }
@@ -1699,25 +1733,59 @@
       "post": {
         "operationId": "syncWallet",
         "tags": ["Wallet"],
-        "summary": "Trigger blockchain sync",
-        "description": "Triggers a blockchain sync check, causing the node to request missing blocks from peers. Useful after reconnecting or if the wallet appears behind. Requires loaded, unlocked wallet.",
+        "summary": "Rescan wallet",
+        "description": "Rescans blocks from the wallet's last synced height to the chain tip, scanning for owned outputs and spent key images. Returns immediately if the wallet is already at the chain tip. Requires loaded, unlocked wallet.",
         "responses": {
           "200": {
-            "description": "Sync triggered",
+            "description": "Rescan result",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "status": { "type": "string" }
+                    "status": { "type": "string", "description": "'synced' or 'already synced'" },
+                    "synced_height": { "type": "integer", "description": "Wallet synced height after the scan" },
+                    "chain_height": { "type": "integer", "description": "Current chain tip height" },
+                    "blocks_scanned": { "type": "integer", "description": "Number of blocks scanned (0 if already synced)" },
+                    "outputs_found": { "type": "integer", "description": "Number of new owned outputs discovered" },
+                    "outputs_spent": { "type": "integer", "description": "Number of spent key images detected" }
                   }
                 },
-                "example": { "status": "sync triggered" }
+                "examples": {
+                  "synced": {
+                    "summary": "Blocks scanned successfully",
+                    "value": {
+                      "status": "synced",
+                      "synced_height": 14207,
+                      "chain_height": 14207,
+                      "blocks_scanned": 12,
+                      "outputs_found": 1,
+                      "outputs_spent": 0
+                    }
+                  },
+                  "already_synced": {
+                    "summary": "Wallet already at chain tip",
+                    "value": {
+                      "status": "already synced",
+                      "synced_height": 14207,
+                      "chain_height": 14207
+                    }
+                  }
+                }
               }
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/WalletLocked" },
+          "500": {
+            "description": "Failed to persist wallet after scan",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
+              }
+            }
+          },
           "503": { "$ref": "#/components/responses/NoWallet" }
         }
       }
@@ -2844,7 +2912,9 @@
           "total": { "type": "integer", "description": "Total unspent balance: spendable + pending (atomic units)" },
           "outputs_total": { "type": "integer", "description": "Total output count (including spent)" },
           "outputs_unspent": { "type": "integer", "description": "Currently unspent output count" },
-          "chain_height": { "type": "integer", "description": "Chain height used for maturity calculation" }
+          "chain_height": { "type": "integer", "description": "Chain height used for maturity calculation" },
+          "memo_decrypt_failures": { "type": "integer", "description": "Number of outputs where memo decryption failed (may indicate outputs from a different wallet version)" },
+          "memo_decrypt_last_height": { "type": "integer", "description": "Block height of the most recent memo decryption failure (0 if none)" }
         },
         "example": {
           "spendable": 1250000000,
@@ -2854,7 +2924,9 @@
           "total": 73575093035,
           "outputs_total": 14,
           "outputs_unspent": 9,
-          "chain_height": 14207
+          "chain_height": 14207,
+          "memo_decrypt_failures": 0,
+          "memo_decrypt_last_height": 0
         }
       },
       "OutputEntry": {
