@@ -406,11 +406,11 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"IsTestnet":  params.IsTestnet,
-		"Height":     height,
-		"Difficulty": snapshot.Difficulty,
-		"Peers":      snapshot.Peers,
-		"Hashrate":   snapshot.Hashrate,
+		"IsTestnet":   params.IsTestnet,
+		"Height":      height,
+		"Difficulty":  snapshot.Difficulty,
+		"Peers":       snapshot.Peers,
+		"Hashrate":    snapshot.Hashrate,
 		"Emitted":     fmtAmountComma(emitted),
 		"Remaining":   fmtAmountComma(remaining),
 		"PctEmitted":  fmt.Sprintf("%.4f", pctEmitted),
@@ -1168,26 +1168,26 @@ const explorerTxTmpl = `<!DOCTYPE html>
 </div>
 {{end}}
 
-<h2><span class="g">#</span> prove payment</h2>
+<h2><span class="g">#</span> TX Proof</h2>
 <div style="display:flex;gap:0;margin-bottom:0">
-<button id="tab-recv" onclick="switchProveTab('recv')" style="background:var(--ac);color:#000;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">I received</button>
-<button id="tab-send" onclick="switchProveTab('send')" style="background:#000;color:#666;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">I sent</button>
+<button id="tab-recv" onclick="switchProveTab('recv')" style="background:var(--ac);color:#000;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">TX Received</button>
+<button id="tab-send" onclick="switchProveTab('send')" style="background:#000;color:#666;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">TX Sent</button>
 </div>
 <div class="box" style="margin-top:0;border-top:1px solid #333">
 <div id="prove-recv">
-<p class="d" style="font-size:13px;margin-bottom:12px">Check if an output belongs to you. Your private view key is sent to this server.</p>
+<p class="d" style="font-size:13px;margin-bottom:12px">Check if an output belongs to you. Your view privkey is sent to this server.</p>
 <div style="display:flex;flex-direction:column;gap:8px">
-<input type="text" id="recv-spend" placeholder="Your spend public key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<input type="text" id="recv-view" placeholder="Your private view key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="recv-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="recv-view" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
 <button id="recv-btn" onclick="doRecvProve()" style="background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit;align-self:flex-start">Check</button>
 </div>
 </div>
 <div id="prove-send" style="display:none">
-<p class="d" style="font-size:13px;margin-bottom:12px">Prove you sent funds to a recipient. Provide your tx private key and the recipient's public address. Anyone can independently verify this proof.</p>
+<p class="d" style="font-size:13px;margin-bottom:12px">Prove participation in a TX. Provide a view privkey and the recipient's public address. Anyone can independently verify this proof.</p>
 <div style="display:flex;flex-direction:column;gap:8px">
-<input type="text" id="send-txpriv" placeholder="Your tx private key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<input type="text" id="send-spend" placeholder="Recipient spend public key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<input type="text" id="send-view" placeholder="Recipient view public key (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="send-txpriv" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="send-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
+<input type="text" id="send-view" placeholder="View pubkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
 <button id="send-btn" onclick="doSendProve()" style="background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit;align-self:flex-start">Prove</button>
 </div>
 </div>
