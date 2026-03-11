@@ -990,7 +990,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:12px"><a href="/stats" style="font-size:13px">network stats</a><a href="https://visualizer.blocknetcrypto.com" style="font-size:13px">visualizer</a></div></div>
+<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:12px"><a href="/stats" style="font-size:13px">network stats</a></div></div>
 
 <form class="search" action="/search" method="get">
 <input type="text" name="q" placeholder="Search by block height or hash...">
