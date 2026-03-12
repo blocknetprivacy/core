@@ -5,6 +5,7 @@ import "net/http"
 // registerPublicRoutes adds stateless endpoints that don't require a wallet.
 // These are shared between --api (authenticated) and --explorer (public).
 func (s *APIServer) registerPublicRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/block/{id}", s.handleBlock)
 	mux.HandleFunc("GET /api/tx/{hash}", s.handleTx)

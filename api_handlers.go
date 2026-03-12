@@ -1418,6 +1418,12 @@ func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleHealth checks if the API is healthy.
+// GET /api/health
+func (s *APIServer) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "timestamp": time.Now().Format(time.RFC3339)})
+}
+
 // handleImportWallet creates a new wallet from a BIP39 recovery seed.
 // POST /api/wallet/import
 func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
@@ -1671,12 +1677,12 @@ func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":        "synced",
-		"synced_height": scannedTo,
-		"chain_height":  chainHeight,
+		"status":         "synced",
+		"synced_height":  scannedTo,
+		"chain_height":   chainHeight,
 		"blocks_scanned": scannedTo - walletHeight,
-		"outputs_found": totalFound,
-		"outputs_spent": totalSpent,
+		"outputs_found":  totalFound,
+		"outputs_spent":  totalSpent,
 	})
 }
 
