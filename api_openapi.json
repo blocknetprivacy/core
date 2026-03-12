@@ -20,6 +20,42 @@
     }
   ],
   "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "getHealth",
+        "tags": ["Node"],
+        "summary": "Health check",
+        "description": "Lightweight liveness probe. Returns 200 with the current server timestamp. Does not require authentication.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "API is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": ["ok"]
+                    },
+                    "timestamp": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": ["status", "timestamp"]
+                },
+                "example": {
+                  "status": "ok",
+                  "timestamp": "2026-03-11T18:30:00Z"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/status": {
       "get": {
         "operationId": "getStatus",

@@ -326,12 +326,14 @@ func (s *APIServer) Start(addr string) error {
 		return fmt.Errorf("failed to write cookie: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	s.registerPublicRoutes(mux)
-	s.registerPrivateRoutes(mux)
+	privateMux := http.NewServeMux()
+	s.registerPrivateRoutes(privateMux)
 
-	var handler http.Handler = mux
-	handler = authMiddleware(token, handler)
+	topMux := http.NewServeMux()
+	s.registerPublicRoutes(topMux)
+	topMux.Handle("/", authMiddleware(token, privateMux))
+
+	var handler http.Handler = topMux
 	handler = maxBodySize(handler, maxRequestBodyBytes)
 
 	s.server = &http.Server{
