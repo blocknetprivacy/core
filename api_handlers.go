@@ -759,17 +759,13 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	builder := s.createTxBuilder()
 	result, err := builder.Transfer(toWalletRecipients(validated), sendFeePerByte, height)
 	if err != nil {
-		if status, msg, ok := walletSendClientError(err); ok {
-			writeError(w, status, msg)
-			return
-		}
-		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		writeSendError(w, r, err)
 		return
 	}
 
 	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
 		s.wallet.ReleaseInputLease(result.InputLease)
-		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		writeSendError(w, r, err)
 		return
 	}
 
@@ -995,13 +991,13 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	builder := s.createTxBuilder()
 	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit, height)
 	if err != nil {
-		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		writeSendError(w, r, err)
 		return
 	}
 
 	if err := s.daemon.SubmitTransaction(result.TxData); err != nil {
 		s.wallet.ReleaseInputLease(result.InputLease)
-		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		writeSendError(w, r, err)
 		return
 	}
 
@@ -2328,13 +2324,55 @@ func walletSendClientError(err error) (int, string, bool) {
 		return 0, "", false
 	}
 	msg := err.Error()
+
 	if errors.Is(err, wallet.ErrNoSpendableOutputs) ||
 		errors.Is(err, wallet.ErrInsufficientFunds) ||
+		errors.Is(err, wallet.ErrInputLimitExceeded) ||
 		strings.Contains(msg, "insufficient funds") ||
-		strings.Contains(msg, "no spendable outputs") {
+		strings.Contains(msg, "no spendable outputs") ||
+		strings.Contains(msg, "input limit exceeded") ||
+		strings.Contains(msg, "balance too small to cover fee") ||
+		strings.Contains(msg, "too many outputs to sweep") ||
+		strings.Contains(msg, "no recipients specified") ||
+		strings.Contains(msg, "no inputs specified") ||
+		strings.Contains(msg, "overflows") {
 		return http.StatusBadRequest, msg, true
 	}
+
+	if strings.Contains(msg, "key image already") ||
+		strings.Contains(msg, "double-spend") {
+		return http.StatusConflict, msg, true
+	}
+
+	if strings.Contains(msg, "mempool rejected") {
+		return http.StatusUnprocessableEntity, msg, true
+	}
+
+	if strings.Contains(msg, "failed to select ring members") ||
+		strings.Contains(msg, "not enough outputs for ring") ||
+		strings.Contains(msg, "failed to sign") ||
+		strings.Contains(msg, "failed to create range proof") ||
+		strings.Contains(msg, "failed to derive") ||
+		strings.Contains(msg, "failed to compute tx ID") ||
+		strings.Contains(msg, "failed to sum output blindings") ||
+		strings.Contains(msg, "failed to distribute blindings") ||
+		strings.Contains(msg, "invalid transaction data") {
+		return http.StatusInternalServerError, msg, true
+	}
+
 	return 0, "", false
+}
+
+func writeSendError(w http.ResponseWriter, r *http.Request, err error) {
+	if status, msg, ok := walletSendClientError(err); ok {
+		if status >= 500 {
+			writeInternal(w, r, status, msg, err)
+		} else {
+			writeError(w, status, msg)
+		}
+		return
+	}
+	writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 }
 
 // blockToJSON builds a JSON-friendly block representation.
