@@ -1768,14 +1768,14 @@ draw('c-size',function(d){return d.s;},'#0af',{yLabel:'bytes',yMin:0,fmtY:functi
 // emission
 var IR=72325093035,TE=200000000,BPM=8640,MTT=48,DR=0.75;
 var emD=[];
-var maxH=MTT*BPM+BPM;
-var eStep=Math.max(1,Math.floor(maxH/500));
-for(var h=0;h<=maxH;h+=eStep){
-var mo=Math.floor(h/BPM);
-var r;
-if(mo>=MTT){r=TE;}else{var yr=mo/12;r=(IR-TE)*Math.exp(-DR*yr)+TE;}
-emD.push({h:h,r:r/100000000});
+function emR(mo){if(mo>=MTT)return TE;var yr=mo/12;return(IR-TE)*Math.exp(-DR*yr)+TE;}
+for(var mo=0;mo<MTT;mo++){
+var r=emR(mo)/100000000;
+emD.push({h:mo*BPM,r:r});
+emD.push({h:(mo+1)*BPM,r:r});
 }
+emD.push({h:MTT*BPM,r:TE/100000000});
+emD.push({h:(MTT+1)*BPM,r:TE/100000000});
 var genTs={{.GenesisTs}};
 draw('c-emission',function(d){return d.r;},'#f0a',{data:emD,yLabel:'BNT/block',splitAt:{{.Height}},splitColor:AC,fmtY:function(v){return v.toFixed(2)+' BNT';},tipExtra:function(pt){var d=new Date((genTs+pt.x*300)*1000);return '<br><span style="color:#555">~'+d.toISOString().slice(0,10)+'</span>';}});
 
