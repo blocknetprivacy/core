@@ -878,46 +878,60 @@ func renderTemplate(w http.ResponseWriter, tmplStr string, data interface{}) {
 	}
 }
 
-// Base CSS matches website exactly, with explorer-specific additions
 const explorerCSS = `*{margin:0;padding:0;box-sizing:border-box}
 :root{--ac:#af0;--ac-h:#cf3}
-body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:32px;max-width:800px;margin:0 auto}
+body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:24px 32px}
 a{color:var(--ac)}
 a:hover{color:var(--ac-h)}
-h1,h2{color:#eee;font-weight:normal;margin:48px 0 16px}
-h1{font-size:24px;margin-top:0}
-h2{font-size:18px;border-bottom:1px dashed #333;padding-bottom:8px}
+h1,h2{color:#eee;font-weight:normal}
+h1{font-size:24px;margin:0}
+h2{font-size:18px;margin:0 0 16px}
 p{margin:16px 0}
 .g{color:var(--ac)}
 .d{color:#555}
-.box{border:1px solid #333;padding:20px;margin:24px 0;background:#000}
-.stats{display:flex;justify-content:space-between}
-.spec{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid #1a1a1a}
-.spec:last-child{border:0}
-.spec-k{color:#666}
-footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
-@media(max-width:600px){body{padding:16px}h1{font-size:20px}}
-.stat{text-align:center}
-.stat-v{font-size:24px;color:#eee}
-.stat-k{font-size:12px;color:#666;text-transform:uppercase}
-table{width:100%;border-collapse:collapse;margin:16px 0}
-th,td{text-align:left;padding:12px;border-bottom:1px solid #222}
-th{color:#666;font-weight:normal;font-size:13px;text-transform:uppercase}
-tr:hover{background:#111}
-.hash{color:#666;font-size:13px}
-.search{display:flex;gap:8px;margin:24px 0}
-.search input{flex:1;background:#000;border:1px solid #333;color:#eee;padding:12px;font:inherit}
+.header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:12px;margin-bottom:8px}
+.topnav{font-size:13px;display:flex;gap:16px;margin-bottom:24px}
+.search{display:flex;gap:8px;margin-bottom:32px}
+.search input{flex:1;background:#000;border:1px solid #333;color:#eee;padding:12px 16px;font:inherit;min-width:0}
 .search input:focus{outline:none;border-color:var(--ac)}
-.search button{background:var(--ac);border:0;color:#000;padding:12px 24px;cursor:pointer;font:inherit}
+.search button{background:var(--ac);border:0;color:#000;padding:12px 24px;cursor:pointer;font:inherit;white-space:nowrap}
 .search button:hover{background:var(--ac-h)}
-.nav{margin:24px 0}
-.nav a{margin-right:16px}
-.prop{display:flex;padding:8px 0;border-bottom:1px solid #1a1a1a}
-.prop:last-child{border:0}
-.prop-k{width:140px;color:#666}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:32px}
+.stat{padding:20px;text-align:center}
+.stat-v{font-size:24px;color:#eee}
+.stat-k{font-size:12px;color:#666;text-transform:uppercase;margin-top:4px}
+.panels{display:flex;gap:32px;align-items:flex-start}
+.panels>div{flex:1;min-width:0}
+.nav{display:flex;gap:16px;margin-bottom:24px}
+table{width:100%;border-collapse:collapse;margin:16px 0}
+th,td{text-align:left;padding:10px 12px}
+th{color:#666;font-weight:normal;font-size:13px;text-transform:uppercase}
+tr:hover{background:#0a0a0a}
+.hash{color:#666;font-size:13px}
+.props{padding:20px 0}
+.prop{display:flex;padding:8px 0}
+.prop-k{width:140px;color:#666;flex-shrink:0}
 .prop-v{flex:1;word-break:break-all}
-.prop-v.mono{font-size:12px;color:#888}
-.topnav{font-size:13px;margin:4px 0 0}`
+.prop-v.mono{font-size:13px;color:#888}
+.block-columns{display:flex;gap:32px;align-items:flex-start}
+.block-columns>div{flex:1;min-width:0}
+.tx-columns{display:flex;gap:32px;align-items:flex-start}
+.tx-col-left{flex:1;min-width:0;order:0}
+.tx-col-right{flex:1;min-width:0;order:1}
+.io-card{padding:16px 0;margin-bottom:16px}
+.io-card .prop{padding:6px 0}
+.io-card .prop-k{width:130px}
+.prove-tabs{display:flex;gap:0}
+.prove-tab{background:#000;color:#666;border:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace}
+.prove-tab-active{background:var(--ac);color:#000}
+.prove-box{padding:20px 0}
+.prove-box input{background:#000;border:1px solid #333;color:#eee;padding:10px 12px;font:13px/1.4 monospace;width:100%;margin-bottom:8px}
+.prove-box input:focus{outline:none;border-color:var(--ac)}
+.prove-box button{background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit}
+.prove-box button:hover{background:var(--ac-h)}
+footer{margin-top:48px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
+@media(max-width:900px){.panels,.block-columns,.tx-columns{flex-direction:column}body{padding:16px}h1{font-size:20px}.stat-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
+@media(max-width:500px){.stat-grid{grid-template-columns:1fr 1fr}.stat-v{font-size:18px}.search{flex-direction:column}.search button{padding:12px}.prop{flex-direction:column;gap:2px}.prop-k{width:auto}.io-card .prop-k{width:auto}}`
 
 const explorerProxyFixScript = `<script>
 (function(){
@@ -990,28 +1004,30 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<div style="display:flex;justify-content:space-between;align-items:baseline"><h1 style="margin-bottom:0"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:12px"><a href="/stats" style="font-size:13px">network stats</a></div></div>
+<div class="header"><h1><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:16px;font-size:13px"><a href="/stats">network stats</a></div></div>
 
 <form class="search" action="/search" method="get">
-<input type="text" name="q" placeholder="Search by block height or hash...">
+<input type="text" name="q" placeholder="Search by block height, block hash, or transaction hash...">
 <button type="submit">Search</button>
 </form>
 
-<div class="box stats">
+<div class="stat-grid">
 <div class="stat"><div class="stat-v">{{.Height}}</div><div class="stat-k">Block Height</div></div>
 <div class="stat"><div class="stat-v">{{.Peers}}</div><div class="stat-k">Peers</div></div>
 <div class="stat"><div class="stat-v">{{.Difficulty}}</div><div class="stat-k">Difficulty</div></div>
 <div class="stat"><div class="stat-v">{{.Hashrate}} H/s</div><div class="stat-k">Network Hashrate</div></div>
 </div>
 
-<h2><span class="g">#</span> supply</h2>
-<div class="box stats">
+<h2 style="margin-top:40px"><span class="g">#</span> supply</h2>
+<div class="stat-grid">
 <div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
 <div class="stat"><div class="stat-v">{{.Remaining}}</div><div class="stat-k">Remaining (pre-tail)</div></div>
 <div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
 {{if .TailStarted}}<div class="stat"><div class="stat-v" style="color:var(--ac)">Active</div><div class="stat-k">Tail Emission</div></div>{{end}}
 </div>
 
+<div class="panels">
+<div>
 <h2><span class="g">#</span> mempool</h2>
 {{if .MempoolTxs}}
 <table>
@@ -1029,7 +1045,9 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{else}}
 <p class="d" style="padding:20px 0">Mempool is empty</p>
 {{end}}
+</div>
 
+<div>
 <h2><span class="g">#</span> recent blocks</h2>
 <table>
 <tr><th>Height</th><th>Hash</th><th>Age</th><th>Txs</th></tr>
@@ -1042,6 +1060,8 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 </tr>
 {{end}}
 </table>
+</div>
+</div>
 
 <footer><a href="https://blocknetcrypto.com">← blocknetcrypto.com</a>{{if .IsTestnet}} <span class="d">·</span> <span class="d">testnet</span>{{end}}</footer>
 ` + explorerEggScript + `
@@ -1070,17 +1090,19 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1>
-<div class="topnav"><a href="/">blocks</a>  <a href="/stats">stats</a></div>
+<div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
+<div class="topnav"><a href="/">blocks</a> <a href="/stats">stats</a></div>
 
 <div class="nav">
 {{if .HasPrev}}<a href="/block/{{.PrevHeight}}">← Block {{.PrevHeight}}</a>{{end}}
 {{if .HasNext}}<a href="/block/{{.NextHeight}}">Block {{.NextHeight}} →</a>{{end}}
 </div>
 
+<div class="block-columns">
+<div>
 <h2><span class="g">#</span> block {{.Height}}</h2>
-<div class="box">
-<div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{if .IsGenesis}}<span title="{{.GenesisMsg}}" style="cursor:help;border-bottom:1px dashed var(--ac)">{{.Hash}}</span>{{else}}{{.Hash}}{{end}}</div></div>
+<div class="props">
+<div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{if .IsGenesis}}<span title="{{.GenesisMsg}}" style="cursor:help">{{.Hash}}</span>{{else}}{{.Hash}}{{end}}</div></div>
 <div class="prop"><div class="prop-k">Previous</div><div class="prop-v mono"><a href="/block/{{.PrevHash}}">{{.PrevHash}}</a></div></div>
 <div class="prop"><div class="prop-k">Merkle Root</div><div class="prop-v mono">{{.MerkleRoot}}</div></div>
 <div class="prop"><div class="prop-k">Time</div><div class="prop-v">{{.Time}}</div></div>
@@ -1089,7 +1111,9 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <div class="prop"><div class="prop-k">Block Reward</div><div class="prop-v">{{printf "%.8f" .Reward}} BNT</div></div>
 <div class="prop"><div class="prop-k">Transactions</div><div class="prop-v">{{.TxCount}}</div></div>
 </div>
+</div>
 
+<div>
 <h2><span class="g">#</span> transactions</h2>
 <table>
 <tr><th>Hash</th><th>Type</th><th>Inputs</th><th>Outputs</th></tr>
@@ -1102,6 +1126,8 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 </tr>
 {{end}}
 </table>
+</div>
+</div>
 
 <footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
 ` + explorerEggScript + `
@@ -1129,25 +1155,51 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1>
-<div class="topnav"><a href="/">blocks</a>   <a href="/stats">stats</a></div>
+<div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
+<div class="topnav"><a href="/">blocks</a> <a href="/stats">stats</a></div>
 
+<div class="tx-columns">
+<div class="tx-col-left">
 <h2><span class="g">#</span> transaction</h2>
-<div class="box">
+<div class="props">
 <div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{.Hash}}</div></div>
+<div class="prop"><div class="prop-k">Tx Public Key</div><div class="prop-v mono">{{.TxPubKey}}</div></div>
 <div class="prop"><div class="prop-k">Block</div><div class="prop-v">{{if .InMempool}}<span class="d">Pending (in mempool)</span>{{else}}<a href="/block/{{.BlockHeight}}">{{.BlockHeight}}</a> ({{.Confirmations}} confirmations){{end}}</div></div>
 <div class="prop"><div class="prop-k">Type</div><div class="prop-v">{{if .IsCoinbase}}<span class="g">coinbase</span>{{else}}transfer{{end}}</div></div>
 {{if not .IsCoinbase}}<div class="prop"><div class="prop-k">Fee</div><div class="prop-v">{{printf "%.8f" .Fee}} BNT</div></div>{{end}}
 <div class="prop"><div class="prop-k">Inputs</div><div class="prop-v">{{.InputCount}}</div></div>
 <div class="prop"><div class="prop-k">Outputs</div><div class="prop-v">{{.OutputCount}}</div></div>
-<div class="prop"><div class="prop-k">Tx Public Key</div><div class="prop-v mono">{{.TxPubKey}}</div></div>
 </div>
 
+<h2><span class="g">#</span> TX Proof</h2>
+<div class="prove-tabs">
+<button id="tab-recv" class="prove-tab prove-tab-active" onclick="switchProveTab('recv')">TX Received</button>
+<button id="tab-send" class="prove-tab" onclick="switchProveTab('send')">TX Sent</button>
+</div>
+<div class="prove-box">
+<div id="prove-recv">
+<p class="d" style="font-size:13px;margin-bottom:12px">Check if an output belongs to you. Your view privkey is sent to this server.</p>
+<input type="text" id="recv-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false">
+<input type="text" id="recv-view" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false">
+<button id="recv-btn" onclick="doRecvProve()">Check</button>
+</div>
+<div id="prove-send" style="display:none">
+<p class="d" style="font-size:13px;margin-bottom:12px">Prove participation in a TX. Provide a view privkey and the recipient's public address. Anyone can independently verify this proof.</p>
+<input type="text" id="send-txpriv" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false">
+<input type="text" id="send-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false">
+<input type="text" id="send-view" placeholder="View pubkey (64 hex)" maxlength="64" spellcheck="false">
+<button id="send-btn" onclick="doSendProve()">Prove</button>
+</div>
+<div id="prove-result" style="margin-top:16px;display:none"></div>
+</div>
+</div>
+
+<div class="tx-col-right">
 {{if .Inputs}}
 <h2><span class="g">#</span> inputs (ring signatures)</h2>
 <p class="d" style="font-size:13px;margin-bottom:16px">Each input uses a ring of {{(index .Inputs 0).RingSize}} public keys. The real spender is hidden among decoys.</p>
 {{range .Inputs}}
-<div class="box">
+<div class="io-card">
 <div class="prop"><div class="prop-k">Input #{{.Index}}</div><div class="prop-v"></div></div>
 <div class="prop"><div class="prop-k">Key Image</div><div class="prop-v mono">{{.KeyImage}}</div></div>
 <div class="prop"><div class="prop-k">Ring Size</div><div class="prop-v">{{.RingSize}}</div></div>
@@ -1156,10 +1208,10 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{end}}
 {{end}}
 
-<h2><span class="g">#</span> outputs (stealth addresses)</h2>
+<h2 style="margin-top:24px"><span class="g">#</span> outputs (stealth addresses)</h2>
 <p class="d" style="font-size:13px;margin-bottom:16px">Amounts are hidden by Pedersen commitments. Range proofs ensure validity without revealing values.</p>
 {{range .Outputs}}
-<div class="box">
+<div class="io-card">
 <div class="prop"><div class="prop-k">Output #{{.Index}}</div><div class="prop-v"></div></div>
 <div class="prop"><div class="prop-k">Stealth Address</div><div class="prop-v mono">{{.PublicKey}}</div></div>
 <div class="prop"><div class="prop-k">Commitment</div><div class="prop-v mono">{{.Commitment}}</div></div>
@@ -1167,44 +1219,19 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .EncMemo}}<div class="prop"><div class="prop-k">Memo</div><div class="prop-v mono"><span class="g">{{.EncMemo}}</span> <span class="d">(encrypted)</span></div></div>{{end}}
 </div>
 {{end}}
+</div>
+</div>
 
-<h2><span class="g">#</span> TX Proof</h2>
-<div style="display:flex;gap:0;margin-bottom:0">
-<button id="tab-recv" onclick="switchProveTab('recv')" style="background:var(--ac);color:#000;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">TX Received</button>
-<button id="tab-send" onclick="switchProveTab('send')" style="background:#000;color:#666;border:1px solid #333;border-bottom:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace">TX Sent</button>
-</div>
-<div class="box" style="margin-top:0;border-top:1px solid #333">
-<div id="prove-recv">
-<p class="d" style="font-size:13px;margin-bottom:12px">Check if an output belongs to you. Your view privkey is sent to this server.</p>
-<div style="display:flex;flex-direction:column;gap:8px">
-<input type="text" id="recv-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<input type="text" id="recv-view" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<button id="recv-btn" onclick="doRecvProve()" style="background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit;align-self:flex-start">Check</button>
-</div>
-</div>
-<div id="prove-send" style="display:none">
-<p class="d" style="font-size:13px;margin-bottom:12px">Prove participation in a TX. Provide a view privkey and the recipient's public address. Anyone can independently verify this proof.</p>
-<div style="display:flex;flex-direction:column;gap:8px">
-<input type="text" id="send-txpriv" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<input type="text" id="send-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<input type="text" id="send-view" placeholder="View pubkey (64 hex)" maxlength="64" spellcheck="false" style="background:#000;border:1px solid #333;color:#eee;padding:10px;font:13px/1.4 monospace;width:100%">
-<button id="send-btn" onclick="doSendProve()" style="background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit;align-self:flex-start">Prove</button>
-</div>
-</div>
-<div id="prove-result" style="margin-top:16px;display:none"></div>
-</div>
 <script>
 function switchProveTab(tab){
 var rt=document.getElementById('tab-recv'),st=document.getElementById('tab-send');
 var rp=document.getElementById('prove-recv'),sp=document.getElementById('prove-send');
 document.getElementById('prove-result').style.display='none';
 if(tab==='recv'){
-rt.style.background='var(--ac)';rt.style.color='#000';
-st.style.background='#000';st.style.color='#666';
+rt.className='prove-tab prove-tab-active';st.className='prove-tab';
 rp.style.display='';sp.style.display='none';
 }else{
-st.style.background='var(--ac)';st.style.color='#000';
-rt.style.background='#000';rt.style.color='#666';
+st.className='prove-tab prove-tab-active';rt.className='prove-tab';
 sp.style.display='';rp.style.display='none';
 }
 }
@@ -1217,7 +1244,7 @@ if(matched.length===0){res.innerHTML='<span class="d">No outputs in this transac
 var html='<div style="color:var(--ac);margin-bottom:12px">'+matched.length+' output'+(matched.length>1?'s':'')+' matched</div>';
 for(var i=0;i<matched.length;i++){
 var o=matched[i];
-html+='<div style="border:1px solid #333;padding:12px;margin-bottom:8px">';
+html+='<div style="padding:12px 0;margin-bottom:8px">';
 html+='<div class="prop"><div class="prop-k">Output #'+o.index+'</div><div class="prop-v" style="color:var(--ac);font-size:18px">'+o.amount.toFixed(8)+' BNT</div></div>';
 if(o.memo){html+='<div class="prop"><div class="prop-k">Memo</div><div class="prop-v">'+o.memo.replace(/</g,'&lt;')+'</div></div>';}
 html+='</div>';
@@ -1275,39 +1302,40 @@ const explorerStatsTmpl = `<!DOCTYPE html>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{--ac:#af0;--ac-h:#cf3}
-body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:32px;max-width:900px;margin:0 auto}
+body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:24px 32px}
 a{color:var(--ac)}
 a:hover{color:var(--ac-h)}
-h1,h2{color:#eee;font-weight:normal;margin:48px 0 16px}
-h1{font-size:24px;margin-top:0}
-h2{font-size:18px;border-bottom:1px dashed #333;padding-bottom:8px}
+h1,h2{color:#eee;font-weight:normal}
+h1{font-size:24px;margin:0}
+h2{font-size:18px;margin:40px 0 16px}
 .g{color:var(--ac)}
 .d{color:#555}
-.topnav{font-size:13px;margin:4px 0 0}
-.box{border:1px solid #222;padding:20px;margin:24px 0;background:#000}
-.stats{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px}
-.stat{text-align:center;flex:1;min-width:100px}
+.header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:12px;margin-bottom:8px}
+.topnav{font-size:13px;display:flex;gap:16px;margin-bottom:24px}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
+.stat{padding:20px;text-align:center}
 .stat-v{font-size:24px;color:#eee}
-.stat-k{font-size:12px;color:#666;text-transform:uppercase}
-.chart-box{border:1px solid #222;margin:24px 0;background:#000;padding:12px 12px 8px}
+.stat-k{font-size:12px;color:#666;text-transform:uppercase;margin-top:4px}
+.chart-box{background:#000;padding:12px 12px 8px}
 canvas{width:100%;height:280px;display:block}
-footer{margin-top:64px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
-@media(max-width:600px){body{padding:16px}h1{font-size:20px}.stats{flex-direction:column}.stat{min-width:auto}}
+footer{margin-top:48px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
+@media(max-width:1000px){body{padding:16px}h1{font-size:20px}.stat-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
+@media(max-width:500px){.stat-grid{grid-template-columns:1fr 1fr}.stat-v{font-size:18px}}
 </style>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
-<h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1>
+<div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
 <div class="topnav"><a href="/">← blocks</a></div>
 
 <h2><span class="g">#</span> network overview</h2>
-<div class="box stats">
+<div class="stat-grid">
 <div class="stat"><div class="stat-v">{{.Height}}</div><div class="stat-k">Block Height</div></div>
 <div class="stat"><div class="stat-v">{{.Hashrate}} H/s</div><div class="stat-k">Hashrate</div></div>
 <div class="stat"><div class="stat-v">{{.Difficulty}}</div><div class="stat-k">Difficulty</div></div>
 <div class="stat"><div class="stat-v">{{.AvgBlockTime}}s</div><div class="stat-k">Avg Block Time</div></div>
 </div>
-<div class="box stats">
+<div class="stat-grid">
 <div class="stat"><div class="stat-v">{{.TotalTx}}</div><div class="stat-k">Window Transactions</div></div>
 <div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
 <div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
