@@ -94,6 +94,7 @@ func (e *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	e.mux.ServeHTTP(w, r)
 }
 
@@ -1026,10 +1027,10 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .TailStarted}}<div class="stat"><div class="stat-v" style="color:var(--ac)">Active</div><div class="stat-k">Tail Emission</div></div>{{end}}
 </div>
 
+{{if .MempoolTxs}}
 <div class="panels">
 <div>
 <h2><span class="g">#</span> mempool</h2>
-{{if .MempoolTxs}}
 <table>
 <tr><th>Hash</th><th>Fee</th><th>Fee/byte</th><th>Size</th><th>Age</th></tr>
 {{range .MempoolTxs}}
@@ -1042,9 +1043,6 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 </tr>
 {{end}}
 </table>
-{{else}}
-<p class="d" style="padding:20px 0">Mempool is empty</p>
-{{end}}
 </div>
 
 <div>
@@ -1062,6 +1060,20 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 </table>
 </div>
 </div>
+{{else}}
+<h2><span class="g">#</span> recent blocks</h2>
+<table>
+<tr><th>Height</th><th>Hash</th><th>Age</th><th>Txs</th></tr>
+{{range .Blocks}}
+<tr>
+<td><a href="/block/{{.Height}}">{{.Height}}</a></td>
+<td class="hash"><a href="/block/{{.Hash}}">{{.Hash}}</a></td>
+<td>{{.Ago}}</td>
+<td>{{.TxCount}}</td>
+</tr>
+{{end}}
+</table>
+{{end}}
 
 <footer><a href="https://blocknetcrypto.com">← blocknetcrypto.com</a>{{if .IsTestnet}} <span class="d">·</span> <span class="d">testnet</span>{{end}}</footer>
 ` + explorerEggScript + `
