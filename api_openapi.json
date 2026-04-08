@@ -2532,19 +2532,15 @@
         "operationId": "purgeData",
         "tags": ["Admin"],
         "summary": "Purge blockchain data",
-        "description": "Deletes all blockchain data from disk. Requires password verification and explicit confirmation. Stops the daemon, removes the data directory, then shuts down the API server. A restart is required after this operation. This is irreversible.",
+        "description": "Deletes all blockchain data from disk. Requires explicit confirmation. Stops the daemon, removes the data directory, then shuts down the API server. A restart is required after this operation. This is irreversible.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["password", "confirm"],
+                "required": ["confirm"],
                 "properties": {
-                  "password": {
-                    "type": "string",
-                    "description": "Wallet password for verification"
-                  },
                   "confirm": {
                     "type": "boolean",
                     "description": "Must be true to confirm the destructive operation"
@@ -2552,7 +2548,6 @@
                 }
               },
               "example": {
-                "password": "my-wallet-passphrase",
                 "confirm": true
               }
             }
@@ -2586,15 +2581,7 @@
               }
             }
           },
-          "401": {
-            "description": "Incorrect password or missing Bearer token",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "incorrect password" }
-              }
-            }
-          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
           "500": {
             "description": "Failed to purge data",
             "content": {
@@ -3447,7 +3434,7 @@
     },
     {
       "name": "Admin",
-      "description": "Dangerous administrative operations (data purge, etc.). These are irreversible and require password confirmation."
+      "description": "Dangerous administrative operations (data purge, etc.). These are irreversible and require explicit confirmation."
     }
   ]
 }

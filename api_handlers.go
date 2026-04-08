@@ -2172,68 +2172,13 @@ func (s *APIServer) handleMiningThreads(w http.ResponseWriter, r *http.Request) 
 // POST /api/purge
 func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Password string `json:"password"`
-		Confirm  bool   `json:"confirm"`
+		Confirm bool `json:"confirm"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
 
-	// Fail closed if destructive auth state is not initialized.
-	if s.wallet == nil {
-		writeError(w, http.StatusServiceUnavailable, "purge unavailable: no wallet loaded")
-		return
-	}
-	s.mu.RLock()
-	hashSet := s.passwordHashSet
-	expectedHash := s.passwordHash
-	s.mu.RUnlock()
-	if !hashSet {
-		writeError(w, http.StatusServiceUnavailable, "purge unavailable: password state not initialized")
-		return
-	}
-
-	ip := clientIP(r)
-	if wait, lockedUntil := s.unlockAttempts.precheck(ip); !lockedUntil.IsZero() {
-		retryAfter := int(time.Until(lockedUntil).Seconds())
-		retryAfter = max(retryAfter, 1)
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
-		return
-	} else if wait > 0 {
-		retryAfter := int(wait.Seconds())
-		retryAfter = max(retryAfter, 1)
-		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-		writeError(w, http.StatusTooManyRequests, "attempt backoff active; retry later")
-		return
-	}
-
-	// Require password verification
-	pw := []byte(req.Password)
-	actualHash := passwordHash(pw)
-	wipeBytes(pw)
-	if subtle.ConstantTimeCompare(actualHash[:], expectedHash[:]) != 1 {
-		delay, lockedUntil := s.unlockAttempts.recordFailure(ip)
-		if delay > 0 {
-			select {
-			case <-time.After(delay):
-			case <-r.Context().Done():
-			}
-		}
-		if !lockedUntil.IsZero() {
-			retryAfter := int(time.Until(lockedUntil).Seconds())
-			retryAfter = max(retryAfter, 1)
-			w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
-			writeError(w, http.StatusTooManyRequests, "too many attempts; try again later")
-			return
-		}
-		writeError(w, http.StatusUnauthorized, "incorrect password")
-		return
-	}
-	s.unlockAttempts.recordSuccess(ip)
-
-	// Require explicit confirmation
 	if !req.Confirm {
 		writeError(w, http.StatusBadRequest, "confirmation required (set confirm: true)")
 		return
