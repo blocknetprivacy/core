@@ -115,8 +115,8 @@ type SyncManager struct {
 	syncing        bool
 	syncPeer       peer.ID
 	syncStartTime  time.Time
-	syncTarget     uint64            // Target height we're syncing to
-	syncProgress   uint64            // Current height we've processed to
+	syncTarget     uint64                     // Target height we're syncing to
+	syncProgress   uint64                     // Current height we've processed to
 	downloadBuffer map[uint64]DownloadedBlock // Buffer for out-of-order blocks
 
 	ctx    context.Context
@@ -656,7 +656,6 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	sm.syncProgress = ourStatus.Height
 	sm.mu.Unlock()
 
-
 	// Use up to 3 peers for parallel download
 	numDownloaders := min(len(peers), 3)
 
@@ -807,7 +806,6 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 			nextHeight++
 
-			
 		}
 	}()
 
@@ -1027,9 +1025,12 @@ outer:
 					continue outer
 				}
 
-				// This peer returned hash-matching data that still fails validation.
-				// Keep trying other peers for the same parent hash before failing.
-				sm.banInvalidBlockPeer(sourcePeer, "invalid parent block data during orphan recovery")
+				// At this point the response was non-empty, decodable, and hash-matching.
+				// A processBlock failure here can still come from our local branch context
+				// (for example, a competing-fork spend that conflicts only with the
+				// current canonical branch above the fork point), so do not ban the
+				// serving peer on this path. Keep trying other peers for the same parent
+				// hash before failing the recovery attempt.
 				invalidPeers[sourcePeer] = struct{}{}
 				lastProcessErr = err
 				continue

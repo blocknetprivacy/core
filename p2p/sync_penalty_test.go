@@ -2,7 +2,9 @@ package p2p
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -37,9 +39,9 @@ func TestHandleNewBlock_DoesNotPenalizeOrphanOrDuplicate(t *testing.T) {
 		n := newPenaltyTestNode()
 		orph := errors.New("orphan")
 		sm := NewSyncManager(n, SyncConfig{
-			ProcessBlock:      func(data []byte) error { return orph },
-			IsOrphanError:     func(err error) bool { return errors.Is(err, orph) },
-			IsDuplicateError:  func(error) bool { return false },
+			ProcessBlock:     func(data []byte) error { return orph },
+			IsOrphanError:    func(err error) bool { return errors.Is(err, orph) },
+			IsDuplicateError: func(error) bool { return false },
 		})
 		sm.handleNewBlock(peer.ID("12D3KooWOrphanPeer000001"), []byte("orphan"))
 		if got := n.BannedCount(); got != 0 {
@@ -51,9 +53,9 @@ func TestHandleNewBlock_DoesNotPenalizeOrphanOrDuplicate(t *testing.T) {
 		n := newPenaltyTestNode()
 		dup := errors.New("duplicate")
 		sm := NewSyncManager(n, SyncConfig{
-			ProcessBlock:      func(data []byte) error { return dup },
-			IsOrphanError:     func(error) bool { return false },
-			IsDuplicateError:  func(err error) bool { return errors.Is(err, dup) },
+			ProcessBlock:     func(data []byte) error { return dup },
+			IsOrphanError:    func(error) bool { return false },
+			IsDuplicateError: func(err error) bool { return errors.Is(err, dup) },
 		})
 		sm.handleNewBlock(peer.ID("12D3KooWDuplicatePeer0001"), []byte("dup"))
 		if got := n.BannedCount(); got != 0 {
@@ -129,4 +131,81 @@ func TestFetchBlockByHashFromAnyPeer_PenalizesEmptyUndecodableAndMismatched(t *t
 			t.Fatalf("expected mismatched-hash response peer penalty, bannedCount=%d", got)
 		}
 	})
+}
+
+func TestProcessBlockWithRecoveryCtx_DoesNotBanPeerForHashMatchingParentValidationFailure(t *testing.T) {
+	errOrphan := errors.New("orphan")
+	errParent := errors.New("double-spend on competing fork")
+	parentHash := [32]byte{0xAA}
+	childHash := [32]byte{0xBB}
+
+	parentData := encodeRecoveryBlock(t, recoveryTestBlock{
+		Height: 10,
+		Hash:   parentHash,
+		Prev:   [32]byte{0x09},
+	})
+	childData := encodeRecoveryBlock(t, recoveryTestBlock{
+		Height: 11,
+		Hash:   childHash,
+		Prev:   parentHash,
+	})
+
+	n := newPenaltyTestNode()
+	pid := peer.ID("12D3KooWRecoveryNoBanPeer1")
+	sm := NewSyncManager(n, SyncConfig{
+		ProcessBlock: func(data []byte) error {
+			var b recoveryTestBlock
+			if err := json.Unmarshal(data, &b); err != nil {
+				return err
+			}
+			switch b.Hash {
+			case childHash:
+				return errOrphan
+			case parentHash:
+				return errParent
+			default:
+				return nil
+			}
+		},
+		IsOrphanError:    func(err error) bool { return errors.Is(err, errOrphan) },
+		IsDuplicateError: func(error) bool { return false },
+		GetBlockMeta: func(data []byte) (uint64, [32]byte, error) {
+			var b recoveryTestBlock
+			if err := json.Unmarshal(data, &b); err != nil {
+				return 0, [32]byte{}, err
+			}
+			return b.Height, b.Prev, nil
+		},
+		GetBlockHash: func(data []byte) ([32]byte, error) {
+			var b recoveryTestBlock
+			if err := json.Unmarshal(data, &b); err != nil {
+				return [32]byte{}, err
+			}
+			return b.Hash, nil
+		},
+		FetchBlocksByHash: func(ctx context.Context, p peer.ID, hashes [][32]byte) ([][]byte, error) {
+			if p != pid {
+				return nil, errors.New("unexpected peer")
+			}
+			if len(hashes) == 1 && hashes[0] == parentHash {
+				return [][]byte{parentData}, nil
+			}
+			return nil, errors.New("unexpected hash request")
+		},
+	})
+
+	peers := []PeerStatus{{Peer: pid}}
+	accepted, err := sm.ProcessBlockWithRecoveryCtx(context.Background(), childData, peers)
+	if err == nil {
+		t.Fatal("expected orphan recovery to fail on parent validation error")
+	}
+	if accepted {
+		t.Fatal("expected failed orphan recovery to not report acceptance")
+	}
+	if !strings.Contains(err.Error(), errParent.Error()) {
+		t.Fatalf("expected orphan recovery error to retain parent validation failure, got: %v", err)
+	}
+	if got := n.BannedCount(); got != 0 {
+		t.Fatalf("expected hash-matching parent validation failure to avoid peer ban, bannedCount=%d", got)
+	}
 }

@@ -1551,12 +1551,14 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 	)
 }
 
-// branchAwareSpentCheckerLocked returns a spent-check closure that includes
-// key images used on the candidate block's parent branch, even when those
-// ancestors are currently off-main-chain.
+// branchAwareSpentCheckerLocked returns a spent-check closure scoped to the
+// candidate block's parent branch. It includes key images used on off-main-chain
+// ancestors of that branch, while ignoring canonical spends that only occur
+// above the branch's fork point on the current main chain.
 func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChecker, error) {
 	branchSpent := make(map[[32]byte]struct{})
 	currentHash := parentHash
+	commonHeight := uint64(0)
 
 	for {
 		parent := c.getBlockByHashLocked(currentHash)
@@ -1566,6 +1568,7 @@ func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChec
 
 		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
 		if onMainHeight && mainHashAtHeight == currentHash {
+			commonHeight = parent.Header.Height
 			break
 		}
 
@@ -1588,7 +1591,11 @@ func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChec
 		if _, exists := branchSpent[keyImage]; exists {
 			return true
 		}
-		return c.isKeyImageSpentLocked(keyImage)
+		if spentHeight, exists := c.keyImages[keyImage]; exists {
+			return spentHeight <= commonHeight
+		}
+		spent, spentHeight := c.storage.IsKeyImageSpent(keyImage)
+		return spent && spentHeight <= commonHeight
 	}, nil
 }
 
