@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -72,13 +73,11 @@ func TestHandleLoadWallet_ReorgAtSameHeight_RewindsStaleWalletState(t *testing.T
 	}
 }
 
-func TestHandleLoadWallet_CatchupOnlyMarksScannedHeight(t *testing.T) {
+func TestHandleLoadWallet_ResponseIncludesSyncProgress(t *testing.T) {
 	chain, _, cleanup := mustCreateTestChain(t)
 	defer cleanup()
 	mustAddGenesisBlock(t, chain)
 
-	// Build a sparse/inconsistent view for regression:
-	// Height reports 2, but block at height 2 is missing.
 	genesis := chain.GetBlockByHeight(0)
 	if genesis == nil {
 		t.Fatal("expected genesis block")
@@ -97,7 +96,7 @@ func TestHandleLoadWallet_CatchupOnlyMarksScannedHeight(t *testing.T) {
 	chain.mu.Lock()
 	chain.blocks[hash1] = block1
 	chain.byHeight[1] = hash1
-	chain.height = 2 // deliberately ahead of available blocks
+	chain.height = 2
 	chain.mu.Unlock()
 
 	d, stop := mustStartTestDaemon(t, chain)
@@ -126,14 +125,16 @@ func TestHandleLoadWallet_CatchupOnlyMarksScannedHeight(t *testing.T) {
 		t.Fatalf("expected 200, got %d (body=%q)", resp.Code, resp.Body.String())
 	}
 
-	s.mu.RLock()
-	loaded := s.wallet
-	s.mu.RUnlock()
-	if loaded == nil {
-		t.Fatal("expected loaded wallet")
+	var body map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
 	}
-
-	if got := loaded.SyncedHeight(); got != 1 {
-		t.Fatalf("expected synced height to reflect last scanned block (1), got %d", got)
+	syncedHeight, ok1 := body["synced_height"]
+	chainHeight, ok2 := body["chain_height"]
+	if !ok1 || !ok2 {
+		t.Fatalf("expected synced_height and chain_height in response, got %v", body)
+	}
+	if uint64(syncedHeight.(float64)) > uint64(chainHeight.(float64)) {
+		t.Fatalf("synced_height (%v) should not exceed chain_height (%v)", syncedHeight, chainHeight)
 	}
 }

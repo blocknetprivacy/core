@@ -591,7 +591,7 @@
         "operationId": "loadWallet",
         "tags": ["Wallet"],
         "summary": "Load wallet",
-        "description": "Loads an existing wallet from disk, decrypting with the given password. Primarily used in `--daemon` mode where the app starts without a wallet. If `filepath` is provided, only the basename is used and the file is resolved relative to the configured `--wallet` directory; if omitted, the default wallet path is used. After loading, the wallet is unlocked, all wallet endpoints become available, miner reward keys are pointed at this wallet, and any blocks that arrived before the wallet was loaded are scanned automatically. Can only be called once — returns 409 if a wallet is already loaded.",
+        "description": "Loads an existing wallet from disk, decrypting with the given password. Primarily used in `--daemon` mode where the app starts without a wallet. If `filepath` is provided, only the basename is used and the file is resolved relative to the configured `--wallet` directory; if omitted, the default wallet path is used. After loading, the wallet is unlocked, all wallet endpoints become available, and miner reward keys are pointed at this wallet. If blocks arrived while the wallet was offline, a background scan is started automatically — check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called once — returns 409 if a wallet is already loaded.",
         "requestBody": {
           "required": true,
           "content": {
@@ -634,13 +634,23 @@
                     "filename": {
                       "type": "string",
                       "description": "Basename of the loaded wallet file"
+                    },
+                    "synced_height": {
+                      "type": "integer",
+                      "description": "Wallet's last scanned block height"
+                    },
+                    "chain_height": {
+                      "type": "integer",
+                      "description": "Current chain tip height. If synced_height < chain_height, a background scan is in progress."
                     }
                   }
                 },
                 "example": {
                   "loaded": true,
                   "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-                  "filename": "mywallet.dat"
+                  "filename": "mywallet.dat",
+                  "synced_height": 4200,
+                  "chain_height": 9800
                 }
               }
             }
@@ -875,7 +885,7 @@
         "operationId": "importWallet",
         "tags": ["Wallet"],
         "summary": "Import wallet from recovery seed",
-        "description": "Creates a new wallet from a BIP39 12-word recovery seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and the entire blockchain is scanned for outputs belonging to this seed. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "description": "Creates a new wallet from a BIP39 12-word recovery seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and a background scan of the entire blockchain is started to find outputs belonging to this seed. Check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
         "requestBody": {
           "required": true,
           "content": {
@@ -923,13 +933,23 @@
                     "filename": {
                       "type": "string",
                       "description": "Basename of the created wallet file"
+                    },
+                    "synced_height": {
+                      "type": "integer",
+                      "description": "Wallet's last scanned block height (0 for fresh import)"
+                    },
+                    "chain_height": {
+                      "type": "integer",
+                      "description": "Current chain tip height. A background scan is in progress until synced_height catches up."
                     }
                   }
                 },
                 "example": {
                   "imported": true,
                   "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-                  "filename": "restored.dat"
+                  "filename": "restored.dat",
+                  "synced_height": 0,
+                  "chain_height": 9800
                 }
               }
             }
@@ -1000,7 +1020,7 @@
         "operationId": "getBalance",
         "tags": ["Wallet"],
         "summary": "Wallet balance",
-        "description": "Returns spendable, pending, and total confirmed balance in atomic units (1 BNT = 100,000,000 atomic units). Spendable excludes immature coinbase outputs. Also includes an optional UX-only `pending_unconfirmed` amount (typically change from your most recent send) plus an estimated unlock ETA in seconds, assuming ~5 minute blocks. Requires unlocked wallet.",
+        "description": "Returns spendable, pending, and total confirmed balance in atomic units (1 BNT = 100,000,000 atomic units). Spendable excludes immature coinbase outputs. Also includes an optional UX-only `pending_unconfirmed` amount (typically change from your most recent send) plus an estimated unlock ETA in seconds, assuming ~5 minute blocks. If the wallet is more than 100 blocks behind the chain (background scan in progress), balance numbers are omitted and `scanning: true` is returned with progress info instead. Requires unlocked wallet.",
         "responses": {
           "200": {
             "description": "Balance breakdown",
@@ -1792,33 +1812,27 @@
         "operationId": "syncWallet",
         "tags": ["Wallet"],
         "summary": "Rescan wallet",
-        "description": "Rescans blocks from the wallet's last synced height to the chain tip, scanning for owned outputs and spent key images. Returns immediately if the wallet is already at the chain tip. Requires loaded, unlocked wallet.",
+        "description": "Triggers a background rescan from the wallet's last synced height to the chain tip. Returns immediately with the current sync state. Check the balance endpoint to track progress. Requires loaded, unlocked wallet.",
         "responses": {
           "200": {
-            "description": "Rescan result",
+            "description": "Sync status",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "status": { "type": "string", "description": "'synced' or 'already synced'" },
-                    "synced_height": { "type": "integer", "description": "Wallet synced height after the scan" },
-                    "chain_height": { "type": "integer", "description": "Current chain tip height" },
-                    "blocks_scanned": { "type": "integer", "description": "Number of blocks scanned (0 if already synced)" },
-                    "outputs_found": { "type": "integer", "description": "Number of new owned outputs discovered" },
-                    "outputs_spent": { "type": "integer", "description": "Number of spent key images detected" }
+                    "status": { "type": "string", "description": "'scanning' or 'already synced'" },
+                    "synced_height": { "type": "integer", "description": "Wallet's current synced height" },
+                    "chain_height": { "type": "integer", "description": "Current chain tip height" }
                   }
                 },
                 "examples": {
-                  "synced": {
-                    "summary": "Blocks scanned successfully",
+                  "scanning": {
+                    "summary": "Background scan started",
                     "value": {
-                      "status": "synced",
-                      "synced_height": 14207,
-                      "chain_height": 14207,
-                      "blocks_scanned": 12,
-                      "outputs_found": 1,
-                      "outputs_spent": 0
+                      "status": "scanning",
+                      "synced_height": 4200,
+                      "chain_height": 9800
                     }
                   },
                   "already_synced": {
@@ -1835,15 +1849,6 @@
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/WalletLocked" },
-          "500": {
-            "description": "Failed to persist wallet after scan",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "internal error" }
-              }
-            }
-          },
           "503": { "$ref": "#/components/responses/NoWallet" }
         }
       }
@@ -2967,19 +2972,23 @@
       },
       "BalanceResponse": {
         "type": "object",
+        "description": "When `scanning` is true, only `synced_height` and `chain_height` are present — balance fields are omitted until the wallet catches up.",
         "properties": {
-          "spendable": { "type": "integer", "description": "Mature, spendable balance in atomic units" },
-          "pending": { "type": "integer", "description": "Immature coinbase outputs awaiting maturity (atomic units)" },
-          "pending_unconfirmed": { "type": "integer", "description": "Unconfirmed expected credits not yet scanned from a block (typically change from your most recent send). UX-only; not part of confirmed balance totals (atomic units)." },
-          "pending_unconfirmed_eta": { "type": "integer", "description": "Estimated seconds until `pending_unconfirmed` becomes spendable, assuming ~5 minute blocks and requiring next block + 10 confirmations. 0 when no pending_unconfirmed." },
-          "total": { "type": "integer", "description": "Total unspent balance: spendable + pending (atomic units)" },
-          "outputs_total": { "type": "integer", "description": "Total output count (including spent)" },
-          "outputs_unspent": { "type": "integer", "description": "Currently unspent output count" },
-          "chain_height": { "type": "integer", "description": "Chain height used for maturity calculation" },
-          "memo_decrypt_failures": { "type": "integer", "description": "Number of outputs where memo decryption failed (may indicate outputs from a different wallet version)" },
-          "memo_decrypt_last_height": { "type": "integer", "description": "Block height of the most recent memo decryption failure (0 if none)" }
+          "scanning": { "type": "boolean", "description": "True if wallet is more than 100 blocks behind the chain (background scan in progress)" },
+          "synced_height": { "type": "integer", "description": "Wallet's last scanned block height" },
+          "chain_height": { "type": "integer", "description": "Current chain tip height" },
+          "spendable": { "type": "integer", "description": "Mature, spendable balance in atomic units (omitted while scanning)" },
+          "pending": { "type": "integer", "description": "Immature coinbase outputs awaiting maturity (atomic units, omitted while scanning)" },
+          "pending_unconfirmed": { "type": "integer", "description": "Unconfirmed expected credits not yet scanned from a block (typically change from your most recent send). UX-only; not part of confirmed balance totals (atomic units). Omitted while scanning." },
+          "pending_unconfirmed_eta": { "type": "integer", "description": "Estimated seconds until `pending_unconfirmed` becomes spendable, assuming ~5 minute blocks and requiring next block + 10 confirmations. 0 when no pending_unconfirmed. Omitted while scanning." },
+          "total": { "type": "integer", "description": "Total unspent balance: spendable + pending (atomic units, omitted while scanning)" },
+          "outputs_total": { "type": "integer", "description": "Total output count (including spent, omitted while scanning)" },
+          "outputs_unspent": { "type": "integer", "description": "Currently unspent output count (omitted while scanning)" },
+          "memo_decrypt_failures": { "type": "integer", "description": "Number of outputs where memo decryption failed (omitted while scanning)" },
+          "memo_decrypt_last_height": { "type": "integer", "description": "Block height of the most recent memo decryption failure (omitted while scanning)" }
         },
         "example": {
+          "scanning": false,
           "spendable": 1250000000,
           "pending": 72325093035,
           "pending_unconfirmed": 0,
@@ -2988,6 +2997,7 @@
           "outputs_total": 14,
           "outputs_unspent": 9,
           "chain_height": 14207,
+          "synced_height": 14207,
           "memo_decrypt_failures": 0,
           "memo_decrypt_last_height": 0
         }

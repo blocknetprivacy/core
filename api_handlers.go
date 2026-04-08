@@ -274,12 +274,21 @@ func (s *APIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	height := s.daemon.Chain().Height()
+	chainHeight := s.daemon.Chain().Height()
+	syncedHeight := s.wallet.SyncedHeight()
+
+	if chainHeight-syncedHeight > uint64(MaxReorgDepth) {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"scanning":      true,
+			"synced_height": syncedHeight,
+			"chain_height":  chainHeight,
+		})
+		return
+	}
+
 	total, unspent := s.wallet.OutputCount()
 	pendingUnconfirmed := s.wallet.PendingUnconfirmedBalance()
 
-	// UX-only estimate: assume ~5 minute blocks and require next block + SafeConfirmations.
-	// (This mirrors the CLI behavior.)
 	etaSeconds := int64(0)
 	if pendingUnconfirmed > 0 {
 		eta := time.Duration(wallet.SafeConfirmations+1) * wallet.EstimatedBlockInterval
@@ -287,14 +296,16 @@ func (s *APIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"spendable":                s.wallet.SpendableBalance(height),
-		"pending":                  s.wallet.PendingBalance(height),
+		"scanning":                 false,
+		"spendable":                s.wallet.SpendableBalance(chainHeight),
+		"pending":                  s.wallet.PendingBalance(chainHeight),
 		"pending_unconfirmed":      pendingUnconfirmed,
 		"pending_unconfirmed_eta":  etaSeconds,
 		"total":                    s.wallet.Balance(),
 		"outputs_total":            total,
 		"outputs_unspent":          unspent,
-		"chain_height":             height,
+		"chain_height":             chainHeight,
+		"synced_height":            syncedHeight,
 		"memo_decrypt_failures":    s.wallet.MemoDecryptFailureCount(),
 		"memo_decrypt_last_height": s.wallet.MemoDecryptLastFailureHeight(),
 	})
@@ -1267,26 +1278,6 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		walletHeight = wl.SyncedHeight()
 	}
 
-	// Catch up on blocks that arrived before the wallet was loaded
-	if walletHeight < chainHeight {
-		scannedTo := walletHeight
-		for h := walletHeight + 1; h <= chainHeight; h++ {
-			block := s.daemon.Chain().GetBlockByHeight(h)
-			if block == nil {
-				break
-			}
-			scanner.ScanBlock(blockToScanData(block))
-			scannedTo = h
-		}
-		if scannedTo > walletHeight {
-			wl.SetSyncedHeight(scannedTo)
-			if err := wl.Save(); err != nil {
-				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
-				return
-			}
-		}
-	}
-
 	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
 		ki, err := GenerateKeyImage(out.OneTimePrivKey)
 		if err != nil {
@@ -1314,10 +1305,14 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 	s.cli.passwordHashSet = true
 	s.cli.mu.Unlock()
 
+	go s.catchUpScan()
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"loaded":   true,
-		"address":  wl.Address(),
-		"filename": filepath.Base(walletPath),
+		"loaded":        true,
+		"address":       wl.Address(),
+		"filename":      filepath.Base(walletPath),
+		"synced_height": wl.SyncedHeight(),
+		"chain_height":  chainHeight,
 	})
 }
 
@@ -1504,26 +1499,7 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 	// Point miner rewards at this wallet
 	s.daemon.Miner().SetRewardKeys(wl.Keys().SpendPubKey, wl.Keys().ViewPubKey)
 
-	// Scan the entire chain to find outputs belonging to this seed
 	chainHeight := s.daemon.Chain().Height()
-	if chainHeight > 0 {
-		scannedTo := uint64(0)
-		for h := uint64(1); h <= chainHeight; h++ {
-			block := s.daemon.Chain().GetBlockByHeight(h)
-			if block == nil {
-				break
-			}
-			scanner.ScanBlock(blockToScanData(block))
-			scannedTo = h
-		}
-		if scannedTo > 0 {
-			wl.SetSyncedHeight(scannedTo)
-			if err := wl.Save(); err != nil {
-				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
-				return
-			}
-		}
-	}
 
 	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
 		ki, err := GenerateKeyImage(out.OneTimePrivKey)
@@ -1552,10 +1528,14 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 	s.cli.passwordHashSet = true
 	s.cli.mu.Unlock()
 
+	go s.catchUpScan()
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"imported": true,
-		"address":  wl.Address(),
-		"filename": filepath.Base(walletPath),
+		"imported":      true,
+		"address":       wl.Address(),
+		"filename":      filepath.Base(walletPath),
+		"synced_height": wl.SyncedHeight(),
+		"chain_height":  chainHeight,
 	})
 }
 
@@ -1659,36 +1639,12 @@ func (s *APIServer) handleWalletSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	blocks := s.daemon.Chain().GetBlocksByHeightRange(walletHeight+1, chainHeight)
-
-	totalFound, totalSpent := 0, 0
-	scannedTo := walletHeight
-	for _, block := range blocks {
-		if block == nil {
-			break
-		}
-		blockData := blockToScanData(block)
-		found, spent := s.scanner.ScanBlock(blockData)
-		totalFound += found
-		totalSpent += spent
-		scannedTo = block.Header.Height
-	}
-
-	if scannedTo > walletHeight {
-		s.wallet.SetSyncedHeight(scannedTo)
-		if err := s.wallet.Save(); err != nil {
-			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
-			return
-		}
-	}
+	go s.catchUpScan()
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":         "synced",
-		"synced_height":  scannedTo,
-		"chain_height":   chainHeight,
-		"blocks_scanned": scannedTo - walletHeight,
-		"outputs_found":  totalFound,
-		"outputs_spent":  totalSpent,
+		"status":        "scanning",
+		"synced_height": walletHeight,
+		"chain_height":  chainHeight,
 	})
 }
 
@@ -2162,6 +2118,60 @@ func (s *APIServer) handleMiningThreads(w http.ResponseWriter, r *http.Request) 
 
 	s.daemon.Miner().SetThreads(req.Threads)
 	writeJSON(w, http.StatusOK, map[string]any{"threads": s.daemon.Miner().Threads()})
+}
+
+// catchUpScan scans blocks from the wallet's synced height to the chain tip
+// in the background. Called after wallet load/import so the HTTP response
+// returns immediately. autoScanBlocks handles new blocks going forward.
+func (s *APIServer) catchUpScan() {
+	if s.cli == nil || s.cli.ctx == nil || s.daemon == nil {
+		return
+	}
+
+	s.mu.RLock()
+	w := s.wallet
+	sc := s.scanner
+	s.mu.RUnlock()
+	if w == nil || sc == nil {
+		return
+	}
+
+	ctx := s.cli.ctx
+
+	walletHeight := w.SyncedHeight()
+	chainHeight := s.daemon.Chain().Height()
+	if walletHeight >= chainHeight {
+		return
+	}
+
+	for h := walletHeight + 1; h <= chainHeight; h++ {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		block := s.daemon.Chain().GetBlockByHeight(h)
+		if block == nil {
+			break
+		}
+		sc.ScanBlock(blockToScanData(block))
+		w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
+			return s.daemon.Mempool().HasTransaction(txID)
+		})
+		w.SetSyncedHeight(h)
+
+		if h%100 == 0 || h == chainHeight {
+			if err := w.Save(); err != nil {
+				log.Printf("Warning: catchUpScan save at height %d: %v", h, err)
+			}
+		}
+
+		// Re-read chain height in case new blocks arrived during scan
+		if h == chainHeight {
+			chainHeight = s.daemon.Chain().Height()
+		}
+	}
 }
 
 // ============================================================================
