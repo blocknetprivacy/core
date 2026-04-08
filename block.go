@@ -957,6 +957,7 @@ type Chain struct {
 	// Indexed canonical ring-member membership for main-chain outputs.
 	// Key format: pubkey(32) || commitment(32).
 	canonicalRingIndex      map[[64]byte]struct{}
+	canonicalRingHeights    map[[64]byte]uint64
 	canonicalRingIndexDirty bool
 	canonicalRingIndexTip   [32]byte
 	canonicalRingIndexReady bool
@@ -1101,6 +1102,7 @@ func NewChain(dataDir string) (*Chain, error) {
 		timestamps:              make([]int64, 0, LWMAWindow+1),
 		keyImages:               make(map[[32]byte]uint64),
 		canonicalRingIndex:      make(map[[64]byte]struct{}),
+		canonicalRingHeights:    make(map[[64]byte]uint64),
 		canonicalRingIndexDirty: true,
 		canonicalRingIndexReady: false,
 	}
@@ -1513,12 +1515,19 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 
 func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 	isSpent := c.isKeyImageSpentLocked
+	isCanonicalRingMember := c.isCanonicalRingMemberLocked
 	if block != nil && block.Header.Height > 0 {
 		branchAwareSpent, err := c.branchAwareSpentCheckerLocked(block.Header.PrevHash)
 		if err != nil {
 			return err
 		}
 		isSpent = branchAwareSpent
+
+		branchAwareRingMembers, err := c.branchAwareRingMemberCheckerLocked(block.Header.PrevHash)
+		if err != nil {
+			return err
+		}
+		isCanonicalRingMember = branchAwareRingMembers
 	}
 
 	// If checkpoints are enabled for fast sync, enforce checkpoint pinning.
@@ -1546,7 +1555,7 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		c.height,
 		c.getBlockByHashLocked,
 		isSpent,
-		c.isCanonicalRingMemberLocked,
+		isCanonicalRingMember,
 		skipPoW,
 	)
 }
@@ -1596,6 +1605,53 @@ func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChec
 		}
 		spent, spentHeight := c.storage.IsKeyImageSpent(keyImage)
 		return spent && spentHeight <= commonHeight
+	}, nil
+}
+
+// branchAwareRingMemberCheckerLocked returns a ring-member checker scoped to the
+// candidate block's parent branch. It includes outputs created on off-main-chain
+// ancestors of that branch, while ignoring canonical-only outputs that appear
+// above the branch's fork point on the current main chain.
+func (c *Chain) branchAwareRingMemberCheckerLocked(parentHash [32]byte) (RingMemberChecker, error) {
+	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
+		return nil, err
+	}
+
+	branchOutputs := make(map[[64]byte]struct{})
+	currentHash := parentHash
+	commonHeight := uint64(0)
+
+	for {
+		parent := c.getBlockByHashLocked(currentHash)
+		if parent == nil {
+			return nil, ErrOrphanBlock
+		}
+
+		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
+		if onMainHeight && mainHashAtHeight == currentHash {
+			commonHeight = parent.Header.Height
+			break
+		}
+
+		for _, tx := range parent.Transactions {
+			for _, out := range tx.Outputs {
+				branchOutputs[canonicalRingIndexKey(out.PublicKey, out.Commitment)] = struct{}{}
+			}
+		}
+
+		if parent.Header.Height == 0 {
+			break
+		}
+		currentHash = parent.Header.PrevHash
+	}
+
+	return func(pubKey, commitment [32]byte) bool {
+		key := canonicalRingIndexKey(pubKey, commitment)
+		if _, exists := branchOutputs[key]; exists {
+			return true
+		}
+		memberHeight, exists := c.canonicalRingHeights[key]
+		return exists && memberHeight <= commonHeight
 	}, nil
 }
 
@@ -1732,6 +1788,7 @@ func (c *Chain) ensureCanonicalRingIndexLocked() error {
 	tipHash, tipHeight, _, found := c.storage.GetTip()
 	if !found {
 		c.canonicalRingIndex = make(map[[64]byte]struct{})
+		c.canonicalRingHeights = make(map[[64]byte]uint64)
 		c.canonicalRingIndexTip = [32]byte{}
 		c.canonicalRingIndexReady = true
 		c.canonicalRingIndexDirty = false
@@ -1743,6 +1800,7 @@ func (c *Chain) ensureCanonicalRingIndexLocked() error {
 	}
 
 	index := make(map[[64]byte]struct{})
+	heights := make(map[[64]byte]uint64)
 	for h := uint64(0); h <= tipHeight; h++ {
 		hash, hasHeight := c.storage.GetBlockHashByHeight(h)
 		if !hasHeight {
@@ -1756,12 +1814,17 @@ func (c *Chain) ensureCanonicalRingIndexLocked() error {
 
 		for _, tx := range block.Transactions {
 			for _, out := range tx.Outputs {
-				index[canonicalRingIndexKey(out.PublicKey, out.Commitment)] = struct{}{}
+				key := canonicalRingIndexKey(out.PublicKey, out.Commitment)
+				index[key] = struct{}{}
+				if _, exists := heights[key]; !exists {
+					heights[key] = h
+				}
 			}
 		}
 	}
 
 	c.canonicalRingIndex = index
+	c.canonicalRingHeights = heights
 	c.canonicalRingIndexTip = tipHash
 	c.canonicalRingIndexReady = true
 	c.canonicalRingIndexDirty = false
