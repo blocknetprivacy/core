@@ -775,6 +775,10 @@ func (c *CLI) executeCommand(line string) error {
 		return c.cmdPurgeData()
 	case "certify":
 		c.cmdCertify()
+	case "save-checkpoints":
+		c.cmdSaveCheckpoints()
+	case "load-checkpoints":
+		return c.cmdLoadCheckpoints()
 	case "license":
 		c.cmdLicense()
 	case "about":

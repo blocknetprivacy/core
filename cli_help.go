@@ -59,6 +59,10 @@ func normalizeHelpTopic(topic string) string {
 		return "mining"
 	case "certify":
 		return "certify"
+	case "save-checkpoints":
+		return "save-checkpoints"
+	case "load-checkpoints":
+		return "load-checkpoints"
 	case "purge":
 		return "purge"
 	case "version":
@@ -310,6 +314,22 @@ func helpCommandDetails(viewOnly bool, noColor bool) map[string]helpEntry {
 			exampleInput:  []string{"> certify"},
 			exampleOutput: []string{"# Certify", "  Checking 2450 blocks...", "  Chain is clean. All 2450 blocks passed."},
 		},
+		"save-checkpoints": {
+			usage:         []string{"save-checkpoints"},
+			description:   []string{"Writes checkpoint entries for every 100th block to checkpoints.dat."},
+			useWhen:       []string{"you want to generate checkpoints from your verified chain"},
+			exampleInput:  []string{"> save-checkpoints"},
+			exampleOutput: []string{"# Save Checkpoints", "  Wrote 24 checkpoint(s) to /home/user/.blocknet/checkpoints.dat"},
+			notes:         []string{"only writes new entries not already in the file", "works regardless of --save-checkpoints flag"},
+		},
+		"load-checkpoints": {
+			usage:         []string{"load-checkpoints"},
+			description:   []string{"Downloads (if missing) and loads checkpoints for faster sync."},
+			useWhen:       []string{"you want to enable PoW skipping mid-sync without restarting"},
+			exampleInput:  []string{"> load-checkpoints"},
+			exampleOutput: []string{"# Load Checkpoints", "  Loaded 24 checkpoint(s) (max height: 2400)", "  Fast-sync enabled up to height 2400 (chain is at 1200)"},
+			notes:         []string{"downloads from remote if no local file exists", "has no effect once chain is past the last checkpoint height"},
+		},
 		"purge": {
 			usage:         []string{"purge"},
 			description:   []string{"Deletes local chain data but keeps your wallet and funds."},
@@ -454,6 +474,8 @@ func (c *CLI) cmdHelp(args []string) {
   export-peer       Export peer address to peer.txt
   mining            Manage mining
   certify           Check chain integrity (difficulty + timestamps)
+  save-checkpoints  Write checkpoints for known blocks to disk
+  load-checkpoints  Download/reload checkpoints for faster sync
   purge             Delete all blockchain data (cannot be undone)
   version           Print version
   about             About this software

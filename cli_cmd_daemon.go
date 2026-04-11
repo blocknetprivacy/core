@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -256,6 +258,105 @@ func (c *CLI) cmdCertify() {
 		fmt.Printf("    Height %d: %s\n", v.Height, v.Message)
 	}
 	fmt.Println("\n  Consider purging chain data and re-syncing from trusted peers.")
+}
+
+func (c *CLI) cmdSaveCheckpoints() {
+	fmt.Printf("\n%s\n", c.sectionHead("Save Checkpoints"))
+
+	chain := c.daemon.Chain()
+	height := chain.Height()
+	if height == 0 {
+		fmt.Println("  Chain is empty, nothing to save.")
+		return
+	}
+
+	cpPath := checkpointsPath(c.dataDir)
+
+	var lastWritten uint64
+	if _, _, maxH, err := loadCheckpointsFile(cpPath); err == nil && maxH > 0 {
+		lastWritten = maxH
+	}
+
+	start := lastWritten + 100 - (lastWritten % 100)
+	if start%100 != 0 {
+		start = lastWritten + (100 - lastWritten%100)
+	}
+	if lastWritten == 0 {
+		start = 100
+	}
+
+	if start > height {
+		fmt.Printf("  Already up to date (last checkpoint: %d, chain height: %d)\n", lastWritten, height)
+		return
+	}
+
+	if err := os.MkdirAll(c.dataDir, 0o755); err != nil {
+		fmt.Printf("  Failed to create data dir: %v\n", err)
+		return
+	}
+	f, err := os.OpenFile(cpPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		fmt.Printf("  Failed to open checkpoints file: %v\n", err)
+		return
+	}
+	defer f.Close()
+
+	var written int
+	for h := start; h <= height; h += 100 {
+		block := chain.GetBlockByHeight(h)
+		if block == nil {
+			fmt.Printf("  Warning: block at height %d not found, stopping.\n", h)
+			break
+		}
+		hash := block.Hash()
+		line := fmt.Sprintf("%d:%s\n", h, strings.ToUpper(hex.EncodeToString(hash[:])))
+		if _, err := io.WriteString(f, line); err != nil {
+			fmt.Printf("  Failed to write checkpoint at height %d: %v\n", h, err)
+			return
+		}
+		written++
+	}
+
+	if written == 0 {
+		fmt.Printf("  Already up to date (last checkpoint: %d, chain height: %d)\n", lastWritten, height)
+	} else {
+		fmt.Printf("  Wrote %d checkpoint(s) to %s\n", written, cpPath)
+	}
+}
+
+func (c *CLI) cmdLoadCheckpoints() error {
+	fmt.Printf("\n%s\n", c.sectionHead("Load Checkpoints"))
+
+	cpPath := checkpointsPath(c.dataDir)
+
+	downloaded, err := ensureCheckpointsFile(cpPath)
+	if err != nil {
+		return fmt.Errorf("failed to fetch checkpoints: %w", err)
+	}
+	if downloaded {
+		fmt.Println("  Downloaded checkpoints file from remote.")
+	}
+
+	cps, _, maxH, err := loadCheckpointsFile(cpPath)
+	if err != nil {
+		return fmt.Errorf("failed to load checkpoints: %w", err)
+	}
+	if len(cps) == 0 {
+		fmt.Println("  No checkpoints found in file.")
+		return nil
+	}
+
+	chain := c.daemon.Chain()
+	chain.SetTrustedCheckpoints(cps, maxH)
+	fmt.Printf("  Loaded %d checkpoint(s) (max height: %d)\n", len(cps), maxH)
+
+	chainHeight := chain.Height()
+	if chainHeight >= maxH {
+		fmt.Println("  Chain is already past checkpoint height; PoW skipping not applicable.")
+	} else {
+		fmt.Printf("  Fast-sync enabled up to height %d (chain is at %d)\n", maxH, chainHeight)
+	}
+	return nil
 }
 
 func (c *CLI) cmdPurgeData() error {
