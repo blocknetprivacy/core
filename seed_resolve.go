@@ -27,6 +27,7 @@ var DefaultSeedHosts = []string{
 	"bnt-2.blocknetcrypto.com",
 	"bnt-3.blocknetcrypto.com",
 	"bnt-4.blocknetcrypto.com",
+	"toxicrainbows.com",
 }
 
 // ResolveSeedNodes fetches peer IDs from seed nodes' HTTP endpoints
