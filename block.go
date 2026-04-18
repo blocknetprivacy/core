@@ -1205,6 +1205,17 @@ func (c *Chain) loadFromStorage() error {
 
 	c.canonicalRingIndexDirty = true
 
+	// Build the canonical ring-member index eagerly while we still have
+	// exclusive, single-threaded access (NewChain hasn't returned yet, so no
+	// other goroutine can hold c.mu). After this point the index is kept in
+	// sync incrementally by updateCanonicalRingIndexForConnect/Disconnect
+	// (both of which only run under c.mu.Lock). This is what lets the
+	// read-only ring-member checks stay safe under c.mu.RLock: they never need
+	// to rebuild the index from a read-locked context.
+	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
+		return fmt.Errorf("failed to build canonical ring-member index: %w", err)
+	}
+
 	return nil
 }
 
@@ -1747,6 +1758,12 @@ func medianTimestampFromParent(parent *Block, getParent func([32]byte) *Block, n
 	return timestamps[len(timestamps)/2], nil
 }
 
+// getBlockByHashLocked looks up a block by hash, populating the in-memory
+// block cache and LRU on storage fallback.
+//
+// Caller MUST hold c.mu.Lock (the write lock): this function mutates
+// c.blocks, c.cacheLRU, and c.cacheIndex. It is NOT safe to call under only
+// c.mu.RLock.
 func (c *Chain) getBlockByHashLocked(hash [32]byte) *Block {
 	if block, ok := c.blocks[hash]; ok {
 		c.cacheTouchLocked(hash)
@@ -1769,8 +1786,20 @@ func (c *Chain) isKeyImageSpentLocked(keyImage [32]byte) bool {
 	return spent
 }
 
+// isCanonicalRingMemberLocked is a pure read of the canonical ring-member index.
+//
+// Caller must hold at least c.mu.RLock. It does NOT mutate any chain state and
+// does NOT attempt to rebuild the index: the index is built eagerly at startup
+// (loadFromStorage) and maintained incrementally by paths that hold
+// c.mu.Lock (addBlockInternal, reorganizeTo, TruncateToHeight). Write paths
+// that need a freshly-rebuilt index (e.g. branchAwareRingMemberCheckerLocked)
+// must call ensureCanonicalRingIndexLocked themselves under c.mu.Lock first.
+//
+// If the index is observed as not-ready (invariant violation), this returns
+// false. The public IsCanonicalRingMember entry point detects that case and
+// upgrades to the write lock to rebuild before answering.
 func (c *Chain) isCanonicalRingMemberLocked(pubKey, commitment [32]byte) bool {
-	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
+	if !c.canonicalRingIndexReady {
 		return false
 	}
 	_, ok := c.canonicalRingIndex[canonicalRingIndexKey(pubKey, commitment)]
@@ -1823,6 +1852,15 @@ func (c *Chain) updateCanonicalRingIndexForDisconnect(blocks []*Block) {
 	}
 }
 
+// ensureCanonicalRingIndexLocked rebuilds the canonical ring-member index when
+// it is dirty, not yet initialized, or out of sync with the persisted tip.
+//
+// Caller MUST hold c.mu.Lock (the write lock): this function mutates
+// c.canonicalRingIndex, c.canonicalRingHeights, c.canonicalRingIndexTip,
+// c.canonicalRingIndexReady, and c.canonicalRingIndexDirty. The rebuild loop
+// itself uses getBlockByHeightLocked (pure-read), so it does not touch
+// c.blocks or the cache LRU, but the assignments above still make this unsafe
+// to call under only c.mu.RLock.
 func (c *Chain) ensureCanonicalRingIndexLocked() error {
 	tipHash, tipHeight, _, found := c.storage.GetTip()
 	if !found {
@@ -2305,6 +2343,14 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 		return fmt.Errorf("failed to persist new tip: %w", err)
 	}
 
+	// Rebuild the canonical ring-member index while we still hold the write
+	// lock so concurrent read-lock callers (IsCanonicalRingMember,
+	// SelectRingMembersWithCommitments) never observe a dirty index and never
+	// attempt to rebuild it under c.mu.RLock.
+	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
+		return fmt.Errorf("failed to rebuild canonical ring-member index: %w", err)
+	}
+
 	return nil
 }
 
@@ -2361,10 +2407,42 @@ func (c *Chain) IsKeyImageSpent(keyImage [32]byte) bool {
 }
 
 // IsCanonicalRingMember checks whether a ring member+commitment pair exists in canonical chain outputs.
+//
+// Fast path: take the read lock and consult the pre-built index. Slow path
+// (index not ready/dirty/out-of-sync): upgrade to the write lock and rebuild
+// before answering. The slow path should only trigger in exceptional cases
+// because the index is built eagerly at startup and maintained incrementally
+// by every write path.
 func (c *Chain) IsCanonicalRingMember(pubKey, commitment [32]byte) bool {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.isCanonicalRingMemberLocked(pubKey, commitment)
+	if c.canonicalRingMemberIndexUsableRLocked() {
+		_, ok := c.canonicalRingIndex[canonicalRingIndexKey(pubKey, commitment)]
+		c.mu.RUnlock()
+		return ok
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
+		return false
+	}
+	_, ok := c.canonicalRingIndex[canonicalRingIndexKey(pubKey, commitment)]
+	return ok
+}
+
+// canonicalRingMemberIndexUsableRLocked reports whether the canonical
+// ring-member index is ready, not dirty, and in sync with the persisted tip.
+// Safe to call under c.mu.RLock.
+func (c *Chain) canonicalRingMemberIndexUsableRLocked() bool {
+	if !c.canonicalRingIndexReady || c.canonicalRingIndexDirty {
+		return false
+	}
+	tipHash, _, _, found := c.storage.GetTip()
+	if !found {
+		return c.canonicalRingIndexTip == [32]byte{}
+	}
+	return c.canonicalRingIndexTip == tipHash
 }
 
 // GetAllOutputs returns all outputs for ring member selection
@@ -2381,16 +2459,50 @@ func (c *Chain) SelectRingMembersWithCommitments(realPubKey, realCommitment [32]
 
 	ringSize := RingSize
 
+	// Fast path: iterate under the read lock using the pre-built index.
+	// If the index is not usable (should be rare), fall through to a write-
+	// locked rebuild + scan below.
 	c.mu.RLock()
-	decoyPool := make([]*UTXO, 0, len(allOutputs))
-	for _, utxo := range allOutputs {
-		if utxo.Output.PublicKey != realPubKey &&
-			c.isCanonicalRingMemberLocked(utxo.Output.PublicKey, utxo.Output.Commitment) {
-			decoyPool = append(decoyPool, utxo)
+	if c.canonicalRingMemberIndexUsableRLocked() {
+		decoyPool := make([]*UTXO, 0, len(allOutputs))
+		for _, utxo := range allOutputs {
+			if utxo.Output.PublicKey == realPubKey {
+				continue
+			}
+			if _, ok := c.canonicalRingIndex[canonicalRingIndexKey(utxo.Output.PublicKey, utxo.Output.Commitment)]; ok {
+				decoyPool = append(decoyPool, utxo)
+			}
 		}
+		c.mu.RUnlock()
+		return finalizeRingSelection(decoyPool, realPubKey, realCommitment, ringSize)
 	}
 	c.mu.RUnlock()
 
+	// Slow path: index not ready; rebuild + scan under the write lock so we
+	// never mutate chain state while only holding c.mu.RLock.
+	c.mu.Lock()
+	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
+		c.mu.Unlock()
+		return nil, fmt.Errorf("failed to build canonical ring-member index: %w", err)
+	}
+	decoyPool := make([]*UTXO, 0, len(allOutputs))
+	for _, utxo := range allOutputs {
+		if utxo.Output.PublicKey == realPubKey {
+			continue
+		}
+		if _, ok := c.canonicalRingIndex[canonicalRingIndexKey(utxo.Output.PublicKey, utxo.Output.Commitment)]; ok {
+			decoyPool = append(decoyPool, utxo)
+		}
+	}
+	c.mu.Unlock()
+
+	return finalizeRingSelection(decoyPool, realPubKey, realCommitment, ringSize)
+}
+
+// finalizeRingSelection shuffles the decoy pool and assembles the ring with
+// the real key at a randomly-chosen secret index. It does NOT touch chain
+// state, so callers can release c.mu before invoking it.
+func finalizeRingSelection(decoyPool []*UTXO, realPubKey, realCommitment [32]byte, ringSize int) (*RingMemberData, error) {
 	if len(decoyPool) < ringSize-1 {
 		return nil, fmt.Errorf("not enough outputs for ring (need %d, have %d)", ringSize-1, len(decoyPool))
 	}
