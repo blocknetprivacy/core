@@ -1841,12 +1841,7 @@ func (c *Chain) ensureCanonicalRingIndexLocked() error {
 	index := make(map[[64]byte]struct{})
 	heights := make(map[[64]byte]uint64)
 	for h := uint64(0); h <= tipHeight; h++ {
-		hash, hasHeight := c.storage.GetBlockHashByHeight(h)
-		if !hasHeight {
-			return fmt.Errorf("canonical ring index missing block hash at height %d", h)
-		}
-
-		block := c.getBlockByHashLocked(hash)
+		block := c.getBlockByHeightLocked(h)
 		if block == nil {
 			return fmt.Errorf("canonical ring index missing block data at height %d", h)
 		}
