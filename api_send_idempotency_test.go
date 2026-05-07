@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"blocknet/wallet"
 )
@@ -327,6 +329,104 @@ func TestHandleSendIdempotencySuccessfulReplayPersistsAcrossRestart(t *testing.T
 	}
 	if r2.Body.String() != firstBody {
 		t.Fatalf("replay after restart: body mismatch got %q want %q", r2.Body.String(), firstBody)
+	}
+}
+
+func TestHandleSendAdvancedStatusPersistsAcceptedAndCompletedEntries(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	walletFile := filepath.Join(t.TempDir(), "wallet.dat")
+	w, err := wallet.NewWallet(walletFile, []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create wallet: %v", err)
+	}
+
+	dataDir := t.TempDir()
+	token := "test-token"
+	newHandler := func() (http.Handler, *APIServer) {
+		api := NewAPIServer(daemon, w, nil, dataDir, []byte("pw"))
+		mux := http.NewServeMux()
+		api.registerPublicRoutes(mux)
+		api.registerPrivateRoutes(mux)
+
+		var handler http.Handler = mux
+		handler = authMiddleware(token, handler)
+		handler = maxBodySize(handler, maxRequestBodyBytes)
+		return handler, api
+	}
+
+	doReq := func(handler http.Handler, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest("GET", path, nil)
+		req.RemoteAddr = "198.51.100.40:1234"
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+		return rr
+	}
+
+	handler1, api1 := newHandler()
+	reqHash := hashRequestBody([]byte(`{"recipients":[{"address":"addr","amount":1}]}`))
+	if state, _ := api1.sendIdem.getOrStart(time.Now(), "send-advanced:key-status", reqHash); state != "start" {
+		t.Fatalf("expected start, got %q", state)
+	}
+
+	rr := doReq(handler1, "/api/wallet/send/advanced/status?idempotency_key=key-status")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for in-progress status, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var inProgress map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &inProgress); err != nil {
+		t.Fatalf("failed to decode in-progress status: %v", err)
+	}
+	if inProgress["state"] != "in_progress" {
+		t.Fatalf("expected in_progress state, got %#v", inProgress["state"])
+	}
+
+	handler2, _ := newHandler()
+	rr = doReq(handler2, "/api/wallet/send/advanced/status?idempotency_key=key-status")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for accepted status, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var accepted map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &accepted); err != nil {
+		t.Fatalf("failed to decode accepted status: %v", err)
+	}
+	if accepted["state"] != "accepted" {
+		t.Fatalf("expected accepted state after reload, got %#v", accepted["state"])
+	}
+
+	resultBody := []byte(`{"txid":"tx-1","fee":7,"change":2,"change_split":1,"input_total":9,"input_count":1,"dry_run":false,"recipients":[{"address":"addr","amount":1}]}` + "\n")
+	api1.sendIdem.complete(time.Now().Add(time.Second), "send-advanced:key-status", reqHash, http.StatusOK, resultBody)
+
+	rr = doReq(handler1, "/api/wallet/send/advanced/status?idempotency_key=key-status")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 for completed status, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var completed struct {
+		State          string `json:"state"`
+		OriginalStatus int    `json:"original_status"`
+		Result         struct {
+			TxID string `json:"txid"`
+			Fee  uint64 `json:"fee"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &completed); err != nil {
+		t.Fatalf("failed to decode completed status: %v", err)
+	}
+	if completed.State != "completed" {
+		t.Fatalf("expected completed state, got %q", completed.State)
+	}
+	if completed.OriginalStatus != http.StatusOK {
+		t.Fatalf("expected original status 200, got %d", completed.OriginalStatus)
+	}
+	if completed.Result.TxID != "tx-1" || completed.Result.Fee != 7 {
+		t.Fatalf("unexpected completed result: %#v", completed.Result)
 	}
 }
 

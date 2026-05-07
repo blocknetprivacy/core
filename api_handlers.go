@@ -631,6 +631,59 @@ func toWalletRecipients(validated []validatedRecipient) []wallet.Recipient {
 	return out
 }
 
+// handleSendStatus returns the persisted status for a standard send idempotency key.
+// GET /api/wallet/send/status?idempotency_key=...
+func (s *APIServer) handleSendStatus(w http.ResponseWriter, r *http.Request) {
+	s.handleIdempotentSendStatus(w, r, "send:")
+}
+
+// handleSendAdvancedStatus returns the persisted status for an advanced send idempotency key.
+// GET /api/wallet/send/advanced/status?idempotency_key=...
+func (s *APIServer) handleSendAdvancedStatus(w http.ResponseWriter, r *http.Request) {
+	s.handleIdempotentSendStatus(w, r, "send-advanced:")
+}
+
+func (s *APIServer) handleIdempotentSendStatus(w http.ResponseWriter, r *http.Request, prefix string) {
+	idemKey := strings.TrimSpace(r.URL.Query().Get("idempotency_key"))
+	if idemKey == "" {
+		writeError(w, http.StatusBadRequest, "idempotency_key is required")
+		return
+	}
+	if len(idemKey) > 128 {
+		writeError(w, http.StatusBadRequest, "idempotency key too long")
+		return
+	}
+
+	entry, ok := s.sendIdem.lookup(time.Now(), prefix+idemKey)
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"idempotency_key": idemKey,
+			"state":           "not_found",
+		})
+		return
+	}
+
+	resp := map[string]any{
+		"idempotency_key": idemKey,
+		"state":           string(entry.State),
+		"created_at":      entry.CreatedAt,
+		"updated_at":      entry.UpdatedAt,
+	}
+
+	switch entry.State {
+	case idempotencyStateCompleted:
+		resp["original_status"] = entry.Result.status
+		if decoded, ok := decodeCachedJSONBody(entry.Result.body); ok {
+			resp["result"] = decoded
+		}
+	case idempotencyStateFailed:
+		resp["original_status"] = entry.Result.status
+		resp["error"] = extractCachedError(entry.Result.body)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // handleSend builds and broadcasts a transaction.
 // POST /api/wallet/send
 func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
@@ -2257,6 +2310,30 @@ func writeInternal(w http.ResponseWriter, r *http.Request, status int, clientMsg
 	}
 	log.Printf("API internal error: %s %s: %v", method, path, err)
 	writeError(w, status, clientMsg)
+}
+
+func decodeCachedJSONBody(body []byte) (any, bool) {
+	if len(body) == 0 {
+		return nil, false
+	}
+	var decoded any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+func extractCachedError(body []byte) string {
+	if len(body) == 0 {
+		return "request failed"
+	}
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil && payload.Error != "" {
+		return payload.Error
+	}
+	return strings.TrimSpace(string(body))
 }
 
 func walletLoadClientError(err error) (int, string, bool) {

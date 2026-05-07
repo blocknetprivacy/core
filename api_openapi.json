@@ -1331,6 +1331,43 @@
         }
       }
     },
+    "/api/wallet/send/status": {
+      "get": {
+        "operationId": "getSendStatus",
+        "tags": ["Wallet"],
+        "summary": "Get send idempotency status",
+        "description": "Returns the persisted status of a previous POST /api/wallet/send request for the provided idempotency key. Unresolved accepted requests survive daemon restart and return state=accepted instead of silently disappearing.",
+        "parameters": [
+          {
+            "name": "idempotency_key",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "maxLength": 128 },
+            "description": "The exact Idempotency-Key header value used on the original POST /api/wallet/send request."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current persisted status for the idempotency key",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SendStatusResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "idempotency_key is required" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
     "/api/wallet/send/advanced": {
       "post": {
         "operationId": "sendFundsAdvanced",
@@ -1544,6 +1581,43 @@
             }
           },
           "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
+    "/api/wallet/send/advanced/status": {
+      "get": {
+        "operationId": "getSendAdvancedStatus",
+        "tags": ["Wallet"],
+        "summary": "Get advanced send idempotency status",
+        "description": "Returns the persisted status of a previous POST /api/wallet/send/advanced request for the provided idempotency key. This endpoint is intended for payout systems that need to recover the txid after a slow or timed-out send call.",
+        "parameters": [
+          {
+            "name": "idempotency_key",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string", "maxLength": 128 },
+            "description": "The exact Idempotency-Key header value used on the original POST /api/wallet/send/advanced request."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current persisted status for the idempotency key",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SendAdvancedStatusResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid idempotency key",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "idempotency_key is required" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
         }
       }
     },
@@ -3200,6 +3274,60 @@
           ]
         }
       },
+      "SendStatusResponse": {
+        "type": "object",
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "description": "The Idempotency-Key value being queried."
+          },
+          "state": {
+            "type": "string",
+            "enum": ["accepted", "in_progress", "completed", "failed", "not_found"],
+            "description": "Persisted send state. accepted means the daemon durably recorded the request but does not have a terminal result yet."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the daemon first accepted the idempotent request."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the daemon last updated the persisted state."
+          },
+          "original_status": {
+            "type": "integer",
+            "description": "HTTP status returned by the original send request when a terminal result exists."
+          },
+          "error": {
+            "type": "string",
+            "description": "Terminal error message when state=failed."
+          },
+          "result": {
+            "$ref": "#/components/schemas/SendResponse"
+          }
+        },
+        "example": {
+          "idempotency_key": "858da3c7-d9de-42a5-b21c-bd6a45acd201",
+          "state": "completed",
+          "created_at": "2026-05-06T17:58:01Z",
+          "updated_at": "2026-05-06T17:58:44Z",
+          "original_status": 200,
+          "result": {
+            "txid": "733cc5d530c4e31bb5691681a349ee4d99cf22538dc857588a312a0a82985e72",
+            "fee": 5698010,
+            "change": 266360844681,
+            "dry_run": false,
+            "recipients": [
+              {
+                "address": "CGJxAAw73BdNWQjJRX7Xr59GuEXeBZw2Q4HZHHnhM2nTjL3WL5YS1V8XT2Z4q8CCe2jop1hKnhZpYLqn8SHjX5RPsBgrC",
+                "amount": 3250000000000
+              }
+            ]
+          }
+        }
+      },
       "SendAdvancedRequest": {
         "type": "object",
         "required": ["recipients", "inputs"],
@@ -3308,6 +3436,63 @@
               "amount": 500000000
             }
           ]
+        }
+      },
+      "SendAdvancedStatusResponse": {
+        "type": "object",
+        "properties": {
+          "idempotency_key": {
+            "type": "string",
+            "description": "The Idempotency-Key value being queried."
+          },
+          "state": {
+            "type": "string",
+            "enum": ["accepted", "in_progress", "completed", "failed", "not_found"],
+            "description": "Persisted send state. accepted means the daemon durably recorded the request but does not have a terminal result yet."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the daemon first accepted the idempotent request."
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "When the daemon last updated the persisted state."
+          },
+          "original_status": {
+            "type": "integer",
+            "description": "HTTP status returned by the original send request when a terminal result exists."
+          },
+          "error": {
+            "type": "string",
+            "description": "Terminal error message when state=failed."
+          },
+          "result": {
+            "$ref": "#/components/schemas/SendAdvancedResponse"
+          }
+        },
+        "example": {
+          "idempotency_key": "858da3c7-d9de-42a5-b21c-bd6a45acd201",
+          "state": "completed",
+          "created_at": "2026-05-06T17:58:01Z",
+          "updated_at": "2026-05-06T17:58:44Z",
+          "original_status": 200,
+          "result": {
+            "txid": "733cc5d530c4e31bb5691681a349ee4d99cf22538dc857588a312a0a82985e72",
+            "fee": 5698010,
+            "change": 266360844681,
+            "change_split": 1,
+            "input_total": 3516366542691,
+            "input_count": 256,
+            "dry_run": false,
+            "recipients": [
+              {
+                "address": "CGJxAAw73BdNWQjJRX7Xr59GuEXeBZw2Q4HZHHnhM2nTjL3WL5YS1V8XT2Z4q8CCe2jop1hKnhZpYLqn8SHjX5RPsBgrC",
+                "amount": 3250000000000
+              }
+            ]
+          }
         }
       },
       "BlockTemplate": {

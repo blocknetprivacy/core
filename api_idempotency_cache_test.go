@@ -27,7 +27,7 @@ func TestIdempotencyCapNeverEvictsInFlight(t *testing.T) {
 		c.mu.Unlock()
 		t.Fatalf("expected 2 entries (over cap due to in-flight protection), got %d", len(c.entries))
 	}
-	if !c.entries["k1"].inFlight || !c.entries["k2"].inFlight {
+	if c.entries["k1"].state != idempotencyStateInProgress || c.entries["k2"].state != idempotencyStateInProgress {
 		c.mu.Unlock()
 		t.Fatalf("expected both entries to be in-flight")
 	}
@@ -41,7 +41,7 @@ func TestIdempotencyCapNeverEvictsInFlight(t *testing.T) {
 	if len(c.entries) != 1 {
 		t.Fatalf("expected 1 entry after completion + cap enforcement, got %d", len(c.entries))
 	}
-	if _, ok := c.entries["k2"]; !ok || !c.entries["k2"].inFlight {
+	if _, ok := c.entries["k2"]; !ok || c.entries["k2"].state != idempotencyStateInProgress {
 		t.Fatalf("expected remaining entry to be k2 in-flight")
 	}
 }
@@ -89,5 +89,33 @@ func TestIdempotencyCachePersistsCompletedEntries(t *testing.T) {
 	}
 	if res.status != 200 || string(res.body) != string(body) {
 		t.Fatalf("unexpected replay result: status=%d body=%q", res.status, string(res.body))
+	}
+}
+
+func TestIdempotencyCachePersistsAcceptedEntriesAcrossRestart(t *testing.T) {
+	now := time.Now()
+	path := t.TempDir() + "/send-idempotency.json"
+	c := newIdempotencyCache(24*time.Hour, 100, path)
+
+	var h [32]byte
+	h[0] = 8
+
+	state, _ := c.getOrStart(now, "k", h)
+	if state != "start" {
+		t.Fatalf("expected start, got %q", state)
+	}
+
+	reloaded := newIdempotencyCache(24*time.Hour, 100, path)
+	lookup, ok := reloaded.lookup(now.Add(time.Second), "k")
+	if !ok {
+		t.Fatal("expected accepted entry after reload")
+	}
+	if lookup.State != idempotencyStateAccepted {
+		t.Fatalf("expected accepted state after reload, got %q", lookup.State)
+	}
+
+	state, _ = reloaded.getOrStart(now.Add(2*time.Second), "k", h)
+	if state != "inflight" {
+		t.Fatalf("expected inflight after reload, got %q", state)
 	}
 }

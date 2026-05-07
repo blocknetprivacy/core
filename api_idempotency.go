@@ -17,6 +17,15 @@ type idempotencyResult struct {
 	body   []byte
 }
 
+type idempotencyState string
+
+const (
+	idempotencyStateAccepted   idempotencyState = "accepted"
+	idempotencyStateInProgress idempotencyState = "in_progress"
+	idempotencyStateCompleted  idempotencyState = "completed"
+	idempotencyStateFailed     idempotencyState = "failed"
+)
+
 type idempotencyCache struct {
 	mu          sync.Mutex
 	ttl         time.Duration
@@ -27,14 +36,17 @@ type idempotencyCache struct {
 
 type idempotencyEntry struct {
 	createdAt time.Time
+	updatedAt time.Time
 	reqHash   [32]byte
-	inFlight  bool
+	state     idempotencyState
 	result    idempotencyResult
 }
 
 type persistedIdempotencyEntry struct {
 	CreatedAtUnixNano int64  `json:"created_at_unix_nano"`
+	UpdatedAtUnixNano int64  `json:"updated_at_unix_nano"`
 	ReqHashHex        string `json:"req_hash_hex"`
+	State             string `json:"state"`
 	Status            int    `json:"status"`
 	BodyBase64        string `json:"body_base64"`
 }
@@ -61,26 +73,35 @@ func (c *idempotencyCache) getOrStart(now time.Time, key string, reqHash [32]byt
 	// - "inflight": same key currently running
 	// - "mismatch": key exists but request differs
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	c.pruneLocked(now)
 
 	if e, ok := c.entries[key]; ok {
 		if e.reqHash != reqHash {
+			c.mu.Unlock()
 			return "mismatch", idempotencyResult{}
 		}
-		if e.inFlight {
+		if !e.isTerminal() {
+			c.mu.Unlock()
 			return "inflight", idempotencyResult{}
 		}
+		c.mu.Unlock()
 		return "replay", e.result
 	}
 
 	c.entries[key] = &idempotencyEntry{
 		createdAt: now,
+		updatedAt: now,
 		reqHash:   reqHash,
-		inFlight:  true,
+		state:     idempotencyStateInProgress,
 	}
 	c.enforceCapLocked()
+	data, path := c.snapshotForPersist()
+	c.mu.Unlock()
+
+	if err := writePersistData(data, path); err != nil {
+		log.Printf("Warning: failed to persist idempotency cache: %v", err)
+	}
 	return "start", idempotencyResult{}
 }
 
@@ -99,8 +120,12 @@ func (c *idempotencyCache) complete(now time.Time, key string, reqHash [32]byte,
 		c.mu.Unlock()
 		return
 	}
-	e.createdAt = now
-	e.inFlight = false
+	e.updatedAt = now
+	if status >= 200 && status < 300 {
+		e.state = idempotencyStateCompleted
+	} else {
+		e.state = idempotencyStateFailed
+	}
 	e.result = idempotencyResult{status: status, body: append([]byte(nil), body...)}
 	c.enforceCapLocked()
 	data, path := c.snapshotForPersist()
@@ -131,11 +156,11 @@ func (c *idempotencyCache) pruneLocked(now time.Time) {
 		return
 	}
 	for k, e := range c.entries {
-		// Never expire in-flight entries; dropping them re-allows duplicate processing.
-		if e.inFlight {
+		// Never expire unresolved entries; dropping them re-allows duplicate processing.
+		if !e.isTerminal() {
 			continue
 		}
-		if now.Sub(e.createdAt) > c.ttl {
+		if now.Sub(e.updatedAt) > c.ttl {
 			delete(c.entries, k)
 		}
 	}
@@ -153,17 +178,17 @@ func (c *idempotencyCache) enforceCapLocked() {
 		var oldestTime time.Time
 		first := true
 		for k, e := range c.entries {
-			if e.inFlight {
+			if !e.isTerminal() {
 				continue
 			}
-			if first || e.createdAt.Before(oldestTime) {
+			if first || e.updatedAt.Before(oldestTime) {
 				oldestKey = k
-				oldestTime = e.createdAt
+				oldestTime = e.updatedAt
 				first = false
 			}
 		}
 		if oldestKey == "" {
-			// All remaining entries are in-flight; keep them even if we're over cap.
+			// All remaining entries are unresolved; keep them even if we're over cap.
 			return
 		}
 		delete(c.entries, oldestKey)
@@ -172,6 +197,34 @@ func (c *idempotencyCache) enforceCapLocked() {
 
 func hashRequestBody(body []byte) [32]byte {
 	return sha256.Sum256(body)
+}
+
+type idempotencyLookup struct {
+	CreatedAt time.Time
+	UpdatedAt time.Time
+	State     idempotencyState
+	Result    idempotencyResult
+}
+
+func (c *idempotencyCache) lookup(now time.Time, key string) (idempotencyLookup, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.pruneLocked(now)
+
+	entry, ok := c.entries[key]
+	if !ok {
+		return idempotencyLookup{}, false
+	}
+	return idempotencyLookup{
+		CreatedAt: entry.createdAt,
+		UpdatedAt: entry.updatedAt,
+		State:     entry.state,
+		Result: idempotencyResult{
+			status: entry.result.status,
+			body:   append([]byte(nil), entry.result.body...),
+		},
+	}, true
 }
 
 func (c *idempotencyCache) loadPersisted() {
@@ -200,17 +253,31 @@ func (c *idempotencyCache) loadPersisted() {
 		if err != nil || len(reqHashBytes) != sha256.Size {
 			continue
 		}
-		body, err := base64.StdEncoding.DecodeString(entry.BodyBase64)
-		if err != nil {
-			continue
+		body := []byte(nil)
+		if entry.BodyBase64 != "" {
+			body, err = base64.StdEncoding.DecodeString(entry.BodyBase64)
+			if err != nil {
+				continue
+			}
 		}
 
 		var reqHash [32]byte
 		copy(reqHash[:], reqHashBytes)
+		state := parsePersistedIdempotencyState(entry.State)
+		if state == idempotencyStateInProgress {
+			// A restarted daemon cannot prove whether work was still executing, but it can
+			// prove the request was durably accepted and must not silently disappear.
+			state = idempotencyStateAccepted
+		}
+		updatedAt := time.Unix(0, entry.UpdatedAtUnixNano)
+		if entry.UpdatedAtUnixNano == 0 {
+			updatedAt = time.Unix(0, entry.CreatedAtUnixNano)
+		}
 		c.entries[key] = &idempotencyEntry{
 			createdAt: time.Unix(0, entry.CreatedAtUnixNano),
+			updatedAt: updatedAt,
 			reqHash:   reqHash,
-			inFlight:  false,
+			state:     state,
 			result: idempotencyResult{
 				status: entry.Status,
 				body:   body,
@@ -232,12 +299,14 @@ func (c *idempotencyCache) snapshotForPersist() ([]byte, string) {
 		Entries: make(map[string]persistedIdempotencyEntry),
 	}
 	for key, entry := range c.entries {
-		if entry == nil || entry.inFlight {
+		if entry == nil {
 			continue
 		}
 		persisted.Entries[key] = persistedIdempotencyEntry{
 			CreatedAtUnixNano: entry.createdAt.UnixNano(),
+			UpdatedAtUnixNano: entry.updatedAt.UnixNano(),
 			ReqHashHex:        hex.EncodeToString(entry.reqHash[:]),
+			State:             string(entry.state),
 			Status:            entry.result.status,
 			BodyBase64:        base64.StdEncoding.EncodeToString(entry.result.body),
 		}
@@ -258,4 +327,17 @@ func writePersistData(data []byte, path string) error {
 		return err
 	}
 	return os.Rename(tmpPath, path)
+}
+
+func (e *idempotencyEntry) isTerminal() bool {
+	return e != nil && (e.state == idempotencyStateCompleted || e.state == idempotencyStateFailed)
+}
+
+func parsePersistedIdempotencyState(value string) idempotencyState {
+	switch idempotencyState(value) {
+	case idempotencyStateAccepted, idempotencyStateInProgress, idempotencyStateCompleted, idempotencyStateFailed:
+		return idempotencyState(value)
+	default:
+		return idempotencyStateCompleted
+	}
 }

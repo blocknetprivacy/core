@@ -248,6 +248,31 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	if !foundIdem {
 		t.Fatal("/api/wallet/send post missing Idempotency-Key parameter")
 	}
+
+	sendStatusPath := mustGetMap(t, paths, "/api/wallet/send/status")
+	sendStatusGet := mustGetMap(t, sendStatusPath, "get")
+	rawStatusParams, ok := sendStatusGet["parameters"]
+	if !ok {
+		t.Fatal("/api/wallet/send/status get missing parameters")
+	}
+	statusParams, ok := rawStatusParams.([]interface{})
+	if !ok {
+		t.Fatal("/api/wallet/send/status get parameters is not an array")
+	}
+	foundStatusKey := false
+	for _, p := range statusParams {
+		pm, ok := p.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := pm["name"].(string); name == "idempotency_key" {
+			foundStatusKey = true
+			break
+		}
+	}
+	if !foundStatusKey {
+		t.Fatal("/api/wallet/send/status get missing idempotency_key parameter")
+	}
 }
 
 func TestOpenAPISendAdvancedContractParity(t *testing.T) {
@@ -495,6 +520,31 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 	// Must document 409 response.
 	if _, ok := responses["409"]; !ok {
 		t.Fatal("/api/wallet/send/advanced missing 409 response in OpenAPI")
+	}
+
+	advStatusPath := mustGetMap(t, paths, "/api/wallet/send/advanced/status")
+	advStatusGet := mustGetMap(t, advStatusPath, "get")
+	rawStatusParams, ok := advStatusGet["parameters"]
+	if !ok {
+		t.Fatal("/api/wallet/send/advanced/status get missing parameters")
+	}
+	statusParams, ok := rawStatusParams.([]interface{})
+	if !ok {
+		t.Fatal("/api/wallet/send/advanced/status get parameters is not an array")
+	}
+	foundStatusKey := false
+	for _, p := range statusParams {
+		pm, ok := p.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if name, _ := pm["name"].(string); name == "idempotency_key" {
+			foundStatusKey = true
+			break
+		}
+	}
+	if !foundStatusKey {
+		t.Fatal("/api/wallet/send/advanced/status get missing idempotency_key parameter")
 	}
 }
 
