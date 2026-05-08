@@ -2452,11 +2452,6 @@ func (c *Chain) GetAllOutputs() ([]*UTXO, error) {
 
 // SelectRingMembersWithCommitments selects ring members for a transaction input
 func (c *Chain) SelectRingMembersWithCommitments(realPubKey, realCommitment [32]byte) (*RingMemberData, error) {
-	allOutputs, err := c.storage.GetAllOutputs()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get outputs: %w", err)
-	}
-
 	ringSize := RingSize
 
 	// Fast path: iterate under the read lock using the pre-built index.
@@ -2464,15 +2459,7 @@ func (c *Chain) SelectRingMembersWithCommitments(realPubKey, realCommitment [32]
 	// locked rebuild + scan below.
 	c.mu.RLock()
 	if c.canonicalRingMemberIndexUsableRLocked() {
-		decoyPool := make([]*UTXO, 0, len(allOutputs))
-		for _, utxo := range allOutputs {
-			if utxo.Output.PublicKey == realPubKey {
-				continue
-			}
-			if _, ok := c.canonicalRingIndex[canonicalRingIndexKey(utxo.Output.PublicKey, utxo.Output.Commitment)]; ok {
-				decoyPool = append(decoyPool, utxo)
-			}
-		}
+		decoyPool := canonicalRingIndexDecoys(c.canonicalRingIndex, realPubKey)
 		c.mu.RUnlock()
 		return finalizeRingSelection(decoyPool, realPubKey, realCommitment, ringSize)
 	}
@@ -2485,24 +2472,40 @@ func (c *Chain) SelectRingMembersWithCommitments(realPubKey, realCommitment [32]
 		c.mu.Unlock()
 		return nil, fmt.Errorf("failed to build canonical ring-member index: %w", err)
 	}
-	decoyPool := make([]*UTXO, 0, len(allOutputs))
-	for _, utxo := range allOutputs {
-		if utxo.Output.PublicKey == realPubKey {
-			continue
-		}
-		if _, ok := c.canonicalRingIndex[canonicalRingIndexKey(utxo.Output.PublicKey, utxo.Output.Commitment)]; ok {
-			decoyPool = append(decoyPool, utxo)
-		}
-	}
+	decoyPool := canonicalRingIndexDecoys(c.canonicalRingIndex, realPubKey)
 	c.mu.Unlock()
 
 	return finalizeRingSelection(decoyPool, realPubKey, realCommitment, ringSize)
 }
 
+type ringMemberCandidate struct {
+	publicKey  [32]byte
+	commitment [32]byte
+}
+
+func canonicalRingIndexDecoys(index map[[64]byte]struct{}, realPubKey [32]byte) []ringMemberCandidate {
+	decoys := make([]ringMemberCandidate, 0, len(index))
+	for key := range index {
+		candidate := ringMemberCandidateFromIndexKey(key)
+		if candidate.publicKey == realPubKey {
+			continue
+		}
+		decoys = append(decoys, candidate)
+	}
+	return decoys
+}
+
+func ringMemberCandidateFromIndexKey(key [64]byte) ringMemberCandidate {
+	var candidate ringMemberCandidate
+	copy(candidate.publicKey[:], key[:32])
+	copy(candidate.commitment[:], key[32:])
+	return candidate
+}
+
 // finalizeRingSelection shuffles the decoy pool and assembles the ring with
 // the real key at a randomly-chosen secret index. It does NOT touch chain
 // state, so callers can release c.mu before invoking it.
-func finalizeRingSelection(decoyPool []*UTXO, realPubKey, realCommitment [32]byte, ringSize int) (*RingMemberData, error) {
+func finalizeRingSelection(decoyPool []ringMemberCandidate, realPubKey, realCommitment [32]byte, ringSize int) (*RingMemberData, error) {
 	if len(decoyPool) < ringSize-1 {
 		return nil, fmt.Errorf("not enough outputs for ring (need %d, have %d)", ringSize-1, len(decoyPool))
 	}
@@ -2533,8 +2536,8 @@ func finalizeRingSelection(decoyPool []*UTXO, realPubKey, realCommitment [32]byt
 			keys[i] = realPubKey
 			commitments[i] = realCommitment
 		} else {
-			keys[i] = decoys[decoyIdx].Output.PublicKey
-			commitments[i] = decoys[decoyIdx].Output.Commitment
+			keys[i] = decoys[decoyIdx].publicKey
+			commitments[i] = decoys[decoyIdx].commitment
 			decoyIdx++
 		}
 	}
