@@ -24,9 +24,6 @@ var DefaultSeedHosts = []string{
 	"explorer.blocknetcrypto.com",
 	"bnt-0.blocknetcrypto.com",
 	"bnt-1.blocknetcrypto.com",
-	"bnt-2.blocknetcrypto.com",
-	"bnt-3.blocknetcrypto.com",
-	"bnt-4.blocknetcrypto.com",
 	"toxicrainbows.com",
 }
 
