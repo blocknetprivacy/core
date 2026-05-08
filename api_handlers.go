@@ -366,6 +366,162 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func parseWalletSendsIntQuery(r *http.Request, name string, defaultValue, minValue, maxValue int) (int, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return defaultValue, nil
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < minValue {
+		return 0, fmt.Errorf("%s must be an integer >= %d", name, minValue)
+	}
+	if maxValue > 0 && value > maxValue {
+		return maxValue, nil
+	}
+	return value, nil
+}
+
+// handleSends returns wallet-recorded outbound sends.
+// GET /api/wallet/sends
+func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	limit, err := parseWalletSendsIntQuery(r, "limit", 50, 0, 500)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	offset, err := parseWalletSendsIntQuery(r, "offset", 0, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	order := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order")))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "desc" && order != "asc" {
+		writeError(w, http.StatusBadRequest, "order must be asc or desc")
+		return
+	}
+
+	type sendRecipientEntry struct {
+		Address string `json:"address"`
+		Amount  uint64 `json:"amount"`
+		MemoHex string `json:"memo_hex,omitempty"`
+	}
+
+	type sendEntry struct {
+		TxID           string               `json:"txid"`
+		Timestamp      int64                `json:"timestamp"`
+		RecordedHeight uint64               `json:"recorded_height"`
+		ChainState     string               `json:"chain_state"`
+		Confirmations  uint64               `json:"confirmations"`
+		InMempool      bool                 `json:"in_mempool"`
+		Fee            uint64               `json:"fee"`
+		TotalAmount    uint64               `json:"total_amount"`
+		Recipients     []sendRecipientEntry `json:"recipients"`
+	}
+
+	type sendRecordView struct {
+		record *wallet.SendRecord
+		txid   string
+	}
+
+	records := s.wallet.SendRecords()
+	views := make([]sendRecordView, 0, len(records))
+	seen := make(map[[32]byte]struct{}, len(records))
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		if _, ok := seen[record.TxID]; ok {
+			continue
+		}
+		seen[record.TxID] = struct{}{}
+		views = append(views, sendRecordView{
+			record: record,
+			txid:   fmt.Sprintf("%x", record.TxID),
+		})
+	}
+
+	sort.SliceStable(views, func(i, j int) bool {
+		left := views[i].record
+		right := views[j].record
+		if left.Timestamp == right.Timestamp {
+			if order == "asc" {
+				return views[i].txid < views[j].txid
+			}
+			return views[i].txid > views[j].txid
+		}
+		if order == "asc" {
+			return left.Timestamp < right.Timestamp
+		}
+		return left.Timestamp > right.Timestamp
+	})
+
+	total := len(views)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+
+	chainHeight := s.daemon.Chain().Height()
+	pageViews := views[start:end]
+	pageTxIDs := make([][32]byte, 0, len(pageViews))
+	for _, view := range pageViews {
+		pageTxIDs = append(pageTxIDs, view.record.TxID)
+	}
+	txStates := s.walletSendChainStates(pageTxIDs, chainHeight)
+
+	sends := make([]sendEntry, 0, end-start)
+	for _, view := range pageViews {
+		record := view.record
+		txState := txStates[record.TxID]
+
+		rawRecipients := record.GetRecipients()
+		recipients := make([]sendRecipientEntry, 0, len(rawRecipients))
+		for _, recipient := range rawRecipients {
+			entry := sendRecipientEntry{
+				Address: recipient.Address,
+				Amount:  recipient.Amount,
+			}
+			if len(recipient.Memo) > 0 {
+				entry.MemoHex = hex.EncodeToString(recipient.Memo)
+			}
+			recipients = append(recipients, entry)
+		}
+
+		sends = append(sends, sendEntry{
+			TxID:           view.txid,
+			Timestamp:      record.Timestamp,
+			RecordedHeight: record.BlockHeight,
+			ChainState:     txState.chainState,
+			Confirmations:  txState.confirmations,
+			InMempool:      txState.inMempool,
+			Fee:            record.Fee,
+			TotalAmount:    record.TotalAmount(),
+			Recipients:     recipients,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count":  len(sends),
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"order":  order,
+		"sends":  sends,
+	})
+}
+
 // handleOutputs returns a comprehensive view of all wallet outputs.
 // GET /api/wallet/outputs
 func (s *APIServer) handleOutputs(w http.ResponseWriter, r *http.Request) {
@@ -2456,6 +2612,71 @@ func blockToJSON(block *Block, chainHeight uint64) map[string]any {
 // findChainTx searches for a tx by hash string in the blockchain (tip backwards).
 func (s *APIServer) findChainTx(hashStr string) (*Transaction, uint64, bool) {
 	return s.daemon.Chain().FindTxByHashStr(hashStr)
+}
+
+type walletSendChainState struct {
+	chainState    string
+	confirmations uint64
+	inMempool     bool
+}
+
+func (s *APIServer) walletSendChainStates(txIDs [][32]byte, chainHeight uint64) map[[32]byte]walletSendChainState {
+	states := make(map[[32]byte]walletSendChainState, len(txIDs))
+	pending := make(map[[32]byte]struct{}, len(txIDs))
+
+	for _, txID := range txIDs {
+		if s.daemon.Mempool().HasTransaction(txID) {
+			states[txID] = walletSendChainState{chainState: "mempool", inMempool: true}
+			continue
+		}
+		pending[txID] = struct{}{}
+	}
+
+	storage := s.daemon.Chain().Storage()
+	if storage != nil && len(pending) > 0 {
+	scan:
+		for height := chainHeight; ; height-- {
+			hash, found := storage.GetBlockHashByHeight(height)
+			if !found {
+				if height == 0 {
+					break
+				}
+				continue
+			}
+
+			block, err := storage.GetBlock(hash)
+			if err == nil && block != nil {
+				for _, tx := range block.Transactions {
+					txID, _ := tx.TxID()
+					if _, ok := pending[txID]; !ok {
+						continue
+					}
+
+					confirmations := uint64(0)
+					if chainHeight >= height {
+						confirmations = chainHeight - height + 1
+					}
+					states[txID] = walletSendChainState{
+						chainState:    "confirmed",
+						confirmations: confirmations,
+					}
+					delete(pending, txID)
+					if len(pending) == 0 {
+						break scan
+					}
+				}
+			}
+
+			if height == 0 {
+				break
+			}
+		}
+	}
+
+	for txID := range pending {
+		states[txID] = walletSendChainState{chainState: "not_found"}
+	}
+	return states
 }
 
 // createTxBuilder creates a transaction builder wired to the daemon (same as CLI).
