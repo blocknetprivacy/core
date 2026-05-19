@@ -98,7 +98,7 @@ func (c *CLI) cmdSend(args []string) error {
 			fmt.Printf("  Resolved %s -> %s \033[38;2;170;255;0m✓ verified\033[0m\n", recipientInput, recipientAddr)
 		}
 	}
-	spendPub, viewPub, err := wallet.ParseAddress(recipientAddr)
+	spendPub, viewPub, err := parseValidatedAddress(recipientAddr)
 	if err != nil {
 		return fmt.Errorf("invalid address: %w", err)
 	}
@@ -291,7 +291,7 @@ func (c *CLI) cmdVerifyMsg() error {
 	}
 	sigHex := strings.TrimSpace(sigLine)
 
-	spendPub, _, err := wallet.ParseAddress(address)
+	spendPub, _, err := parseValidatedAddress(address)
 	if err != nil {
 		return fmt.Errorf("invalid address: %w", err)
 	}
