@@ -104,6 +104,25 @@ pub extern "C" fn blocknet_ristretto_keygen_from_seed(
     0
 }
 
+/// Return 1 when pubkey is a canonical compressed Ristretto point, otherwise 0.
+#[no_mangle]
+pub extern "C" fn blocknet_ristretto_pubkey_is_valid(pubkey: *const u8) -> i32 {
+    if pubkey.is_null() {
+        return 0;
+    }
+
+    unsafe {
+        let pubkey_bytes = slice::from_raw_parts(pubkey, 32);
+        match CompressedRistretto::from_slice(pubkey_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(_) => 1,
+            None => 0,
+        }
+    }
+}
+
 /// Generate key image from private key
 /// I = x * Hp(P) where P = x*G
 #[no_mangle]

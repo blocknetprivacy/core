@@ -243,7 +243,7 @@ func (s *APIServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spendPub, _, err := wallet.ParseAddress(req.Address)
+	spendPub, _, err := parseValidatedAddress(req.Address)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid address")
 		return
@@ -697,7 +697,7 @@ func (s *APIServer) validateRecipients(raw []recipientRequest) ([]validatedRecip
 			return nil, 0, fmt.Errorf("recipient %d: %v", i, err)
 		}
 
-		spendPub, viewPub, err := wallet.ParseAddress(resolvedAddr)
+		spendPub, viewPub, err := parseValidatedAddress(resolvedAddr)
 		if err != nil {
 			return nil, 0, fmt.Errorf("recipient %d: invalid address", i)
 		}
@@ -2176,7 +2176,7 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	recipientViewPub := s.wallet.ViewPubKey()
 	rewardAddrUsed := s.wallet.Address()
 	if addr := sanitizeInput(r.URL.Query().Get("address")); addr != "" {
-		spendPub, viewPub, err := wallet.ParseAddress(addr)
+		spendPub, viewPub, err := parseValidatedAddress(addr)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid address")
 			return

@@ -274,6 +274,10 @@ int32_t blocknet_ristretto_keygen_from_seed(
     uint8_t* output
 );
 
+// Validate compressed Ristretto public key bytes.
+// Returns 1 for a valid point, 0 otherwise.
+int32_t blocknet_ristretto_pubkey_is_valid(const uint8_t* pubkey);
+
 // Generate key image from private key (for double-spend detection)
 // I = x * Hp(P)
 int32_t blocknet_key_image(

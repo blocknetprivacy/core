@@ -652,6 +652,14 @@ func GenerateRistrettoKeypairFromSeed(seed [32]byte) (*RistrettoKeypair, error) 
 	return kp, nil
 }
 
+// ValidateRistrettoPublicKey reports whether publicKey is a compressed Ristretto point.
+func ValidateRistrettoPublicKey(publicKey []byte) bool {
+	if len(publicKey) != 32 {
+		return false
+	}
+	return C.blocknet_ristretto_pubkey_is_valid((*C.uint8_t)(unsafe.Pointer(&publicKey[0]))) == 1
+}
+
 // RingSignature represents a CLSAG ring signature
 type RingSignature struct {
 	Signature []byte
