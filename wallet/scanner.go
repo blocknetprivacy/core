@@ -10,6 +10,7 @@ import (
 // BlockData is the minimal block info needed for scanning
 type BlockData struct {
 	Height       uint64
+	Hash         [32]byte
 	Transactions []TxData
 }
 
@@ -165,6 +166,7 @@ func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
 				OneTimePubKey:  out.PubKey,
 				Commitment:     out.Commitment,
 				BlockHeight:    block.Height,
+				BlockHash:      block.Hash,
 				IsCoinbase:     tx.IsCoinbase,
 				Spent:          false,
 			}
@@ -218,7 +220,7 @@ func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
 		totalFound += found
 		totalSpent += spent
 
-		s.wallet.SetSyncedHeight(block.Height)
+		s.wallet.SetSyncedBlock(block.Height, block.Hash)
 	}
 	return totalFound, totalSpent
 }
@@ -268,9 +270,9 @@ func BlockToScanData(blockJSON []byte) (*BlockData, error) {
 			TxID        [32]byte `json:"tx_id"`
 			TxPublicKey [32]byte `json:"tx_public_key"`
 			Outputs     []struct {
-				PublicKey       [32]byte `json:"public_key"`
-				Commitment      [32]byte `json:"commitment"`
-				EncryptedAmount [8]byte  `json:"encrypted_amount"`
+				PublicKey       [32]byte       `json:"public_key"`
+				Commitment      [32]byte       `json:"commitment"`
+				EncryptedAmount [8]byte        `json:"encrypted_amount"`
 				EncryptedMemo   [MemoSize]byte `json:"encrypted_memo"`
 			} `json:"outputs"`
 			Inputs []struct {
