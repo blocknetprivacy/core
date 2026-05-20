@@ -40,6 +40,7 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/wallet/sync", s.handleWalletSync)
 	mux.HandleFunc("POST /api/wallet/prove", s.handleProve)
 	mux.HandleFunc("POST /api/wallet/audit", s.handleAudit)
+	mux.HandleFunc("POST /api/wallet/outputs/audit", s.handleWalletOutputsAudit)
 	mux.HandleFunc("POST /api/wallet/viewkeys", s.handleViewKeys)
 
 	// Chain verification

@@ -1187,6 +1187,60 @@ type OutputRef struct {
 	OutputIndex int
 }
 
+// RemoveOutputs removes wallet outputs matching the supplied refs and returns
+// snapshots of the removed entries. Missing refs are ignored.
+func (w *Wallet) RemoveOutputs(refs []OutputRef) []*OwnedOutput {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	type outKey struct {
+		txID   [32]byte
+		outIdx int
+	}
+	remove := make(map[outKey]struct{}, len(refs))
+	for _, ref := range refs {
+		remove[outKey{ref.TxID, ref.OutputIndex}] = struct{}{}
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	kept := w.data.Outputs[:0]
+	removed := make([]*OwnedOutput, 0, len(refs))
+	for _, out := range w.data.Outputs {
+		if out == nil {
+			kept = append(kept, out)
+			continue
+		}
+		k := outKey{out.TxID, out.OutputIndex}
+		if _, ok := remove[k]; !ok {
+			kept = append(kept, out)
+			continue
+		}
+
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		removed = append(removed, &c)
+
+		if w.inputReservations != nil {
+			delete(w.inputReservations, reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex})
+		}
+	}
+
+	if len(kept) == 0 {
+		w.data.Outputs = nil
+	} else {
+		w.data.Outputs = kept
+	}
+
+	return removed
+}
+
 // ReserveSpecificInputs validates and reserves caller-specified outputs (coin control).
 // Returns granular errors identifying which output failed and why.
 func (w *Wallet) ReserveSpecificInputs(refs []OutputRef, currentHeight uint64, ttl time.Duration) (lease uint64, inputs []*OwnedOutput, err error) {

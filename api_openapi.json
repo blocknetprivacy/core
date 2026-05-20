@@ -2225,6 +2225,127 @@
         }
       }
     },
+    "/api/wallet/outputs/audit": {
+      "post": {
+        "operationId": "auditWalletOutputs",
+        "tags": ["Wallet"],
+        "summary": "Audit wallet outputs against the canonical chain",
+        "description": "Checks each wallet output against the canonical block at its recorded height. Reports outputs whose transaction, output index, public key, or commitment no longer matches the canonical chain. Set repair=true to remove reported outputs from the wallet file. Requires loaded, unlocked wallet.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "repair": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "When true, remove reported noncanonical outputs and save the wallet."
+                  }
+                }
+              },
+              "example": { "repair": true }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Canonical output audit results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "total_outputs": { "type": "integer" },
+                    "stale_outputs": { "type": "integer" },
+                    "stale_amount": {
+                      "type": "integer",
+                      "description": "Total amount in reported stale outputs, in atomic units"
+                    },
+                    "repaired": { "type": "boolean" },
+                    "removed_outputs": { "type": "integer" },
+                    "removed_amount": {
+                      "type": "integer",
+                      "description": "Total amount removed from the wallet, in atomic units"
+                    },
+                    "issues": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "txid": { "type": "string" },
+                          "output_index": { "type": "integer" },
+                          "amount": { "type": "integer" },
+                          "spent": { "type": "boolean" },
+                          "block_height": { "type": "integer" },
+                          "reason": {
+                            "type": "string",
+                            "enum": [
+                              "missing_canonical_block",
+                              "tx_not_in_canonical_block",
+                              "output_index_out_of_range",
+                              "output_public_key_mismatch",
+                              "output_commitment_mismatch",
+                              "negative_output_index"
+                            ]
+                          },
+                          "canonical_block_hash": { "type": "string" },
+                          "one_time_pub": { "type": "string" },
+                          "commitment": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                },
+                "example": {
+                  "total_outputs": 12,
+                  "stale_outputs": 1,
+                  "stale_amount": 100000000,
+                  "repaired": true,
+                  "removed_outputs": 1,
+                  "removed_amount": 100000000,
+                  "issues": [
+                    {
+                      "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
+                      "output_index": 0,
+                      "amount": 100000000,
+                      "spent": false,
+                      "block_height": 1200,
+                      "reason": "tx_not_in_canonical_block",
+                      "canonical_block_hash": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                      "one_time_pub": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+                      "commitment": "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "invalid JSON body" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/WalletLocked" },
+          "500": {
+            "description": "Wallet repair could not be saved",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
+              }
+            }
+          },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
     "/api/wallet/viewkeys": {
       "post": {
         "operationId": "getViewKeys",

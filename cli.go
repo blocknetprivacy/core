@@ -510,6 +510,18 @@ func (c *CLI) recoverWalletAfterChainReset() {
 			}
 		}
 	}
+
+	issues := repairableWalletOutputIssues(auditWalletCanonicalOutputs(c.daemon.Chain(), c.wallet.AllOutputs()), false)
+	removed := removeWalletOutputIssues(c.wallet, issues)
+	if len(removed) == 0 {
+		return
+	}
+
+	fmt.Printf("  Chain repair: removed %d noncanonical wallet outputs totaling %s\n",
+		len(removed), formatAmount(sumOwnedOutputs(removed)))
+	if err := c.wallet.Save(); err != nil {
+		fmt.Printf("  Warning: failed to persist wallet output repair: %v\n", err)
+	}
 }
 
 func (c *CLI) printLogo() {

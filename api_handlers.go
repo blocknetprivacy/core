@@ -1487,6 +1487,17 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		walletHeight = wl.SyncedHeight()
 	}
 
+	if issues := repairableWalletOutputIssues(auditWalletCanonicalOutputs(s.daemon.Chain(), wl.AllOutputs()), false); len(issues) > 0 {
+		removed := removeWalletOutputIssues(wl, issues)
+		if len(removed) > 0 {
+			log.Printf("Wallet load: removed %d noncanonical wallet output(s) totaling %d atomic units", len(removed), sumOwnedOutputs(removed))
+			if err := wl.Save(); err != nil {
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+				return
+			}
+		}
+	}
+
 	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
 		ki, err := GenerateKeyImage(out.OneTimePrivKey)
 		if err != nil {
@@ -1994,6 +2005,51 @@ func (s *APIServer) handleAudit(w http.ResponseWriter, r *http.Request) {
 		"duplicate_groups":  duplicates,
 		"total_burned":      totalBurned,
 		"burned_outputs":    burnedOutputs,
+	})
+}
+
+// handleWalletOutputsAudit checks wallet outputs against the canonical chain.
+// POST /api/wallet/outputs/audit
+func (s *APIServer) handleWalletOutputsAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	var req struct {
+		Repair bool `json:"repair"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+
+	outputs := s.wallet.AllOutputs()
+	issues := auditWalletCanonicalOutputs(s.daemon.Chain(), outputs)
+
+	removedCount := 0
+	var removedAmount uint64
+	if req.Repair {
+		removed := removeWalletOutputIssues(s.wallet, issues)
+		removedCount = len(removed)
+		removedAmount = sumOwnedOutputs(removed)
+		if removedCount > 0 {
+			if err := s.wallet.Save(); err != nil {
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_outputs":   len(outputs),
+		"stale_outputs":   len(issues),
+		"stale_amount":    sumCanonicalOutputIssues(issues),
+		"repaired":        req.Repair,
+		"removed_outputs": removedCount,
+		"removed_amount":  removedAmount,
+		"issues":          issues,
 	})
 }
 
