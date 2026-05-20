@@ -265,6 +265,7 @@ type OwnedOutput struct {
 	OneTimePubKey  [32]byte `json:"one_time_pub"`
 	Commitment     [32]byte `json:"commitment"`
 	BlockHeight    uint64   `json:"block_height"`
+	BlockHash      [32]byte `json:"block_hash,omitempty"`
 	IsCoinbase     bool     `json:"is_coinbase"` // True if from mining reward
 	Spent          bool     `json:"spent"`
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
@@ -331,6 +332,8 @@ type WalletData struct {
 	SendHistory  []*SendRecord  `json:"send_history,omitempty"` // Track outgoing transactions
 	PendingCredits []*PendingCredit `json:"pending_credits,omitempty"` // UX-only pending credits (e.g. unconfirmed change)
 	SyncedHeight uint64         `json:"synced_height"`
+	SyncedHash   [32]byte       `json:"synced_hash,omitempty"`
+	SyncedBlocks []SyncedBlock  `json:"synced_blocks,omitempty"`
 	CreatedAt    int64          `json:"created_at"`
 }
 
@@ -408,6 +411,12 @@ type PendingCredit struct {
 	TxID    [32]byte `json:"txid"`
 	Amount  uint64   `json:"amount"`
 	AddedAt int64    `json:"added_at"`
+}
+
+// SyncedBlock records the canonical block hash that a wallet scanned at a height.
+type SyncedBlock struct {
+	Height uint64   `json:"height"`
+	Hash   [32]byte `json:"hash"`
 }
 
 type reservedOutpoint struct {
@@ -1313,11 +1322,29 @@ func (w *Wallet) SyncedHeight() uint64 {
 	return w.data.SyncedHeight
 }
 
-// SetSyncedHeight updates the sync height
+// SyncedBlock returns the last canonical block scanned by the wallet.
+func (w *Wallet) SyncedBlock() (uint64, [32]byte) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.data.SyncedHeight, w.data.SyncedHash
+}
+
+// SetSyncedHeight updates the sync height without block-hash metadata.
 func (w *Wallet) SetSyncedHeight(height uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.data.SyncedHeight = height
+	w.data.SyncedHash = [32]byte{}
+	w.pruneSyncedBlocksLocked(height)
+}
+
+// SetSyncedBlock updates the wallet sync point to a canonical block hash.
+func (w *Wallet) SetSyncedBlock(height uint64, hash [32]byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.data.SyncedHeight = height
+	w.data.SyncedHash = hash
+	w.recordSyncedBlockLocked(height, hash)
 }
 
 // RewindToHeight removes outputs from blocks above the given height
@@ -1344,7 +1371,52 @@ func (w *Wallet) RewindToHeight(height uint64) int {
 	if w.data.SyncedHeight > height {
 		w.data.SyncedHeight = height
 	}
+	w.pruneSyncedBlocksLocked(height)
+	w.data.SyncedHash = w.syncedHashAtLocked(w.data.SyncedHeight)
 	return removed
+}
+
+func (w *Wallet) recordSyncedBlockLocked(height uint64, hash [32]byte) {
+	if hash == ([32]byte{}) {
+		w.pruneSyncedBlocksLocked(height)
+		return
+	}
+	for i := range w.data.SyncedBlocks {
+		if w.data.SyncedBlocks[i].Height == height {
+			w.data.SyncedBlocks[i].Hash = hash
+			w.pruneSyncedBlocksLocked(height)
+			return
+		}
+	}
+	w.data.SyncedBlocks = append(w.data.SyncedBlocks, SyncedBlock{Height: height, Hash: hash})
+	w.pruneSyncedBlocksLocked(height)
+}
+
+func (w *Wallet) pruneSyncedBlocksLocked(maxHeight uint64) {
+	if len(w.data.SyncedBlocks) == 0 {
+		return
+	}
+	kept := w.data.SyncedBlocks[:0]
+	for _, block := range w.data.SyncedBlocks {
+		if block.Height <= maxHeight {
+			kept = append(kept, block)
+		}
+	}
+	if len(kept) == 0 {
+		w.data.SyncedBlocks = nil
+		return
+	}
+	w.data.SyncedBlocks = kept
+}
+
+func (w *Wallet) syncedHashAtLocked(height uint64) [32]byte {
+	for i := len(w.data.SyncedBlocks) - 1; i >= 0; i-- {
+		block := w.data.SyncedBlocks[i]
+		if block.Height == height {
+			return block.Hash
+		}
+	}
+	return [32]byte{}
 }
 
 // OutputCount returns total output count

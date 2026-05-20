@@ -711,6 +711,12 @@ func memoTextIfPrintable(b []byte) (string, bool) {
 }
 
 func (c *CLI) cmdSync() {
+	if removed := rewindWalletToCanonicalTip(c.wallet, c.daemon.Chain()); removed > 0 {
+		fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, c.wallet.SyncedHeight())
+		if err := c.wallet.Save(); err != nil {
+			fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
+		}
+	}
 	chainHeight := c.daemon.Chain().Height()
 	walletHeight := c.wallet.SyncedHeight()
 
@@ -729,6 +735,7 @@ func (c *CLI) cmdSync() {
 	blocks := c.daemon.Chain().GetBlocksByHeightRange(walletHeight+1, chainHeight)
 
 	scannedTo := walletHeight
+	var scannedHash [32]byte
 	for _, block := range blocks {
 		if block == nil {
 			break
@@ -739,13 +746,14 @@ func (c *CLI) cmdSync() {
 
 		h := block.Header.Height
 		scannedTo = h
+		scannedHash = blockData.Hash
 		if found > 0 || spent > 0 {
 			fmt.Printf("    Block %d: +%d outputs, %d spent\n", h, found, spent)
 		}
 	}
 
 	if scannedTo > walletHeight {
-		c.wallet.SetSyncedHeight(scannedTo)
+		c.wallet.SetSyncedBlock(scannedTo, scannedHash)
 		fmt.Printf("  Wallet synced to height %d\n", scannedTo)
 	}
 }
