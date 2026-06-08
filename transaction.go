@@ -943,8 +943,24 @@ type KeyImageChecker func(keyImage [32]byte) bool
 // RingMemberChecker verifies that a ring member+commitment pair exists in canonical chain state.
 type RingMemberChecker func(pubKey, commitment [32]byte) bool
 
-// ValidateTransaction validates a transaction
+// ValidateTransaction validates a transaction with full cryptographic
+// verification (RingCT signatures and range proofs).
 func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRingMember RingMemberChecker) error {
+	return validateTransaction(tx, isSpent, isCanonicalRingMember, false)
+}
+
+// validateTransaction is the implementation behind ValidateTransaction.
+//
+// When skipCrypto is true, the expensive RingCT signature verification
+// (VerifyRingCT) and output range-proof verification (VerifyRangeProof, including
+// the coinbase's) are bypassed. This is ONLY set for blocks at or below a trusted
+// checkpoint height during fast sync — see Chain.validateBlockForProcessLocked.
+// The checkpoint hash already attests that this history is valid, so re-verifying
+// every proof is redundant work and is the dominant cost of a fresh sync. All
+// structural, binding, double-spend, and commitment-balance checks still run, and
+// outputs/key images are still recorded into the indexes — so wallet scanning and
+// balance calculation are completely unaffected.
+func validateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRingMember RingMemberChecker, skipCrypto bool) error {
 	// Transaction.Version gates the entire transaction template / wire format.
 	// Memo has its own plaintext-envelope version; this version is for the tx itself.
 	if tx.Version != 1 {
@@ -953,7 +969,7 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 
 	// Coinbase transactions have no inputs
 	if tx.IsCoinbase() {
-		return validateCoinbase(tx)
+		return validateCoinbase(tx, skipCrypto)
 	}
 	if isCanonicalRingMember == nil {
 		return fmt.Errorf("ring member checker is required")
@@ -994,15 +1010,20 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 			}
 		}
 
-		// Verify RingCT signature (proves key ownership AND amount equality)
-		sigHash := tx.SigningHash()
 		ringSig := &RingCTSignature{
 			Signature: input.RingSignature,
 			RingSize:  len(input.RingMembers),
 		}
 
-		if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], ringSig); err != nil {
-			return fmt.Errorf("input %d: invalid RingCT signature: %w", i, err)
+		// Verify RingCT signature (proves key ownership AND amount equality).
+		// Skipped below a trusted checkpoint during fast sync — the checkpoint
+		// already attests this history is valid. The binding and double-spend
+		// checks below still run regardless.
+		if !skipCrypto {
+			sigHash := tx.SigningHash()
+			if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], ringSig); err != nil {
+				return fmt.Errorf("input %d: invalid RingCT signature: %w", i, err)
+			}
 		}
 
 		sigKeyImage, sigPseudoOutput, err := ExtractRingCTBinding(ringSig)
@@ -1022,11 +1043,15 @@ func ValidateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 		}
 	}
 
-	// Verify each output range proof
-	for i, output := range tx.Outputs {
-		rangeProof := &RangeProof{Proof: output.RangeProof}
-		if err := VerifyRangeProof(output.Commitment, rangeProof); err != nil {
-			return fmt.Errorf("output %d: invalid range proof: %w", i, err)
+	// Verify each output range proof. Skipped below a trusted checkpoint during
+	// fast sync (see skipCrypto) — this is the single largest cost of a sync, as
+	// it is paid on every output including every block's coinbase.
+	if !skipCrypto {
+		for i, output := range tx.Outputs {
+			rangeProof := &RangeProof{Proof: output.RangeProof}
+			if err := VerifyRangeProof(output.Commitment, rangeProof); err != nil {
+				return fmt.Errorf("output %d: invalid range proof: %w", i, err)
+			}
 		}
 	}
 
@@ -1107,7 +1132,7 @@ func verifyCommitmentBalance(tx *Transaction) error {
 	return nil
 }
 
-func validateCoinbase(tx *Transaction) error {
+func validateCoinbase(tx *Transaction, skipCrypto bool) error {
 	if len(tx.Inputs) != 0 {
 		return fmt.Errorf("coinbase must have no inputs")
 	}
@@ -1123,11 +1148,15 @@ func validateCoinbase(tx *Transaction) error {
 		return fmt.Errorf("coinbase output 0: encrypted memo must not be all-zero")
 	}
 
-	// Verify range proofs on outputs
-	for i, output := range tx.Outputs {
-		rangeProof := &RangeProof{Proof: output.RangeProof}
-		if err := VerifyRangeProof(output.Commitment, rangeProof); err != nil {
-			return fmt.Errorf("coinbase output %d: invalid range proof: %w", i, err)
+	// Verify range proofs on outputs. Skipped below a trusted checkpoint during
+	// fast sync (see skipCrypto): one coinbase range proof is verified on every
+	// single block, so this is the largest single contributor to sync time.
+	if !skipCrypto {
+		for i, output := range tx.Outputs {
+			rangeProof := &RangeProof{Proof: output.RangeProof}
+			if err := VerifyRangeProof(output.Commitment, rangeProof); err != nil {
+				return fmt.Errorf("coinbase output %d: invalid range proof: %w", i, err)
+			}
 		}
 	}
 

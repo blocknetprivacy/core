@@ -378,6 +378,8 @@ func ValidateBlockP2P(block *Block, chain *Chain) error {
 		chain.IsKeyImageSpent,
 		chain.IsCanonicalRingMember,
 		skipPoW,
+		// Crypto is trusted below a checkpoint for the same reason PoW is.
+		skipPoW,
 	)
 }
 
@@ -389,6 +391,7 @@ func validateBlockWithContext(
 	isKeyImageSpent func([32]byte) bool,
 	isCanonicalRingMember RingMemberChecker,
 	skipPoW bool,
+	skipCrypto bool,
 ) error {
 	header := &block.Header
 
@@ -474,7 +477,7 @@ func validateBlockWithContext(
 	// Validate all transactions and enforce no duplicated key images within the block.
 	seenKeyImages := make(map[[32]byte]struct{})
 	for i, tx := range block.Transactions {
-		if err := ValidateTransaction(tx, isKeyImageSpent, isCanonicalRingMember); err != nil {
+		if err := validateTransaction(tx, isKeyImageSpent, isCanonicalRingMember, skipCrypto); err != nil {
 			return fmt.Errorf("invalid transaction %d: %w", i, err)
 		}
 		if tx.IsCoinbase() {
@@ -1567,6 +1570,10 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 		c.getBlockByHashLocked,
 		isSpent,
 		isCanonicalRingMember,
+		skipPoW,
+		// Below a trusted checkpoint, the checkpoint hash already vouches for the
+		// whole history, so skip the expensive RingCT/range-proof verification
+		// (the dominant cost of a fresh sync) on the same gate that skips PoW.
 		skipPoW,
 	)
 }

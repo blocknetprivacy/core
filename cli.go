@@ -381,14 +381,14 @@ func (c *CLI) Run() error {
 		os.Exit(0)
 	}()
 
-	fmt.Println("  Connecting to network...")
-	if err := c.daemon.Start(); err != nil {
-		return fmt.Errorf("failed to start daemon: %w", err)
-	}
-
-	c.recoverWalletAfterChainReset()
-
-	// Start API server if configured
+	// Start the API server first, before the (potentially slow) P2P dial and
+	// chain catch-up below. The chain DB is already open (NewDaemon), so
+	// /status returns a valid height immediately; peers read as 0 and syncing
+	// as false until the daemon starts. Binding the API up front means a node
+	// that is far out of sync is reachable right away instead of appearing dead
+	// while it connects — managers like bnt no longer time out and kill it.
+	// Clients can still see that sync is incomplete (height/syncing fields), so
+	// funds may not be fully visible until the chain catches up.
 	if c.api != nil {
 		if err := c.api.Start(c.apiAddr); err != nil {
 			return fmt.Errorf("failed to start API: %w", err)
@@ -397,6 +397,18 @@ func (c *CLI) Run() error {
 			fmt.Printf("\n%s\n  API bind address %q is not loopback\n  Place behind trusted network boundaries or TLS\n", c.errorHead("Warning"), c.apiAddr)
 		}
 	}
+
+	fmt.Println("  Connecting to network...")
+	if err := c.daemon.Start(); err != nil {
+		// Tear down the API we just brought up so we don't leave a stale cookie
+		// or a half-open listener behind on a failed start.
+		if c.api != nil {
+			c.api.Stop()
+		}
+		return fmt.Errorf("failed to start daemon: %w", err)
+	}
+
+	c.recoverWalletAfterChainReset()
 
 	// Auto-scan new blocks for wallet
 	go c.autoScanBlocks()
