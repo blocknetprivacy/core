@@ -1132,18 +1132,69 @@ func (c *CLI) autoScanBlocks() {
 				continue
 			}
 
-			blockData := blockToScanData(block)
-			scanner.ScanBlock(blockData)
+			applyBlockToWallet(c.daemon.Chain(), w, scanner, block)
 			w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
 				return c.daemon.Mempool().HasTransaction(txID)
 			})
 
-			w.SetSyncedHeight(blockData.Height)
 			unsaved++
 			if unsaved >= saveBatchSize {
 				doSave()
 			}
 		}
+	}
+}
+
+// applyBlockToWallet scans a newly-connected block into the wallet, detecting
+// reorgs. If the block does not build on the wallet's last synced tip, the
+// wallet has been tracking a branch that was (at least partly) disconnected, so
+// it may hold outputs from orphaned blocks — outputs that are no longer
+// canonical and would be rejected as ring members ("not a canonical on-chain
+// output") if a send selected them. In that case it reconciles against the
+// canonical chain, dropping the stale outputs; otherwise it scans forward.
+func applyBlockToWallet(chain *Chain, w *wallet.Wallet, sc *wallet.Scanner, block *Block) {
+	if chain == nil || w == nil || sc == nil || block == nil {
+		return
+	}
+	syncedHash := w.SyncedHash()
+	extends := (syncedHash == [32]byte{} && block.Header.Height == w.SyncedHeight()+1) ||
+		(syncedHash != [32]byte{} && block.Header.PrevHash == syncedHash)
+	if extends {
+		sc.ScanBlock(blockToScanData(block))
+		w.SetSyncedTip(block.Header.Height, block.Hash())
+		return
+	}
+	reconcileWalletReorg(chain, w, sc)
+}
+
+// reconcileWalletReorg rewinds the wallet to the finalized floor — reorgs deeper
+// than MaxReorgDepth are rejected by consensus, so everything at or below the
+// floor is immutable — then rescans the canonical chain forward to the tip. This
+// drops owned outputs that lived only in disconnected blocks and re-discovers
+// outputs on the new branch. Scanning is idempotent (AddOutput dedups, MarkSpent
+// is idempotent), so an over-broad rescan is safe.
+func reconcileWalletReorg(chain *Chain, w *wallet.Wallet, sc *wallet.Scanner) {
+	if chain == nil || w == nil || sc == nil {
+		return
+	}
+	tip := chain.Height()
+	floor := uint64(0)
+	if tip > MaxReorgDepth {
+		floor = tip - MaxReorgDepth
+	}
+	if synced := w.SyncedHeight(); synced < floor {
+		// The wallet is still behind the finalized floor; nothing above it can
+		// have been reorged, so just resync forward from where it is.
+		floor = synced
+	}
+	w.RewindToHeight(floor)
+	for h := floor + 1; h <= tip; h++ {
+		block := chain.GetBlockByHeight(h)
+		if block == nil {
+			return
+		}
+		sc.ScanBlock(blockToScanData(block))
+		w.SetSyncedTip(h, block.Hash())
 	}
 }
 

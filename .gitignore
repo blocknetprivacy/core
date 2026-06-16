@@ -63,3 +63,9 @@ Thumbs.db
 docker/.env
 !docker/.env.example
 docs
+
+# Ignore local dotfiles/dirs by default; keep the repo's own tracked ones
+/.*
+!/.gitignore
+!/.github/
+!/.dockerignore

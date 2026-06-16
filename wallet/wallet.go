@@ -331,6 +331,7 @@ type WalletData struct {
 	SendHistory  []*SendRecord  `json:"send_history,omitempty"` // Track outgoing transactions
 	PendingCredits []*PendingCredit `json:"pending_credits,omitempty"` // UX-only pending credits (e.g. unconfirmed change)
 	SyncedHeight uint64         `json:"synced_height"`
+	SyncedHash   [32]byte       `json:"synced_hash"` // Hash of the block at SyncedHeight, used to detect reorgs. Zero for wallets synced before this was tracked.
 	CreatedAt    int64          `json:"created_at"`
 }
 
@@ -1313,11 +1314,31 @@ func (w *Wallet) SyncedHeight() uint64 {
 	return w.data.SyncedHeight
 }
 
-// SetSyncedHeight updates the sync height
+// SyncedHash returns the hash of the block at the wallet's synced height, or
+// the zero hash for wallets synced before reorg-aware tracking existed.
+func (w *Wallet) SyncedHash() [32]byte {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.data.SyncedHash
+}
+
+// SetSyncedTip records the synced height together with the hash of the block at
+// that height, so the scan path can detect reorgs: a newly-connected block whose
+// parent is not this hash means blocks the wallet scanned were disconnected.
+func (w *Wallet) SetSyncedTip(height uint64, hash [32]byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.data.SyncedHeight = height
+	w.data.SyncedHash = hash
+}
+
+// SetSyncedHeight updates the sync height. The synced-tip hash is cleared
+// because no hash was supplied; the next scanned block re-anchors it.
 func (w *Wallet) SetSyncedHeight(height uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.data.SyncedHeight = height
+	w.data.SyncedHash = [32]byte{}
 }
 
 // RewindToHeight removes outputs from blocks above the given height
@@ -1344,6 +1365,9 @@ func (w *Wallet) RewindToHeight(height uint64) int {
 	if w.data.SyncedHeight > height {
 		w.data.SyncedHeight = height
 	}
+	// The recorded synced-tip hash is no longer valid after a rewind; the next
+	// scanned block re-anchors it.
+	w.data.SyncedHash = [32]byte{}
 	return removed
 }
 

@@ -2364,11 +2364,10 @@ func (s *APIServer) catchUpScan() {
 		if block == nil {
 			break
 		}
-		sc.ScanBlock(blockToScanData(block))
+		applyBlockToWallet(s.daemon.Chain(), w, sc, block)
 		w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
 			return s.daemon.Mempool().HasTransaction(txID)
 		})
-		w.SetSyncedHeight(h)
 
 		if h%100 == 0 || h == chainHeight {
 			if err := w.Save(); err != nil {

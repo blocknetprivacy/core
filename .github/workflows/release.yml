@@ -7,10 +7,10 @@ on:
   workflow_dispatch:
 
 env:
-  VERSION: "0.14.0"
+  VERSION: "0.14.2"
 
 jobs:
-  build-linux-amd64:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,10 +18,26 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      
+
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
-      
+
+      - name: Run tests
+        run: CGO_ENABLED=1 go test ./...
+
+  build-linux-amd64:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Rust library
+        run: cd crypto-rs && cargo build --release
+
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-linux .
       
@@ -37,6 +53,7 @@ jobs:
           path: blocknet-core-amd64-linux-${{ env.VERSION }}.zip
 
   build-linux-arm64:
+    needs: test
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +80,7 @@ jobs:
           path: blocknet-core-arm64-linux-${{ env.VERSION }}.zip
 
   build-macos-arm64:
+    needs: test
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -89,6 +107,7 @@ jobs:
           path: blocknet-core-arm64-macos-${{ env.VERSION }}.zip
 
   build-macos-amd64:
+    needs: test
     runs-on: macos-15-intel
     steps:
       - uses: actions/checkout@v4
@@ -115,6 +134,7 @@ jobs:
           path: blocknet-core-amd64-macos-${{ env.VERSION }}.zip
 
   build-windows-amd64:
+    needs: test
     runs-on: windows-latest
     defaults:
       run:
