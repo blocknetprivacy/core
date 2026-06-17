@@ -19,8 +19,8 @@ const (
 	checkpointsFilename = "checkpoints.dat"
 
 	// DefaultCheckpointsURL is where nodes fetch checkpoints when not in --full-sync mode.
-	// This file is intended to be committed to the repo (append-only).
-	DefaultCheckpointsURL = "https://raw.githubusercontent.com/blocknetprivacy/checkpoints/mainnet/checkpoints.dat"
+	// The file is served from a web host and is append-only.
+	DefaultCheckpointsURL = "https://bntpool.com/checkpoints.dat"
 
 	// Keep downloads bounded in case of a misconfigured URL.
 	maxCheckpointsDownloadBytes = 32 << 20 // 32 MiB
