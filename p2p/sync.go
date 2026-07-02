@@ -1292,6 +1292,29 @@ func (sm *SyncManager) IsSyncing() bool {
 	return sm.syncing
 }
 
+// IsSyncingFarBehind reports whether an active sync run is targeting a tip
+// more than tolerance blocks ahead of the local chain. Any peer that briefly
+// advertises more cumulative work — for example after losing a propagation
+// race by fractions of a second — triggers a sync run that re-downloads a
+// small overlap window and the mempool, holding IsSyncing true for many
+// seconds even though the local tip is current the whole time. Callers that
+// only need to avoid acting on a genuinely stale chain (such as mining
+// template serving) should use this instead of IsSyncing.
+func (sm *SyncManager) IsSyncingFarBehind(tolerance uint64) bool {
+	sm.mu.RLock()
+	syncing := sm.syncing
+	target := sm.syncTarget
+	sm.mu.RUnlock()
+	if !syncing {
+		return false
+	}
+	// Compare against the live chain tip rather than syncProgress: the
+	// overlap re-download makes syncProgress regress below the tip, while
+	// the tip itself only moves forward.
+	height := sm.getStatus().Height
+	return target > height && target-height > tolerance
+}
+
 // SyncProgress returns sync progress info (current, target, elapsed)
 func (sm *SyncManager) SyncProgress() (uint64, uint64, time.Duration) {
 	sm.mu.RLock()

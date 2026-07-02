@@ -24,6 +24,13 @@ import (
 const (
 	sendMinFee     = uint64(1000) // 0.00001 BNT minimum fee
 	sendFeePerByte = uint64(10)   // 0.0000001 BNT per byte
+
+	// blockTemplateSyncHeightTolerance is how many blocks behind an active
+	// sync target the local tip may be while still serving mining templates.
+	// Near-tip sync runs (propagation races, overlap re-downloads) finish in
+	// seconds and do not make templates meaningfully stale; hard-failing them
+	// starves pools of work for the whole run.
+	blockTemplateSyncHeightTolerance = uint64(2)
 )
 
 // ============================================================================
@@ -2161,7 +2168,7 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	if s.daemon.syncMgr.IsSyncing() {
+	if s.daemon.syncMgr.IsSyncingFarBehind(blockTemplateSyncHeightTolerance) {
 		writeError(w, http.StatusServiceUnavailable, "node is syncing")
 		return
 	}
