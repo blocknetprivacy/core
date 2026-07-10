@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -56,11 +57,14 @@ func TestHandleRenewBlockTemplate_ExtendsLeaseAcrossLongMiningRound(t *testing.T
 	s.templateTTL = time.Minute
 
 	tip := chain.TemplateParams()
-	templateID, initialExpiry := s.rememberMiningTemplateLease(&Block{Header: BlockHeader{
+	templateID, initialExpiry, err := s.rememberMiningTemplateLease(&Block{Header: BlockHeader{
 		Version:  1,
 		Height:   tip.Height,
 		PrevHash: tip.PrevHash,
 	}})
+	if err != nil {
+		t.Fatalf("remember template: %v", err)
+	}
 	if want := now.Add(time.Minute); !initialExpiry.Equal(want) {
 		t.Fatalf("initial expiry mismatch: got %s want %s", initialExpiry, want)
 	}
@@ -118,11 +122,14 @@ func TestHandleRenewBlockTemplate_RefusesTemplateAfterCanonicalTipChanges(t *tes
 	s.templateTTL = time.Minute
 
 	tip := chain.TemplateParams()
-	templateID, initialExpiry := s.rememberMiningTemplateLease(&Block{Header: BlockHeader{
+	templateID, initialExpiry, err := s.rememberMiningTemplateLease(&Block{Header: BlockHeader{
 		Version:  1,
 		Height:   tip.Height,
 		PrevHash: tip.PrevHash,
 	}})
+	if err != nil {
+		t.Fatalf("remember template: %v", err)
+	}
 
 	genesis := chain.GetBlockByHeight(0)
 	if genesis == nil {
@@ -177,7 +184,7 @@ func TestHandleRenewBlockTemplate_ValidatesTemplateID(t *testing.T) {
 	}
 }
 
-func TestRenewMiningTemplate_RefreshesEvictionRecency(t *testing.T) {
+func TestRememberMiningTemplateLease_RejectsSustainedSameTipChurnWithoutEviction(t *testing.T) {
 	chain, _, cleanup := mustCreateTestChain(t)
 	defer cleanup()
 	mustAddGenesisBlock(t, chain)
@@ -185,7 +192,7 @@ func TestRenewMiningTemplate_RefreshesEvictionRecency(t *testing.T) {
 	now := time.Date(2026, time.July, 10, 17, 0, 0, 0, time.UTC)
 	s := NewAPIServer(&Daemon{chain: chain}, nil, nil, t.TempDir(), nil)
 	s.templateNow = func() time.Time { return now }
-	s.templateTTL = 24 * time.Hour
+	s.templateTTL = time.Hour
 
 	tip := chain.TemplateParams()
 	block := &Block{Header: BlockHeader{
@@ -194,47 +201,123 @@ func TestRenewMiningTemplate_RefreshesEvictionRecency(t *testing.T) {
 		PrevHash: tip.PrevHash,
 	}}
 
-	renewedID, _ := s.rememberMiningTemplateLease(block)
-	now = now.Add(time.Second)
-	inactiveID, _ := s.rememberMiningTemplateLease(block)
-	for i := 2; i < maxMiningTemplateCacheEntries; i++ {
-		now = now.Add(time.Second)
-		s.rememberMiningTemplate(block)
+	ids := make([]string, 0, maxMiningTemplateCacheEntries)
+	var advertisedExpiry time.Time
+	for i := 0; i < maxMiningTemplateCacheEntries; i++ {
+		templateID, expiry, err := s.rememberMiningTemplateLease(block)
+		if err != nil {
+			t.Fatalf("fill cache at entry %d: %v", i, err)
+		}
+		ids = append(ids, templateID)
+		advertisedExpiry = expiry
 	}
-
-	now = now.Add(time.Second)
-	renewedAt := now
-	renewedExpiry, err := s.renewMiningTemplate(renewedID)
+	now = now.Add(30 * time.Minute)
+	renewedExpiry, err := s.renewMiningTemplate(ids[0])
 	if err != nil {
-		t.Fatalf("renew active template: %v", err)
+		t.Fatalf("renew template in full cache: %v", err)
+	}
+	if !renewedExpiry.After(advertisedExpiry) {
+		t.Fatalf("renewal did not extend expiry: got %s initial %s", renewedExpiry, advertisedExpiry)
 	}
 
-	// Adding one more template exceeds the cache cap. The inactive template is
-	// now the least recently touched entry; the renewed template must remain
-	// cached for the lease deadline that was just advertised.
-	now = now.Add(time.Second)
-	newID := s.rememberMiningTemplate(block)
+	// Sustained same-tip churn must fail closed rather than silently evicting any
+	// lease whose expiry has already been advertised to a miner.
+	for i := 0; i < 2*maxMiningTemplateCacheEntries; i++ {
+		now = now.Add(time.Millisecond)
+		templateID, expiry, err := s.rememberMiningTemplateLease(block)
+		if !errors.Is(err, errMiningTemplateCacheFull) {
+			t.Fatalf("overflow attempt %d: got err %v, want cache-full", i, err)
+		}
+		if templateID != "" || !expiry.IsZero() {
+			t.Fatalf("overflow attempt %d returned a lease: id=%q expiry=%s", i, templateID, expiry)
+		}
+	}
 	if len(s.templateCache) != maxMiningTemplateCacheEntries {
-		t.Fatalf("cache size mismatch: got %d want %d", len(s.templateCache), maxMiningTemplateCacheEntries)
+		t.Fatalf("cache grew past bound: got %d want %d", len(s.templateCache), maxMiningTemplateCacheEntries)
 	}
-	if _, ok := s.getMiningTemplate(renewedID); !ok {
-		t.Fatal("actively renewed template was evicted before advertised expiry")
+	for i, templateID := range ids {
+		if _, ok := s.getMiningTemplate(templateID); !ok {
+			t.Fatalf("advertised lease %d was evicted by same-tip churn", i)
+		}
 	}
-	if _, ok := s.getMiningTemplate(inactiveID); ok {
-		t.Fatal("least-recently-touched inactive template was not evicted")
+
+	// Once the inactive leases reach their advertised boundary, insertion prunes
+	// them and capacity becomes available. The actively renewed lease remains.
+	now = advertisedExpiry
+	newID, _, err := s.rememberMiningTemplateLease(block)
+	if err != nil {
+		t.Fatalf("remember template after expiry: %v", err)
+	}
+	if len(s.templateCache) != 2 {
+		t.Fatalf("expired cache was not reclaimed: got %d entries", len(s.templateCache))
+	}
+	if _, ok := s.getMiningTemplate(ids[0]); !ok {
+		t.Fatal("renewed lease was pruned at the inactive leases' expiry")
+	}
+	if _, ok := s.getMiningTemplate(ids[1]); ok {
+		t.Fatal("inactive lease remained after its advertised expiry")
 	}
 	if _, ok := s.getMiningTemplate(newID); !ok {
-		t.Fatal("new template was not retained after cache-pressure eviction")
+		t.Fatal("new template missing after expired leases were pruned")
 	}
-	if !now.Before(renewedExpiry) {
-		t.Fatalf("test advanced past renewed expiry: now=%s expiry=%s", now, renewedExpiry)
+}
+
+func TestRememberMiningTemplateLease_TipChangePrunesOldCapacity(t *testing.T) {
+	chain, storage, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	now := time.Date(2026, time.July, 10, 18, 0, 0, 0, time.UTC)
+	s := NewAPIServer(&Daemon{chain: chain}, nil, nil, t.TempDir(), nil)
+	s.templateNow = func() time.Time { return now }
+	s.templateTTL = time.Hour
+
+	oldTip := chain.TemplateParams()
+	oldBlock := &Block{Header: BlockHeader{Version: 1, Height: oldTip.Height, PrevHash: oldTip.PrevHash}}
+	oldIDs := make([]string, 0, maxMiningTemplateCacheEntries)
+	for i := 0; i < maxMiningTemplateCacheEntries; i++ {
+		templateID, _, err := s.rememberMiningTemplateLease(oldBlock)
+		if err != nil {
+			t.Fatalf("fill old-tip cache at entry %d: %v", i, err)
+		}
+		oldIDs = append(oldIDs, templateID)
 	}
 
-	s.templateMu.Lock()
-	renewed := s.templateCache[renewedID]
-	s.templateMu.Unlock()
-	if !renewed.lastTouchedAt.Equal(renewedAt) {
-		t.Fatalf("renewal recency mismatch: got %s want %s", renewed.lastTouchedAt, renewedAt)
+	genesis := chain.GetBlockByHeight(0)
+	if genesis == nil {
+		t.Fatal("expected genesis block")
+	}
+	newTipBlock := makeOutputOnlyTestBlock(oldTip.Height, oldTip.PrevHash, genesis.Header.Timestamp+BlockIntervalSec, nil)
+	commitMainChainBlockForTest(t, chain, storage, newTipBlock, chain.TotalWork()+MinDifficulty)
+	chain.mu.Lock()
+	chain.updateTipSnapshotLocked()
+	chain.mu.Unlock()
+
+	newTip := chain.TemplateParams()
+	newBlock := &Block{Header: BlockHeader{Version: 1, Height: newTip.Height, PrevHash: newTip.PrevHash}}
+	newID, _, err := s.rememberMiningTemplateLease(newBlock)
+	if err != nil {
+		t.Fatalf("remember first new-tip template: %v", err)
+	}
+	if len(s.templateCache) != 1 {
+		t.Fatalf("tip change did not reclaim old capacity: got %d entries", len(s.templateCache))
+	}
+	for i, templateID := range oldIDs {
+		if _, ok := s.getMiningTemplate(templateID); ok {
+			t.Fatalf("old-tip lease %d survived new-tip insertion", i)
+		}
+	}
+	if _, ok := s.getMiningTemplate(newID); !ok {
+		t.Fatal("new-tip template missing after old-tip pruning")
+	}
+
+	for i := 1; i < maxMiningTemplateCacheEntries; i++ {
+		if _, _, err := s.rememberMiningTemplateLease(newBlock); err != nil {
+			t.Fatalf("fill new-tip cache at entry %d: %v", i, err)
+		}
+	}
+	if _, _, err := s.rememberMiningTemplateLease(newBlock); !errors.Is(err, errMiningTemplateCacheFull) {
+		t.Fatalf("new-tip cache did not enforce bound: got %v", err)
 	}
 }
 
@@ -259,7 +342,10 @@ func TestMiningTemplateLease_AdvertisedUnixMillisIsPruningBoundary(t *testing.T)
 		t.Fatalf("mining-template clock retained sub-millisecond precision: %d ns", got)
 	}
 
-	templateID, expiry := s.rememberMiningTemplateLease(&Block{})
+	templateID, expiry, err := s.rememberMiningTemplateLease(&Block{})
+	if err != nil {
+		t.Fatalf("remember template: %v", err)
+	}
 	advertisedExpiryMillis := expiry.UnixMilli()
 	if expiry.UnixNano() != advertisedExpiryMillis*int64(time.Millisecond) {
 		t.Fatalf("stored expiry differs from advertised millisecond: stored=%s advertised=%d", expiry, advertisedExpiryMillis)

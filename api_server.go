@@ -69,12 +69,13 @@ type APIServer struct {
 }
 
 type cachedMiningTemplate struct {
-	block         Block
-	lastTouchedAt time.Time
-	expiresAt     time.Time
+	block     Block
+	expiresAt time.Time
 }
 
 const (
+	// Never exceed this bound or evict an unexpired same-tip lease. New
+	// template requests fail until a lease expires or the chain tip changes.
 	maxMiningTemplateCacheEntries = 512
 	miningTemplateCacheTTL        = 10 * time.Minute
 )
@@ -232,52 +233,51 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 	return s
 }
 
-func (s *APIServer) rememberMiningTemplate(block *Block) string {
-	templateID, _ := s.rememberMiningTemplateLease(block)
-	return templateID
+func (s *APIServer) rememberMiningTemplate(block *Block) (string, error) {
+	templateID, _, err := s.rememberMiningTemplateLease(block)
+	return templateID, err
 }
 
-func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time) {
+func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time, error) {
 	if block == nil {
-		return "", time.Time{}
+		return "", time.Time{}, errors.New("cannot cache nil mining template")
 	}
 	now := s.miningTemplateNow()
-
-	idBytes := make([]byte, 8)
-	if _, err := rand.Read(idBytes); err != nil {
-		nowNanos := now.UnixNano()
-		for i := 0; i < len(idBytes); i++ {
-			idBytes[i] = byte(nowNanos >> (8 * i))
-		}
-	}
-	templateID := hex.EncodeToString(idBytes)
 	expiresAt := now.Add(s.miningTemplateTTL())
 
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
 
-	s.pruneMiningTemplatesLocked(now)
+	s.pruneMiningTemplatesForBlockLocked(now, block)
 	if s.templateCache == nil {
 		s.templateCache = make(map[string]cachedMiningTemplate)
 	}
-	s.templateCache[templateID] = cachedMiningTemplate{
-		block:         *block,
-		lastTouchedAt: now,
-		expiresAt:     expiresAt,
-	}
-	if len(s.templateCache) > maxMiningTemplateCacheEntries {
-		var oldestID string
-		var oldestTime time.Time
-		for id, tpl := range s.templateCache {
-			if oldestID == "" || tpl.lastTouchedAt.Before(oldestTime) {
-				oldestID = id
-				oldestTime = tpl.lastTouchedAt
-			}
-		}
-		delete(s.templateCache, oldestID)
+	if len(s.templateCache) >= maxMiningTemplateCacheEntries {
+		return "", time.Time{}, errMiningTemplateCacheFull
 	}
 
-	return templateID, expiresAt
+	var templateID string
+	for attempt := int64(0); ; attempt++ {
+		idBytes := make([]byte, 8)
+		if _, err := rand.Read(idBytes); err != nil {
+			fallback := now.UnixNano() + attempt
+			for i := 0; i < len(idBytes); i++ {
+				idBytes[i] = byte(fallback >> (8 * i))
+			}
+		}
+		candidate := hex.EncodeToString(idBytes)
+		if _, exists := s.templateCache[candidate]; !exists {
+			templateID = candidate
+			break
+		}
+	}
+
+	s.templateCache[templateID] = cachedMiningTemplate{
+		block:     *block,
+		expiresAt: expiresAt,
+	}
+
+	return templateID, expiresAt, nil
 }
 
 func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
@@ -299,6 +299,7 @@ func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
 }
 
 var (
+	errMiningTemplateCacheFull   = errors.New("mining template cache is full")
 	errMiningTemplateUnavailable = errors.New("mining template is unknown or expired")
 	errMiningTemplateStale       = errors.New("mining template does not build on the current tip")
 )
@@ -323,7 +324,6 @@ func (s *APIServer) renewMiningTemplate(templateID string) (time.Time, error) {
 		return time.Time{}, errMiningTemplateStale
 	}
 
-	tpl.lastTouchedAt = now
 	tpl.expiresAt = now.Add(s.miningTemplateTTL())
 	s.templateCache[templateID] = tpl
 	return tpl.expiresAt, nil
@@ -354,6 +354,16 @@ func (s *APIServer) miningTemplateTTL() time.Duration {
 func (s *APIServer) pruneMiningTemplatesLocked(now time.Time) {
 	for id, tpl := range s.templateCache {
 		if !now.Before(tpl.expiresAt) {
+			delete(s.templateCache, id)
+		}
+	}
+}
+
+func (s *APIServer) pruneMiningTemplatesForBlockLocked(now time.Time, block *Block) {
+	for id, tpl := range s.templateCache {
+		if !now.Before(tpl.expiresAt) ||
+			tpl.block.Header.Height != block.Header.Height ||
+			tpl.block.Header.PrevHash != block.Header.PrevHash {
 			delete(s.templateCache, id)
 		}
 	}

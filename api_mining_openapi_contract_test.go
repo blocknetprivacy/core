@@ -50,6 +50,17 @@ func TestOpenAPIMiningTemplateLeaseAndCompactSubmitContract(t *testing.T) {
 	}
 
 	paths := mustGetMapAny(t, spec, "paths")
+	blockTemplatePath := mustGetMapAny(t, paths, "/api/mining/blocktemplate")
+	blockTemplateGet := mustGetMapAny(t, blockTemplatePath, "get")
+	blockTemplateResponses := mustGetMapAny(t, blockTemplateGet, "responses")
+	blockTemplateUnavailable := mustGetMapAny(t, blockTemplateResponses, "503")
+	unavailableContent := mustGetMapAny(t, blockTemplateUnavailable, "content")
+	unavailableJSON := mustGetMapAny(t, unavailableContent, "application/json")
+	unavailableExamples := mustGetMapAny(t, unavailableJSON, "examples")
+	if _, ok := unavailableExamples["lease_capacity"]; !ok {
+		t.Fatal("blocktemplate 503 contract missing lease_capacity example")
+	}
+
 	renewPath := mustGetMapAny(t, paths, "/api/mining/renewtemplate")
 	renewPost := mustGetMapAny(t, renewPath, "post")
 	renewBody := mustGetMapAny(t, renewPost, "requestBody")

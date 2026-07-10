@@ -2277,7 +2277,15 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 
 	// Compute target for PoW validation
 	target := DifficultyToTarget(block.Header.Difficulty)
-	templateID, expiresAt := s.rememberMiningTemplateLease(block)
+	templateID, expiresAt, err := s.rememberMiningTemplateLease(block)
+	if err != nil {
+		if errors.Is(err, errMiningTemplateCacheFull) {
+			writeError(w, http.StatusServiceUnavailable, "mining template cache full, retry after a lease expires or the chain tip changes")
+			return
+		}
+		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"block":                       block,

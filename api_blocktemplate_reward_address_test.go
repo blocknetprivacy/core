@@ -230,3 +230,51 @@ func TestHandleBlockTemplate_InvalidAddressOverrideReturns400(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
+
+func TestHandleBlockTemplate_LiveSameTipCacheFullReturns503(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+	daemon.syncMgr = new(p2p.SyncManager)
+
+	walletFile := filepath.Join(t.TempDir(), "wallet.dat")
+	w, err := wallet.NewWallet(walletFile, []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create wallet: %v", err)
+	}
+
+	api := NewAPIServer(daemon, w, nil, t.TempDir(), []byte("pw"))
+	now := time.Date(2026, time.July, 10, 19, 0, 0, 0, time.UTC)
+	api.templateNow = func() time.Time { return now }
+	api.templateTTL = time.Hour
+
+	tip := chain.TemplateParams()
+	cached := &Block{Header: BlockHeader{Version: 1, Height: tip.Height, PrevHash: tip.PrevHash}}
+	for i := 0; i < maxMiningTemplateCacheEntries; i++ {
+		if _, _, err := api.rememberMiningTemplateLease(cached); err != nil {
+			t.Fatalf("fill template cache at entry %d: %v", i, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mining/blocktemplate", nil)
+	rr := httptest.NewRecorder()
+	api.handleBlockTemplate(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	const want = "mining template cache full, retry after a lease expires or the chain tip changes"
+	if resp["error"] != want {
+		t.Fatalf("unexpected cache-full error: got %q want %q", resp["error"], want)
+	}
+	if len(api.templateCache) != maxMiningTemplateCacheEntries {
+		t.Fatalf("cache size changed on rejected template: got %d", len(api.templateCache))
+	}
+}
