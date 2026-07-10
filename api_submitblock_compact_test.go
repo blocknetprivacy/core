@@ -42,7 +42,7 @@ func TestHandleSubmitBlock_CompactPayloadUsesTemplateCache(t *testing.T) {
 	newTip := makeOutputOnlyTestBlock(tip.Height, tip.PrevHash, genesis.Header.Timestamp+BlockIntervalSec, nil)
 	commitMainChainBlockForTest(t, chain, storage, newTip, chain.TotalWork()+MinDifficulty)
 	chain.mu.Lock()
-	chain.updateTipSnapshotLocked()
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	body, err := json.Marshal(map[string]any{
