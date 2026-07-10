@@ -242,11 +242,11 @@ func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time
 	if block == nil {
 		return "", time.Time{}, errors.New("cannot cache nil mining template")
 	}
-	now := s.miningTemplateNow()
-	expiresAt := now.Add(s.miningTemplateTTL())
 
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
+	now := s.miningTemplateNow()
+	expiresAt := now.Add(s.miningTemplateTTL())
 
 	if s.daemon == nil || s.daemon.Chain() == nil {
 		return "", time.Time{}, errors.New("cannot cache mining template without chain state")
@@ -296,9 +296,9 @@ func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
 		return nil, false
 	}
 
-	now := s.miningTemplateNow()
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
+	now := s.miningTemplateNow()
 
 	s.pruneMiningTemplatesLocked(now)
 	tpl, ok := s.templateCache[templateID]
@@ -320,9 +320,9 @@ func (s *APIServer) renewMiningTemplate(templateID string) (time.Time, error) {
 		return time.Time{}, errMiningTemplateUnavailable
 	}
 
-	now := s.miningTemplateNow()
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
+	now := s.miningTemplateNow()
 
 	s.pruneMiningTemplatesLocked(now)
 	tpl, ok := s.templateCache[templateID]

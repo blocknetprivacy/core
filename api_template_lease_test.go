@@ -429,3 +429,92 @@ func TestMiningTemplateLease_AdvertisedUnixMillisIsPruningBoundary(t *testing.T)
 		t.Fatal("template remained cached at advertised expiry")
 	}
 }
+
+func TestMiningTemplateLease_ContentionSamplesClockInsideCacheLock(t *testing.T) {
+	type operationResult struct {
+		templateID string
+		expiresAt  time.Time
+		block      *Block
+		ok         bool
+		err        error
+	}
+
+	for _, operation := range []string{"get", "renew", "remember"} {
+		t.Run(operation, func(t *testing.T) {
+			chain, _, cleanup := mustCreateTestChain(t)
+			defer cleanup()
+			mustAddGenesisBlock(t, chain)
+
+			now := time.Date(2026, time.July, 10, 21, 0, 0, 0, time.UTC)
+			s := NewAPIServer(&Daemon{chain: chain}, nil, nil, t.TempDir(), nil)
+			s.templateNow = func() time.Time { return now }
+			s.templateTTL = time.Minute
+			tip := chain.TemplateParams()
+			block := &Block{Header: BlockHeader{Version: 1, Height: tip.Height, PrevHash: tip.PrevHash}}
+			oldID, boundary, err := s.rememberMiningTemplateLease(block)
+			if err != nil {
+				t.Fatalf("remember initial template: %v", err)
+			}
+
+			clockEntered := make(chan struct{})
+			releaseClock := make(chan struct{})
+			s.templateNow = func() time.Time {
+				close(clockEntered)
+				<-releaseClock
+				return boundary
+			}
+			result := make(chan operationResult, 1)
+			go func() {
+				var out operationResult
+				switch operation {
+				case "get":
+					out.block, out.ok = s.getMiningTemplate(oldID)
+				case "renew":
+					out.expiresAt, out.err = s.renewMiningTemplate(oldID)
+				case "remember":
+					out.templateID, out.expiresAt, out.err = s.rememberMiningTemplateLease(block)
+				}
+				result <- out
+			}()
+
+			<-clockEntered
+			// The test clock blocks at the exact advertised deadline. If TryLock
+			// succeeds here, the operation sampled time before serializing with
+			// cache mutations and could act on a stale pre-wait timestamp.
+			clockSampledOutsideLock := s.templateMu.TryLock()
+			if clockSampledOutsideLock {
+				s.templateMu.Unlock()
+			}
+			close(releaseClock)
+			out := <-result
+			s.templateNow = func() time.Time { return boundary }
+
+			if clockSampledOutsideLock {
+				t.Fatal("mining-template clock was sampled before acquiring templateMu")
+			}
+			switch operation {
+			case "get":
+				if out.ok || out.block != nil {
+					t.Fatal("get returned template at advertised expiry under contention")
+				}
+			case "renew":
+				if !errors.Is(out.err, errMiningTemplateUnavailable) || !out.expiresAt.IsZero() {
+					t.Fatalf("renew at advertised expiry: expiry=%s err=%v", out.expiresAt, out.err)
+				}
+			case "remember":
+				if out.err != nil {
+					t.Fatalf("remember after contended expiry: %v", out.err)
+				}
+				if out.templateID == "" || out.templateID == oldID {
+					t.Fatalf("remember returned invalid replacement id %q", out.templateID)
+				}
+				if want := boundary.Add(time.Minute); !out.expiresAt.Equal(want) {
+					t.Fatalf("replacement expiry mismatch: got %s want %s", out.expiresAt, want)
+				}
+				if _, ok := s.getMiningTemplate(oldID); ok {
+					t.Fatal("expired template survived contended replacement")
+				}
+			}
+		})
+	}
+}
