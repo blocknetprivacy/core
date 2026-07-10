@@ -2739,7 +2739,7 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "503": {
-            "description": "A template cannot currently be served because no wallet is loaded, the node is syncing, or all 512 same-tip lease slots are live",
+            "description": "A template cannot currently be served because no wallet is loaded, the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
@@ -2749,6 +2749,9 @@
                   },
                   "syncing": {
                     "value": { "error": "node is syncing" }
+                  },
+                  "tip_changed": {
+                    "value": { "error": "chain tip changed while building template, retry" }
                   },
                   "lease_capacity": {
                     "value": { "error": "mining template cache full, retry after a lease expires or the chain tip changes" }

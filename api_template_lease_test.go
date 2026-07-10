@@ -321,7 +321,71 @@ func TestRememberMiningTemplateLease_TipChangePrunesOldCapacity(t *testing.T) {
 	}
 }
 
+func TestRememberMiningTemplateLease_RejectsOldInflightTemplateWithoutPurgingNewTip(t *testing.T) {
+	chain, storage, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	now := time.Date(2026, time.July, 10, 20, 0, 0, 0, time.UTC)
+	s := NewAPIServer(&Daemon{chain: chain}, nil, nil, t.TempDir(), nil)
+	s.templateNow = func() time.Time { return now }
+	s.templateTTL = time.Hour
+
+	// Simulate request A taking its build snapshot and then stalling before it
+	// reaches cache admission.
+	tipA := chain.TemplateParams()
+	templateA := &Block{Header: BlockHeader{Version: 1, Height: tipA.Height, PrevHash: tipA.PrevHash}}
+
+	genesis := chain.GetBlockByHeight(0)
+	if genesis == nil {
+		t.Fatal("expected genesis block")
+	}
+	tipBBlock := makeOutputOnlyTestBlock(tipA.Height, tipA.PrevHash, genesis.Header.Timestamp+BlockIntervalSec, nil)
+	commitMainChainBlockForTest(t, chain, storage, tipBBlock, chain.TotalWork()+MinDifficulty)
+	chain.mu.Lock()
+	chain.updateTipSnapshotLocked()
+	chain.mu.Unlock()
+
+	// Request B completes first and advertises leases for the new canonical tip.
+	tipB := chain.TemplateParams()
+	templateB := &Block{Header: BlockHeader{Version: 1, Height: tipB.Height, PrevHash: tipB.PrevHash}}
+	bIDs := make([]string, 4)
+	for i := range bIDs {
+		templateID, _, err := s.rememberMiningTemplateLease(templateB)
+		if err != nil {
+			t.Fatalf("remember tip-B template %d: %v", i, err)
+		}
+		bIDs[i] = templateID
+	}
+
+	// Request A now completes out of order. Cache admission must compare it to
+	// canonical tip B before pruning, reject it, and leave every B lease intact.
+	templateID, expiry, err := s.rememberMiningTemplateLease(templateA)
+	if !errors.Is(err, errMiningTemplateStale) {
+		t.Fatalf("old in-flight template: got err %v, want stale", err)
+	}
+	if templateID != "" || !expiry.IsZero() {
+		t.Fatalf("stale in-flight request returned a lease: id=%q expiry=%s", templateID, expiry)
+	}
+	if len(s.templateCache) != len(bIDs) {
+		t.Fatalf("stale in-flight request changed cache size: got %d want %d", len(s.templateCache), len(bIDs))
+	}
+	for i, id := range bIDs {
+		cached, ok := s.getMiningTemplate(id)
+		if !ok {
+			t.Fatalf("tip-B lease %d was purged by stale request A", i)
+		}
+		if cached.Header.Height != tipB.Height || cached.Header.PrevHash != tipB.PrevHash {
+			t.Fatalf("tip-B lease %d changed to stale tip A", i)
+		}
+	}
+}
+
 func TestMiningTemplateLease_AdvertisedUnixMillisIsPruningBoundary(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
 	// time.Now carries Go's process-local monotonic reading on supported
 	// platforms. Also force a sub-millisecond wall-clock component so this test
 	// covers both forms of precision that cannot be represented on the wire.
@@ -330,6 +394,7 @@ func TestMiningTemplateLease_AdvertisedUnixMillisIsPruningBoundary(t *testing.T)
 	rawNow = rawNow.Add(137*time.Microsecond - subMillisecond)
 
 	s := &APIServer{
+		daemon:        &Daemon{chain: chain},
 		templateCache: make(map[string]cachedMiningTemplate),
 		templateNow:   func() time.Time { return rawNow },
 		templateTTL:   1500 * time.Millisecond,
@@ -342,7 +407,11 @@ func TestMiningTemplateLease_AdvertisedUnixMillisIsPruningBoundary(t *testing.T)
 		t.Fatalf("mining-template clock retained sub-millisecond precision: %d ns", got)
 	}
 
-	templateID, expiry, err := s.rememberMiningTemplateLease(&Block{})
+	tip := chain.TemplateParams()
+	templateID, expiry, err := s.rememberMiningTemplateLease(&Block{Header: BlockHeader{
+		Height:   tip.Height,
+		PrevHash: tip.PrevHash,
+	}})
 	if err != nil {
 		t.Fatalf("remember template: %v", err)
 	}

@@ -248,7 +248,18 @@ func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
 
-	s.pruneMiningTemplatesForBlockLocked(now, block)
+	if s.daemon == nil || s.daemon.Chain() == nil {
+		return "", time.Time{}, errors.New("cannot cache mining template without chain state")
+	}
+	// Snapshot canonical state only after winning the cache lock. An old request
+	// may have built its block before a tip change and then waited behind a newer
+	// request; reject it before it can prune the newer tip's advertised leases.
+	canonical := s.daemon.Chain().TemplateParams()
+	if block.Header.Height != canonical.Height || block.Header.PrevHash != canonical.PrevHash {
+		return "", time.Time{}, errMiningTemplateStale
+	}
+
+	s.pruneMiningTemplatesForTipLocked(now, canonical)
 	if s.templateCache == nil {
 		s.templateCache = make(map[string]cachedMiningTemplate)
 	}
@@ -359,11 +370,11 @@ func (s *APIServer) pruneMiningTemplatesLocked(now time.Time) {
 	}
 }
 
-func (s *APIServer) pruneMiningTemplatesForBlockLocked(now time.Time, block *Block) {
+func (s *APIServer) pruneMiningTemplatesForTipLocked(now time.Time, tip BlockTemplateParams) {
 	for id, tpl := range s.templateCache {
 		if !now.Before(tpl.expiresAt) ||
-			tpl.block.Header.Height != block.Header.Height ||
-			tpl.block.Header.PrevHash != block.Header.PrevHash {
+			tpl.block.Header.Height != tip.Height ||
+			tpl.block.Header.PrevHash != tip.PrevHash {
 			delete(s.templateCache, id)
 		}
 	}

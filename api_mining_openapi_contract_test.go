@@ -60,6 +60,9 @@ func TestOpenAPIMiningTemplateLeaseAndCompactSubmitContract(t *testing.T) {
 	if _, ok := unavailableExamples["lease_capacity"]; !ok {
 		t.Fatal("blocktemplate 503 contract missing lease_capacity example")
 	}
+	if _, ok := unavailableExamples["tip_changed"]; !ok {
+		t.Fatal("blocktemplate 503 contract missing tip_changed example")
+	}
 
 	renewPath := mustGetMapAny(t, paths, "/api/mining/renewtemplate")
 	renewPost := mustGetMapAny(t, renewPath, "post")

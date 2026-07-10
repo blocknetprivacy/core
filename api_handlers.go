@@ -2279,11 +2279,14 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	target := DifficultyToTarget(block.Header.Difficulty)
 	templateID, expiresAt, err := s.rememberMiningTemplateLease(block)
 	if err != nil {
-		if errors.Is(err, errMiningTemplateCacheFull) {
+		switch {
+		case errors.Is(err, errMiningTemplateCacheFull):
 			writeError(w, http.StatusServiceUnavailable, "mining template cache full, retry after a lease expires or the chain tip changes")
-			return
+		case errors.Is(err, errMiningTemplateStale):
+			writeError(w, http.StatusServiceUnavailable, "chain tip changed while building template, retry")
+		default:
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		}
-		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
 	}
 
