@@ -64,6 +64,9 @@ docker/.env
 !docker/.env.example
 docs
 
+# Internal notes / punchlists — never commit or push
+txt/
+
 # Ignore local dotfiles/dirs by default; keep the repo's own tracked ones
 /.*
 !/.gitignore
