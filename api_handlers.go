@@ -2281,9 +2281,13 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		switch {
 		case errors.Is(err, errMiningTemplateCacheFull):
-			writeError(w, http.StatusServiceUnavailable, "mining template cache full, retry after a lease expires or the chain tip changes")
+			var capacityErr *miningTemplateCacheFullError
+			if errors.As(err, &capacityErr) {
+				w.Header().Set("Retry-After", strconv.FormatInt(capacityErr.retryAfterSeconds, 10))
+			}
+			writeCodedError(w, http.StatusServiceUnavailable, "mining_template_cache_full", "mining template cache full, retry after a lease expires or the chain tip changes")
 		case errors.Is(err, errMiningTemplateStale):
-			writeError(w, http.StatusServiceUnavailable, "chain tip changed while building template, retry")
+			writeCodedError(w, http.StatusServiceUnavailable, "mining_template_tip_changed", "chain tip changed while building template, retry")
 		default:
 			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		}
@@ -2552,6 +2556,12 @@ func encodeJSONResponse(v any) ([]byte, error) {
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeCodedError adds a stable machine-readable code while preserving the
+// existing human-readable error field for backward-compatible clients.
+func writeCodedError(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"code": code, "error": msg})
 }
 
 // writeInternal logs err server-side and returns a generic client-facing error.

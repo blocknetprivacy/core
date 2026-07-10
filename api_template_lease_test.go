@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -181,6 +182,36 @@ func TestHandleRenewBlockTemplate_ValidatesTemplateID(t *testing.T) {
 	rr, resp = requestTemplateRenewal(t, handler, "template-lease-token", "missing-template")
 	if rr.Code != http.StatusNotFound || resp.Error != "unknown or expired template_id" {
 		t.Fatalf("unknown template id: got %d body=%q", rr.Code, rr.Body.String())
+	}
+}
+
+func TestRenewMiningTemplate_WithoutChainStateReturnsError(t *testing.T) {
+	s := NewAPIServer(nil, nil, nil, t.TempDir(), nil)
+	s.templateCache["template"] = cachedMiningTemplate{
+		expiresAt: time.Now().Add(time.Minute),
+	}
+
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("renew panicked without chain state: %v", recovered)
+		}
+	}()
+	if _, err := s.renewMiningTemplate("template"); err == nil || !strings.Contains(err.Error(), "without chain state") {
+		t.Fatalf("renew without chain state returned %v", err)
+	}
+}
+
+func TestEarliestMiningTemplateRetryAfterRoundsUp(t *testing.T) {
+	now := time.Date(2026, time.July, 10, 16, 30, 0, 0, time.UTC)
+	cache := map[string]cachedMiningTemplate{
+		"later": {expiresAt: now.Add(10 * time.Second)},
+		"first": {expiresAt: now.Add(1500 * time.Millisecond)},
+	}
+	if got := earliestMiningTemplateRetryAfterSeconds(cache, now); got != 2 {
+		t.Fatalf("Retry-After mismatch: got %d want 2", got)
+	}
+	if got := earliestMiningTemplateRetryAfterSeconds(nil, now); got != 1 {
+		t.Fatalf("empty-cache Retry-After mismatch: got %d want 1", got)
 	}
 }
 

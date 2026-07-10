@@ -233,11 +233,6 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 	return s
 }
 
-func (s *APIServer) rememberMiningTemplate(block *Block) (string, error) {
-	templateID, _, err := s.rememberMiningTemplateLease(block)
-	return templateID, err
-}
-
 func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time, error) {
 	if block == nil {
 		return "", time.Time{}, errors.New("cannot cache nil mining template")
@@ -264,7 +259,9 @@ func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time
 		s.templateCache = make(map[string]cachedMiningTemplate)
 	}
 	if len(s.templateCache) >= maxMiningTemplateCacheEntries {
-		return "", time.Time{}, errMiningTemplateCacheFull
+		return "", time.Time{}, &miningTemplateCacheFullError{
+			retryAfterSeconds: earliestMiningTemplateRetryAfterSeconds(s.templateCache, now),
+		}
 	}
 
 	var templateID string
@@ -315,6 +312,36 @@ var (
 	errMiningTemplateStale       = errors.New("mining template does not build on the current tip")
 )
 
+type miningTemplateCacheFullError struct {
+	retryAfterSeconds int64
+}
+
+func (e *miningTemplateCacheFullError) Error() string {
+	return errMiningTemplateCacheFull.Error()
+}
+
+func (e *miningTemplateCacheFullError) Unwrap() error {
+	return errMiningTemplateCacheFull
+}
+
+func earliestMiningTemplateRetryAfterSeconds(cache map[string]cachedMiningTemplate, now time.Time) int64 {
+	var earliest time.Time
+	for _, tpl := range cache {
+		if earliest.IsZero() || tpl.expiresAt.Before(earliest) {
+			earliest = tpl.expiresAt
+		}
+	}
+	if earliest.IsZero() || !earliest.After(now) {
+		return 1
+	}
+	remaining := earliest.Sub(now)
+	seconds := int64((remaining + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		return 1
+	}
+	return seconds
+}
+
 func (s *APIServer) renewMiningTemplate(templateID string) (time.Time, error) {
 	if templateID == "" {
 		return time.Time{}, errMiningTemplateUnavailable
@@ -330,6 +357,9 @@ func (s *APIServer) renewMiningTemplate(templateID string) (time.Time, error) {
 		return time.Time{}, errMiningTemplateUnavailable
 	}
 
+	if s.daemon == nil || s.daemon.Chain() == nil {
+		return time.Time{}, errors.New("cannot renew mining template without chain state")
+	}
 	tip := s.daemon.Chain().TemplateParams()
 	if tpl.block.Header.Height != tip.Height || tpl.block.Header.PrevHash != tip.PrevHash {
 		return time.Time{}, errMiningTemplateStale

@@ -25,7 +25,7 @@ func TestHandleSubmitBlock_CompactPayloadUsesTemplateCache(t *testing.T) {
 			Nonce:    0,
 		},
 	}
-	templateID, err := s.rememberMiningTemplate(template)
+	templateID, _, err := s.rememberMiningTemplateLease(template)
 	if err != nil {
 		t.Fatalf("remember template: %v", err)
 	}

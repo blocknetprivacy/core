@@ -274,6 +274,12 @@ func TestHandleBlockTemplate_LiveSameTipCacheFullReturns503(t *testing.T) {
 	if resp["error"] != want {
 		t.Fatalf("unexpected cache-full error: got %q want %q", resp["error"], want)
 	}
+	if got := resp["code"]; got != "mining_template_cache_full" {
+		t.Fatalf("unexpected cache-full code: got %q", got)
+	}
+	if got := rr.Header().Get("Retry-After"); got != "3600" {
+		t.Fatalf("unexpected Retry-After header: got %q want %q", got, "3600")
+	}
 	if len(api.templateCache) != maxMiningTemplateCacheEntries {
 		t.Fatalf("cache size changed on rejected template: got %d", len(api.templateCache))
 	}

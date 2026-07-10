@@ -2739,7 +2739,13 @@
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "503": {
-            "description": "A template cannot currently be served because no wallet is loaded, the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live",
+            "description": "A template cannot currently be served because no wallet is loaded, the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live. Capacity responses include Retry-After with the number of seconds until the earliest lease expiry.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the earliest live template lease expires. Present for mining_template_cache_full responses.",
+                "schema": { "type": "integer", "minimum": 1 }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
@@ -2751,10 +2757,16 @@
                     "value": { "error": "node is syncing" }
                   },
                   "tip_changed": {
-                    "value": { "error": "chain tip changed while building template, retry" }
+                    "value": {
+                      "code": "mining_template_tip_changed",
+                      "error": "chain tip changed while building template, retry"
+                    }
                   },
                   "lease_capacity": {
-                    "value": { "error": "mining template cache full, retry after a lease expires or the chain tip changes" }
+                    "value": {
+                      "code": "mining_template_cache_full",
+                      "error": "mining template cache full, retry after a lease expires or the chain tip changes"
+                    }
                   }
                 }
               }
@@ -3002,6 +3014,10 @@
         "type": "object",
         "required": ["error"],
         "properties": {
+          "code": {
+            "type": "string",
+            "description": "Optional stable machine-readable error code. Clients should prefer this over matching the human-readable error string when present."
+          },
           "error": {
             "type": "string",
             "description": "Human-readable error message"

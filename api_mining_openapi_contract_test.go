@@ -57,11 +57,19 @@ func TestOpenAPIMiningTemplateLeaseAndCompactSubmitContract(t *testing.T) {
 	unavailableContent := mustGetMapAny(t, blockTemplateUnavailable, "content")
 	unavailableJSON := mustGetMapAny(t, unavailableContent, "application/json")
 	unavailableExamples := mustGetMapAny(t, unavailableJSON, "examples")
-	if _, ok := unavailableExamples["lease_capacity"]; !ok {
-		t.Fatal("blocktemplate 503 contract missing lease_capacity example")
+	leaseCapacity := mustGetMapAny(t, unavailableExamples, "lease_capacity")
+	leaseCapacityValue := mustGetMapAny(t, leaseCapacity, "value")
+	if got := leaseCapacityValue["code"]; got != "mining_template_cache_full" {
+		t.Fatalf("blocktemplate capacity code mismatch: got %#v", got)
 	}
-	if _, ok := unavailableExamples["tip_changed"]; !ok {
-		t.Fatal("blocktemplate 503 contract missing tip_changed example")
+	tipChanged := mustGetMapAny(t, unavailableExamples, "tip_changed")
+	tipChangedValue := mustGetMapAny(t, tipChanged, "value")
+	if got := tipChangedValue["code"]; got != "mining_template_tip_changed" {
+		t.Fatalf("blocktemplate tip-change code mismatch: got %#v", got)
+	}
+	unavailableHeaders := mustGetMapAny(t, blockTemplateUnavailable, "headers")
+	if _, ok := unavailableHeaders["Retry-After"]; !ok {
+		t.Fatal("blocktemplate 503 contract missing Retry-After header")
 	}
 
 	renewPath := mustGetMapAny(t, paths, "/api/mining/renewtemplate")
