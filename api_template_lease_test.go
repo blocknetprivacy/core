@@ -176,3 +176,101 @@ func TestHandleRenewBlockTemplate_ValidatesTemplateID(t *testing.T) {
 		t.Fatalf("unknown template id: got %d body=%q", rr.Code, rr.Body.String())
 	}
 }
+
+func TestRenewMiningTemplate_RefreshesEvictionRecency(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	now := time.Date(2026, time.July, 10, 17, 0, 0, 0, time.UTC)
+	s := NewAPIServer(&Daemon{chain: chain}, nil, nil, t.TempDir(), nil)
+	s.templateNow = func() time.Time { return now }
+	s.templateTTL = 24 * time.Hour
+
+	tip := chain.TemplateParams()
+	block := &Block{Header: BlockHeader{
+		Version:  1,
+		Height:   tip.Height,
+		PrevHash: tip.PrevHash,
+	}}
+
+	renewedID, _ := s.rememberMiningTemplateLease(block)
+	now = now.Add(time.Second)
+	inactiveID, _ := s.rememberMiningTemplateLease(block)
+	for i := 2; i < maxMiningTemplateCacheEntries; i++ {
+		now = now.Add(time.Second)
+		s.rememberMiningTemplate(block)
+	}
+
+	now = now.Add(time.Second)
+	renewedAt := now
+	renewedExpiry, err := s.renewMiningTemplate(renewedID)
+	if err != nil {
+		t.Fatalf("renew active template: %v", err)
+	}
+
+	// Adding one more template exceeds the cache cap. The inactive template is
+	// now the least recently touched entry; the renewed template must remain
+	// cached for the lease deadline that was just advertised.
+	now = now.Add(time.Second)
+	newID := s.rememberMiningTemplate(block)
+	if len(s.templateCache) != maxMiningTemplateCacheEntries {
+		t.Fatalf("cache size mismatch: got %d want %d", len(s.templateCache), maxMiningTemplateCacheEntries)
+	}
+	if _, ok := s.getMiningTemplate(renewedID); !ok {
+		t.Fatal("actively renewed template was evicted before advertised expiry")
+	}
+	if _, ok := s.getMiningTemplate(inactiveID); ok {
+		t.Fatal("least-recently-touched inactive template was not evicted")
+	}
+	if _, ok := s.getMiningTemplate(newID); !ok {
+		t.Fatal("new template was not retained after cache-pressure eviction")
+	}
+	if !now.Before(renewedExpiry) {
+		t.Fatalf("test advanced past renewed expiry: now=%s expiry=%s", now, renewedExpiry)
+	}
+
+	s.templateMu.Lock()
+	renewed := s.templateCache[renewedID]
+	s.templateMu.Unlock()
+	if !renewed.lastTouchedAt.Equal(renewedAt) {
+		t.Fatalf("renewal recency mismatch: got %s want %s", renewed.lastTouchedAt, renewedAt)
+	}
+}
+
+func TestMiningTemplateLease_AdvertisedUnixMillisIsPruningBoundary(t *testing.T) {
+	// time.Now carries Go's process-local monotonic reading on supported
+	// platforms. Also force a sub-millisecond wall-clock component so this test
+	// covers both forms of precision that cannot be represented on the wire.
+	rawNow := time.Now()
+	subMillisecond := time.Duration(rawNow.Nanosecond() % int(time.Millisecond))
+	rawNow = rawNow.Add(137*time.Microsecond - subMillisecond)
+
+	s := &APIServer{
+		templateCache: make(map[string]cachedMiningTemplate),
+		templateNow:   func() time.Time { return rawNow },
+		templateTTL:   1500 * time.Millisecond,
+	}
+	normalized := s.miningTemplateNow()
+	if normalized != normalized.Round(0) {
+		t.Fatal("mining-template clock retained a monotonic component")
+	}
+	if got := normalized.UnixNano() % int64(time.Millisecond); got != 0 {
+		t.Fatalf("mining-template clock retained sub-millisecond precision: %d ns", got)
+	}
+
+	templateID, expiry := s.rememberMiningTemplateLease(&Block{})
+	advertisedExpiryMillis := expiry.UnixMilli()
+	if expiry.UnixNano() != advertisedExpiryMillis*int64(time.Millisecond) {
+		t.Fatalf("stored expiry differs from advertised millisecond: stored=%s advertised=%d", expiry, advertisedExpiryMillis)
+	}
+
+	rawNow = time.UnixMilli(advertisedExpiryMillis - 1)
+	if _, ok := s.getMiningTemplate(templateID); !ok {
+		t.Fatal("template pruned before advertised expiry")
+	}
+	rawNow = time.UnixMilli(advertisedExpiryMillis)
+	if _, ok := s.getMiningTemplate(templateID); ok {
+		t.Fatal("template remained cached at advertised expiry")
+	}
+}

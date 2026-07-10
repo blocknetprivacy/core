@@ -69,9 +69,9 @@ type APIServer struct {
 }
 
 type cachedMiningTemplate struct {
-	block     Block
-	createdAt time.Time
-	expiresAt time.Time
+	block         Block
+	lastTouchedAt time.Time
+	expiresAt     time.Time
 }
 
 const (
@@ -261,17 +261,17 @@ func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time
 		s.templateCache = make(map[string]cachedMiningTemplate)
 	}
 	s.templateCache[templateID] = cachedMiningTemplate{
-		block:     *block,
-		createdAt: now,
-		expiresAt: expiresAt,
+		block:         *block,
+		lastTouchedAt: now,
+		expiresAt:     expiresAt,
 	}
 	if len(s.templateCache) > maxMiningTemplateCacheEntries {
 		var oldestID string
 		var oldestTime time.Time
 		for id, tpl := range s.templateCache {
-			if oldestID == "" || tpl.createdAt.Before(oldestTime) {
+			if oldestID == "" || tpl.lastTouchedAt.Before(oldestTime) {
 				oldestID = id
-				oldestTime = tpl.createdAt
+				oldestTime = tpl.lastTouchedAt
 			}
 		}
 		delete(s.templateCache, oldestID)
@@ -323,16 +323,25 @@ func (s *APIServer) renewMiningTemplate(templateID string) (time.Time, error) {
 		return time.Time{}, errMiningTemplateStale
 	}
 
+	tpl.lastTouchedAt = now
 	tpl.expiresAt = now.Add(s.miningTemplateTTL())
 	s.templateCache[templateID] = tpl
 	return tpl.expiresAt, nil
 }
 
 func (s *APIServer) miningTemplateNow() time.Time {
+	var now time.Time
 	if s.templateNow != nil {
-		return s.templateNow()
+		now = s.templateNow()
+	} else {
+		now = time.Now()
 	}
-	return time.Now()
+
+	// Lease deadlines are exposed as Unix milliseconds. Normalize both the
+	// production clock and injected test clocks to the same wall-clock basis so
+	// pruning happens exactly at the advertised instant, without Go's hidden
+	// monotonic component affecting comparisons.
+	return time.UnixMilli(now.UnixMilli()).In(now.Location())
 }
 
 func (s *APIServer) miningTemplateTTL() time.Duration {
