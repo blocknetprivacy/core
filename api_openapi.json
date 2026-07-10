@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
-    "version": "0.14.3",
+    "version": "0.15.0",
     "license": {
       "name": "MIT"
     }
@@ -2242,6 +2242,18 @@
                   "password": {
                     "type": "string",
                     "description": "Wallet password"
+                  },
+                  "create_file": {
+                    "type": "boolean",
+                    "description": "If true, also write a loadable view-only wallet file"
+                  },
+                  "file_password": {
+                    "type": "string",
+                    "description": "Password for the new view-only wallet file (required when create_file is true; must differ from the main wallet password)"
+                  },
+                  "filename": {
+                    "type": "string",
+                    "description": "Optional basename for the view-only wallet file (defaults to <wallet>.view.wallet.dat)"
                   }
                 }
               },
@@ -2270,6 +2282,22 @@
                     "view_pub": {
                       "type": "string",
                       "description": "View public key (64 hex characters)"
+                    },
+                    "created": {
+                      "type": "boolean",
+                      "description": "True when a view-only wallet file was written (create_file)"
+                    },
+                    "filename": {
+                      "type": "string",
+                      "description": "Basename of the created view-only wallet file"
+                    },
+                    "path": {
+                      "type": "string",
+                      "description": "Full path of the created view-only wallet file"
+                    },
+                    "address": {
+                      "type": "string",
+                      "description": "Address of the created view-only wallet"
                     }
                   }
                 },
@@ -2315,6 +2343,15 @@
               }
             }
           },
+          "409": {
+            "description": "View-only wallet file already exists",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "wallet file already exists: main.view.wallet.dat" }
+              }
+            }
+          },
           "429": {
             "description": "Too many failed password attempts",
             "content": {
@@ -2331,6 +2368,92 @@
             }
           },
           "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
+    "/api/checkpoints/save": {
+      "post": {
+        "operationId": "saveCheckpoints",
+        "tags": ["Blockchain"],
+        "summary": "Write block checkpoints to disk",
+        "description": "Appends checkpoints (block height + hash, every 100 blocks) to the on-disk checkpoints file, resuming after the last one already written. Checkpoints let nodes fast-sync by skipping proof-of-work re-verification at or below the checkpointed height. Requires Bearer token.",
+        "responses": {
+          "200": {
+            "description": "Checkpoints written (or already up to date)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "written": { "type": "integer", "description": "Number of checkpoints appended this call" },
+                    "chain_height": { "type": "integer", "description": "Current chain tip height" },
+                    "last_checkpoint": { "type": "integer", "description": "Height of the highest checkpoint on disk" },
+                    "path": { "type": "string", "description": "Path to the checkpoints file" },
+                    "message": { "type": "string", "description": "Present when nothing was written (empty chain or already up to date)" }
+                  }
+                },
+                "example": { "written": 3, "chain_height": 14207, "last_checkpoint": 14200, "path": "/home/user/.blocknet/checkpoints.dat" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": {
+            "description": "Failed to write checkpoints",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "failed to write checkpoint" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/checkpoints/load": {
+      "post": {
+        "operationId": "loadCheckpoints",
+        "tags": ["Blockchain"],
+        "summary": "Load and trust block checkpoints",
+        "description": "Downloads the checkpoints file if not present, loads it, and registers the checkpoints as trusted so blocks at or below the maximum checkpoint height can skip proof-of-work re-verification during sync. Requires Bearer token.",
+        "responses": {
+          "200": {
+            "description": "Checkpoints loaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "downloaded": { "type": "boolean", "description": "True if the file was fetched from the remote this call" },
+                    "loaded": { "type": "integer", "description": "Number of checkpoints loaded" },
+                    "max_height": { "type": "integer", "description": "Highest checkpoint height" },
+                    "chain_height": { "type": "integer", "description": "Current chain tip height" },
+                    "fast_sync": { "type": "boolean", "description": "True if the chain is below max_height and can fast-sync" },
+                    "message": { "type": "string", "description": "Present when no checkpoints were found" }
+                  }
+                },
+                "example": { "downloaded": true, "loaded": 142, "max_height": 14200, "chain_height": 5000, "fast_sync": true }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": {
+            "description": "Failed to fetch checkpoints",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "failed to fetch checkpoints" }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to load checkpoints",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "failed to load checkpoints" }
+              }
+            }
+          }
         }
       }
     },

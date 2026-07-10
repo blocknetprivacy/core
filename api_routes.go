@@ -45,6 +45,10 @@ func (s *APIServer) registerPrivateRoutes(mux *http.ServeMux) {
 	// Chain verification
 	mux.HandleFunc("GET /api/certify", s.handleCertify)
 
+	// Checkpoints
+	mux.HandleFunc("POST /api/checkpoints/save", s.handleSaveCheckpoints)
+	mux.HandleFunc("POST /api/checkpoints/load", s.handleLoadCheckpoints)
+
 	// Mining
 	mux.HandleFunc("GET /api/mining", s.handleMiningStatus)
 	mux.HandleFunc("POST /api/mining/start", s.handleMiningStart)

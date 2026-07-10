@@ -950,7 +950,13 @@ func normalizeMnemonicInput(input string) string {
 }
 
 func (c *CLI) viewWalletFilename() string {
-	name := c.walletFile
+	return deriveViewWalletFilename(c.walletFile)
+}
+
+// deriveViewWalletFilename maps a wallet path to its view-only sibling:
+// "main.wallet.dat" -> "main.view.wallet.dat".
+func deriveViewWalletFilename(walletFile string) string {
+	name := walletFile
 	if strings.HasSuffix(name, ".wallet.dat") {
 		return strings.TrimSuffix(name, ".wallet.dat") + ".view.wallet.dat"
 	}

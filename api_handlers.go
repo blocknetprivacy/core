@@ -2032,7 +2032,10 @@ func (s *APIServer) handleViewKeys(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Password string `json:"password"`
+		Password     string `json:"password"`
+		CreateFile   bool   `json:"create_file"`
+		FilePassword string `json:"file_password"`
+		Filename     string `json:"filename"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -2074,11 +2077,54 @@ func (s *APIServer) handleViewKeys(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Cache-Control", "no-store")
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	resp := map[string]any{
 		"spend_pub": hex.EncodeToString(keys.SpendPubKey[:]),
 		"view_priv": hex.EncodeToString(keys.ViewPrivKey[:]),
 		"view_pub":  hex.EncodeToString(keys.ViewPubKey[:]),
-	})
+	}
+
+	// Optionally also write a loadable view-only wallet file (encrypted with its
+	// own file_password, never the main wallet password), so a single call can
+	// both reveal the keys and produce a watch-only wallet to move elsewhere.
+	if req.CreateFile {
+		if len(req.FilePassword) < 3 {
+			writeError(w, http.StatusBadRequest, "file_password must be at least 3 characters")
+			return
+		}
+
+		walletPath := deriveViewWalletFilename(s.cli.walletFile)
+		if req.Filename != "" {
+			base := filepath.Base(req.Filename)
+			if base == "." || base == "/" {
+				writeError(w, http.StatusBadRequest, "invalid filename")
+				return
+			}
+			if !strings.HasSuffix(base, ".wallet.dat") {
+				base += ".wallet.dat"
+			}
+			walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+		}
+
+		if _, err := os.Stat(walletPath); err == nil {
+			writeError(w, http.StatusConflict, "wallet file already exists: "+filepath.Base(walletPath))
+			return
+		}
+
+		filePw := []byte(req.FilePassword)
+		viewWallet, err := wallet.NewViewOnlyWallet(walletPath, filePw, keys, defaultWalletConfig())
+		wipeBytes(filePw)
+		if err != nil {
+			writeInternal(w, r, http.StatusInternalServerError, "failed to create view-only wallet", err)
+			return
+		}
+
+		resp["created"] = true
+		resp["filename"] = filepath.Base(walletPath)
+		resp["path"] = walletPath
+		resp["address"] = viewWallet.Address()
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // handleCertify verifies the entire chain for difficulty, timestamp, and linkage

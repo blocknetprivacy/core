@@ -19,7 +19,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const Version = "0.14.3"
+const Version = "0.15.0"
 
 type peerIDListFlag []string
 
