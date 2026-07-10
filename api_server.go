@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -63,11 +64,14 @@ type APIServer struct {
 	// Template cache for compact mining submissions ({template_id, nonce}).
 	templateMu    sync.Mutex
 	templateCache map[string]cachedMiningTemplate
+	templateNow   func() time.Time
+	templateTTL   time.Duration
 }
 
 type cachedMiningTemplate struct {
 	block     Block
 	createdAt time.Time
+	expiresAt time.Time
 }
 
 const (
@@ -229,26 +233,37 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 }
 
 func (s *APIServer) rememberMiningTemplate(block *Block) string {
+	templateID, _ := s.rememberMiningTemplateLease(block)
+	return templateID
+}
+
+func (s *APIServer) rememberMiningTemplateLease(block *Block) (string, time.Time) {
 	if block == nil {
-		return ""
+		return "", time.Time{}
 	}
+	now := s.miningTemplateNow()
 
 	idBytes := make([]byte, 8)
 	if _, err := rand.Read(idBytes); err != nil {
-		now := time.Now().UnixNano()
+		nowNanos := now.UnixNano()
 		for i := 0; i < len(idBytes); i++ {
-			idBytes[i] = byte(now >> (8 * i))
+			idBytes[i] = byte(nowNanos >> (8 * i))
 		}
 	}
 	templateID := hex.EncodeToString(idBytes)
+	expiresAt := now.Add(s.miningTemplateTTL())
 
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
 
-	s.pruneMiningTemplatesLocked(time.Now())
+	s.pruneMiningTemplatesLocked(now)
+	if s.templateCache == nil {
+		s.templateCache = make(map[string]cachedMiningTemplate)
+	}
 	s.templateCache[templateID] = cachedMiningTemplate{
 		block:     *block,
-		createdAt: time.Now(),
+		createdAt: now,
+		expiresAt: expiresAt,
 	}
 	if len(s.templateCache) > maxMiningTemplateCacheEntries {
 		var oldestID string
@@ -262,7 +277,7 @@ func (s *APIServer) rememberMiningTemplate(block *Block) string {
 		delete(s.templateCache, oldestID)
 	}
 
-	return templateID
+	return templateID, expiresAt
 }
 
 func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
@@ -270,7 +285,7 @@ func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
 		return nil, false
 	}
 
-	now := time.Now()
+	now := s.miningTemplateNow()
 	s.templateMu.Lock()
 	defer s.templateMu.Unlock()
 
@@ -283,9 +298,53 @@ func (s *APIServer) getMiningTemplate(templateID string) (*Block, bool) {
 	return &block, true
 }
 
+var (
+	errMiningTemplateUnavailable = errors.New("mining template is unknown or expired")
+	errMiningTemplateStale       = errors.New("mining template does not build on the current tip")
+)
+
+func (s *APIServer) renewMiningTemplate(templateID string) (time.Time, error) {
+	if templateID == "" {
+		return time.Time{}, errMiningTemplateUnavailable
+	}
+
+	now := s.miningTemplateNow()
+	s.templateMu.Lock()
+	defer s.templateMu.Unlock()
+
+	s.pruneMiningTemplatesLocked(now)
+	tpl, ok := s.templateCache[templateID]
+	if !ok {
+		return time.Time{}, errMiningTemplateUnavailable
+	}
+
+	tip := s.daemon.Chain().TemplateParams()
+	if tpl.block.Header.Height != tip.Height || tpl.block.Header.PrevHash != tip.PrevHash {
+		return time.Time{}, errMiningTemplateStale
+	}
+
+	tpl.expiresAt = now.Add(s.miningTemplateTTL())
+	s.templateCache[templateID] = tpl
+	return tpl.expiresAt, nil
+}
+
+func (s *APIServer) miningTemplateNow() time.Time {
+	if s.templateNow != nil {
+		return s.templateNow()
+	}
+	return time.Now()
+}
+
+func (s *APIServer) miningTemplateTTL() time.Duration {
+	if s.templateTTL > 0 {
+		return s.templateTTL
+	}
+	return miningTemplateCacheTTL
+}
+
 func (s *APIServer) pruneMiningTemplatesLocked(now time.Time) {
 	for id, tpl := range s.templateCache {
-		if now.Sub(tpl.createdAt) > miningTemplateCacheTTL {
+		if !now.Before(tpl.expiresAt) {
 			delete(s.templateCache, id)
 		}
 	}

@@ -2277,14 +2277,52 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 
 	// Compute target for PoW validation
 	target := DifficultyToTarget(block.Header.Difficulty)
-	templateID := s.rememberMiningTemplate(block)
+	templateID, expiresAt := s.rememberMiningTemplateLease(block)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"block":               block,
-		"target":              fmt.Sprintf("%x", target),
-		"header_base":         fmt.Sprintf("%x", block.Header.SerializeForPoW()),
-		"reward_address_used": rewardAddrUsed,
-		"template_id":         templateID,
+		"block":                       block,
+		"target":                      fmt.Sprintf("%x", target),
+		"header_base":                 fmt.Sprintf("%x", block.Header.SerializeForPoW()),
+		"reward_address_used":         rewardAddrUsed,
+		"template_id":                 templateID,
+		"template_expires_at_unix_ms": expiresAt.UnixMilli(),
+	})
+}
+
+// handleRenewBlockTemplate extends the compact-submission lease for a template
+// that is still live and still builds directly on the current canonical tip.
+// POST /api/mining/renewtemplate
+func (s *APIServer) handleRenewBlockTemplate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TemplateID string `json:"template_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	templateID := strings.TrimSpace(req.TemplateID)
+	if templateID == "" {
+		writeError(w, http.StatusBadRequest, "template_id is required")
+		return
+	}
+
+	expiresAt, err := s.renewMiningTemplate(templateID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errMiningTemplateUnavailable):
+			writeError(w, http.StatusNotFound, "unknown or expired template_id")
+		case errors.Is(err, errMiningTemplateStale):
+			writeError(w, http.StatusConflict, "template no longer builds on current tip")
+		default:
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"template_id":                 templateID,
+		"template_expires_at_unix_ms": expiresAt.UnixMilli(),
 	})
 }
 

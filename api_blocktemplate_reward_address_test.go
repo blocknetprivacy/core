@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"blocknet/p2p"
 	"blocknet/wallet"
@@ -78,6 +79,9 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 	}
 
 	api := NewAPIServer(daemon, wA, nil, t.TempDir(), []byte("pw"))
+	templateNow := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
+	api.templateNow = func() time.Time { return templateNow }
+	api.templateTTL = 90 * time.Second
 	mux := http.NewServeMux()
 	api.registerPublicRoutes(mux)
 	api.registerPrivateRoutes(mux)
@@ -101,10 +105,12 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 	scannerB := wallet.NewScanner(wB, defaultScannerConfig())
 
 	type resp struct {
-		Block             *Block  `json:"block"`
-		RewardAddressUsed string  `json:"reward_address_used"`
-		Target            string  `json:"target"`
-		HeaderBase        string  `json:"header_base"`
+		Block                       *Block `json:"block"`
+		RewardAddressUsed           string `json:"reward_address_used"`
+		Target                      string `json:"target"`
+		HeaderBase                  string `json:"header_base"`
+		TemplateID                  string `json:"template_id"`
+		TemplateExpiresAtUnixMillis int64  `json:"template_expires_at_unix_ms"`
 	}
 
 	// Default: pays to wallet A (loaded wallet)
@@ -122,6 +128,12 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 		}
 		if got.RewardAddressUsed != wA.Address() {
 			t.Fatalf("reward_address_used mismatch: got %q want %q", got.RewardAddressUsed, wA.Address())
+		}
+		if got.TemplateID == "" {
+			t.Fatal("expected non-empty template_id")
+		}
+		if want := templateNow.Add(api.templateTTL).UnixMilli(); got.TemplateExpiresAtUnixMillis != want {
+			t.Fatalf("template expiry mismatch: got %d want %d", got.TemplateExpiresAtUnixMillis, want)
 		}
 
 		foundA, _ := scannerA.ScanBlock(mustBlockToWalletScanData(t, got.Block))
@@ -218,4 +230,3 @@ func TestHandleBlockTemplate_InvalidAddressOverrideReturns400(t *testing.T) {
 		t.Fatalf("expected 400, got %d: %s", rr.Code, rr.Body.String())
 	}
 }
-
