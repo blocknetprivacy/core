@@ -67,7 +67,8 @@ type Mempool struct {
 	isCanonicalRingMember RingMemberChecker
 
 	// Stats
-	totalSize int // Total bytes in mempool
+	totalSize  int    // Total bytes in mempool
+	generation uint64 // Monotonic content version for mining-template refreshes
 }
 
 // NewMempool creates a new mempool
@@ -151,6 +152,7 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 	}
 	heap.Push(&m.priorityQueue, entry)
 	m.totalSize += size
+	m.generation++
 
 	return nil
 }
@@ -193,6 +195,7 @@ func (m *Mempool) removeTxByID(txID [32]byte) {
 		delete(m.txByImage, input.KeyImage)
 	}
 	m.totalSize -= entry.Size
+	m.generation++
 
 	// Remove from priority queue
 	if entry.index >= 0 && entry.index < len(m.priorityQueue) {
@@ -257,6 +260,14 @@ func (m *Mempool) HasKeyImage(keyImage [32]byte) bool {
 
 // GetTransactionsForBlock returns transactions for mining sorted by fee rate.
 func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) []*Transaction {
+	txs, _ := m.GetTransactionsForBlockSnapshot(maxSize, maxCount)
+	return txs
+}
+
+// GetTransactionsForBlockSnapshot returns a mining transaction selection and
+// the exact mempool generation from the same read lock. Callers can attach the
+// generation to a block template without racing a concurrent mempool change.
+func (m *Mempool) GetTransactionsForBlockSnapshot(maxSize int, maxCount int) ([]*Transaction, uint64) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -292,7 +303,7 @@ func (m *Mempool) GetTransactionsForBlock(maxSize int, maxCount int) []*Transact
 
 	}
 
-	return result
+	return result, m.generation
 }
 
 // Size returns the number of transactions in mempool
@@ -313,11 +324,15 @@ func (m *Mempool) SizeBytes() int {
 func (m *Mempool) Clear() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if len(m.txByID) == 0 {
+		return
+	}
 
 	m.txByID = make(map[[32]byte]*MempoolEntry)
 	m.txByImage = make(map[[32]byte][32]byte)
 	m.priorityQueue = make(txPriorityQueue, 0)
 	m.totalSize = 0
+	m.generation++
 }
 
 // RemoveExpired removes transactions that have been in mempool too long
@@ -434,6 +449,7 @@ func (m *Mempool) OnBlockDisconnected(block *Block, txDataMap map[[32]byte][]byt
 			}
 			heap.Push(&m.priorityQueue, entry)
 			m.totalSize += size
+			m.generation++
 		}
 	}
 }
@@ -452,11 +468,12 @@ func (m *Mempool) GetAllTransactionData() [][]byte {
 
 // Stats returns mempool statistics
 type MempoolStats struct {
-	Count     int     `json:"count"`
-	SizeBytes int     `json:"size_bytes"`
-	MinFee    uint64  `json:"min_fee"`
-	MaxFee    uint64  `json:"max_fee"`
-	AvgFee    float64 `json:"avg_fee"`
+	Count      int     `json:"count"`
+	SizeBytes  int     `json:"size_bytes"`
+	Generation uint64  `json:"generation"`
+	MinFee     uint64  `json:"min_fee"`
+	MaxFee     uint64  `json:"max_fee"`
+	AvgFee     float64 `json:"avg_fee"`
 }
 
 func (m *Mempool) Stats() MempoolStats {
@@ -464,8 +481,9 @@ func (m *Mempool) Stats() MempoolStats {
 	defer m.mu.RUnlock()
 
 	stats := MempoolStats{
-		Count:     len(m.txByID),
-		SizeBytes: m.totalSize,
+		Count:      len(m.txByID),
+		SizeBytes:  m.totalSize,
+		Generation: m.generation,
 	}
 
 	if stats.Count == 0 {

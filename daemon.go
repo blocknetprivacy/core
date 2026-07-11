@@ -1145,33 +1145,36 @@ func (d *Daemon) processTxData(data []byte) error {
 
 // Stats returns daemon statistics
 type DaemonStats struct {
-	PeerID       string `json:"peer_id"`
-	Peers        int    `json:"peers"`
-	ChainHeight  uint64 `json:"chain_height"`
-	BestHash     string `json:"best_hash"`
-	TotalWork    uint64 `json:"total_work"`
-	MempoolSize  int    `json:"mempool_size"`
-	MempoolBytes int    `json:"mempool_bytes"`
-	Syncing      bool   `json:"syncing"`
-	SyncProgress uint64 `json:"sync_progress,omitempty"`
-	SyncTarget   uint64 `json:"sync_target,omitempty"`
-	SyncPercent  string `json:"sync_percent,omitempty"`
-	IdentityAge  string `json:"identity_age"`
+	PeerID            string `json:"peer_id"`
+	Peers             int    `json:"peers"`
+	ChainHeight       uint64 `json:"chain_height"`
+	BestHash          string `json:"best_hash"`
+	TotalWork         uint64 `json:"total_work"`
+	MempoolSize       int    `json:"mempool_size"`
+	MempoolBytes      int    `json:"mempool_bytes"`
+	MempoolGeneration uint64 `json:"mempool_generation"`
+	Syncing           bool   `json:"syncing"`
+	SyncProgress      uint64 `json:"sync_progress,omitempty"`
+	SyncTarget        uint64 `json:"sync_target,omitempty"`
+	SyncPercent       string `json:"sync_percent,omitempty"`
+	IdentityAge       string `json:"identity_age"`
 }
 
 func (d *Daemon) Stats() DaemonStats {
 	height, bestHash, totalWork := d.chain.TipFast()
+	mempoolStats := d.mempool.Stats()
 
 	stats := DaemonStats{
-		PeerID:       d.node.PeerID().String(),
-		Peers:        len(d.node.Peers()),
-		ChainHeight:  height,
-		BestHash:     fmt.Sprintf("%x", bestHash[:8]),
-		TotalWork:    totalWork,
-		MempoolSize:  d.mempool.Size(),
-		MempoolBytes: d.mempool.SizeBytes(),
-		Syncing:      d.syncMgr.IsSyncing(),
-		IdentityAge:  d.node.IdentityAge().Round(time.Second).String(),
+		PeerID:            d.node.PeerID().String(),
+		Peers:             len(d.node.Peers()),
+		ChainHeight:       height,
+		BestHash:          fmt.Sprintf("%x", bestHash[:8]),
+		TotalWork:         totalWork,
+		MempoolSize:       mempoolStats.Count,
+		MempoolBytes:      mempoolStats.SizeBytes,
+		MempoolGeneration: mempoolStats.Generation,
+		Syncing:           d.syncMgr.IsSyncing(),
+		IdentityAge:       d.node.IdentityAge().Round(time.Second).String(),
 	}
 
 	// Add sync progress if syncing
