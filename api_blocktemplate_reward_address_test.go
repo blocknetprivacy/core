@@ -79,6 +79,9 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 	}
 
 	api := NewAPIServer(daemon, wA, nil, t.TempDir(), []byte("pw"))
+	daemon.mempool.mu.Lock()
+	daemon.mempool.generation = 42
+	daemon.mempool.mu.Unlock()
 	templateNow := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
 	api.templateNow = func() time.Time { return templateNow }
 	api.templateTTL = 90 * time.Second
@@ -111,6 +114,7 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 		HeaderBase                  string `json:"header_base"`
 		TemplateID                  string `json:"template_id"`
 		TemplateExpiresAtUnixMillis int64  `json:"template_expires_at_unix_ms"`
+		MempoolGeneration           uint64 `json:"mempool_generation"`
 	}
 
 	// Default: pays to wallet A (loaded wallet)
@@ -128,6 +132,9 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 		}
 		if got.RewardAddressUsed != wA.Address() {
 			t.Fatalf("reward_address_used mismatch: got %q want %q", got.RewardAddressUsed, wA.Address())
+		}
+		if got.MempoolGeneration != 42 {
+			t.Fatalf("mempool_generation mismatch: got %d want 42", got.MempoolGeneration)
 		}
 		if got.TemplateID == "" {
 			t.Fatal("expected non-empty template_id")

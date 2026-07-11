@@ -2851,7 +2851,8 @@
                   "header_base": "0100000080370000...",
                   "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4",
                   "template_id": "7b3d2f4a9d11c8ef",
-                  "template_expires_at_unix_ms": 1738800840000
+                  "template_expires_at_unix_ms": 1738800840000,
+                  "mempool_generation": 17
                 }
               }
             }
@@ -3155,6 +3156,7 @@
           "total_work": { "type": "integer", "description": "Cumulative chain work (sum of difficulties)" },
           "mempool_size": { "type": "integer", "description": "Number of unconfirmed transactions" },
           "mempool_bytes": { "type": "integer", "description": "Total mempool size in bytes" },
+          "mempool_generation": { "type": "integer", "format": "int64", "description": "Monotonic mempool content generation used by mining clients to detect template changes" },
           "syncing": { "type": "boolean", "description": "True if the node is currently syncing blocks from peers" },
           "identity_age": { "type": "string", "description": "Duration since last P2P identity rotation (e.g. \"2h34m12s\")" }
         },
@@ -3166,6 +3168,7 @@
           "total_work": 14208,
           "mempool_size": 3,
           "mempool_bytes": 4821,
+          "mempool_generation": 17,
           "syncing": false,
           "identity_age": "2h34m12s"
         }
@@ -3385,6 +3388,7 @@
         "properties": {
           "count": { "type": "integer", "description": "Number of unconfirmed transactions" },
           "size_bytes": { "type": "integer", "description": "Total serialized size in bytes" },
+          "generation": { "type": "integer", "format": "int64", "description": "Monotonic content generation; changes whenever transactions are added or removed" },
           "min_fee": { "type": "integer", "description": "Lowest fee in the mempool (atomic units, 0 when empty)" },
           "max_fee": { "type": "integer", "description": "Highest fee in the mempool (atomic units, 0 when empty)" },
           "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" }
@@ -3392,6 +3396,7 @@
         "example": {
           "count": 5,
           "size_bytes": 8420,
+          "generation": 17,
           "min_fee": 10000,
           "max_fee": 25000,
           "avg_fee": 14600.0
@@ -4136,9 +4141,14 @@
             "type": "integer",
             "format": "int64",
             "description": "Unix timestamp in milliseconds when the compact-submission lease expires. Renew with POST /api/mining/renewtemplate before this instant to keep using the same template ID."
+          },
+          "mempool_generation": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Exact mempool generation represented by the template transaction selection. Compare with /api/status mempool_generation to detect same-tip content changes."
           }
         },
-        "required": ["block", "target", "header_base", "reward_address_used", "template_id", "template_expires_at_unix_ms"]
+        "required": ["block", "target", "header_base", "reward_address_used", "template_id", "template_expires_at_unix_ms", "mempool_generation"]
       },
       "RenewBlockTemplateRequest": {
         "type": "object",

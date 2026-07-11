@@ -28,6 +28,9 @@ func TestOpenAPIMiningTemplateLeaseAndCompactSubmitContract(t *testing.T) {
 	if _, ok := blockTemplateProps["template_expires_at_unix_ms"]; !ok {
 		t.Fatal("BlockTemplate schema missing template_expires_at_unix_ms")
 	}
+	if _, ok := blockTemplateProps["mempool_generation"]; !ok {
+		t.Fatal("BlockTemplate schema missing mempool_generation")
+	}
 
 	renewRequest := mustGetMapAny(t, schemas, "RenewBlockTemplateRequest")
 	renewRequestProps := mustGetMapAny(t, renewRequest, "properties")

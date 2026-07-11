@@ -112,3 +112,53 @@ func TestMempoolRejectsTrailingBytes(t *testing.T) {
 		t.Fatalf("mempool should remain empty, size=%d", got)
 	}
 }
+
+func TestMempoolGenerationTracksContentChanges(t *testing.T) {
+	tx := mustBuildValidRingCTBindingTestTx(t)
+	cfg := DefaultMempoolConfig()
+	cfg.MinFeeRate = 0
+	mempool := NewMempool(
+		cfg,
+		func(_ [32]byte) bool { return false },
+		func(_, _ [32]byte) bool { return true },
+	)
+
+	if got := mempool.Stats().Generation; got != 0 {
+		t.Fatalf("initial generation = %d, want 0", got)
+	}
+	if err := mempool.AddTransaction(tx, tx.Serialize()); err != nil {
+		t.Fatalf("add transaction: %v", err)
+	}
+	if got := mempool.Stats().Generation; got != 1 {
+		t.Fatalf("generation after add = %d, want 1", got)
+	}
+
+	selected, generation := mempool.GetTransactionsForBlockSnapshot(MaxBlockSize, 1000)
+	if len(selected) != 1 || generation != 1 {
+		t.Fatalf("snapshot = (%d txs, generation %d), want (1, 1)", len(selected), generation)
+	}
+
+	// Duplicate delivery is not a content change.
+	if err := mempool.AddTransaction(tx, tx.Serialize()); err != nil {
+		t.Fatalf("add duplicate transaction: %v", err)
+	}
+	if got := mempool.Stats().Generation; got != 1 {
+		t.Fatalf("generation after duplicate = %d, want 1", got)
+	}
+
+	txID, err := tx.TxID()
+	if err != nil {
+		t.Fatalf("transaction id: %v", err)
+	}
+	mempool.RemoveTransaction(txID)
+	if stats := mempool.Stats(); stats.Generation != 2 || stats.Count != 0 {
+		t.Fatalf("stats after removal = %+v, want generation 2 and count 0", stats)
+	}
+
+	// Removing or clearing an already-empty pool must not report a false change.
+	mempool.RemoveTransaction(txID)
+	mempool.Clear()
+	if got := mempool.Stats().Generation; got != 2 {
+		t.Fatalf("generation after no-op removals = %d, want 2", got)
+	}
+}
