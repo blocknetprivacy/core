@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestOpenAPIMiningCompactSubmitContract(t *testing.T) {
+func TestOpenAPIMiningTemplateLeaseAndCompactSubmitContract(t *testing.T) {
 	specBytes, err := os.ReadFile("api_openapi.json")
 	if err != nil {
 		t.Fatalf("failed to read api_openapi.json: %v", err)
@@ -25,6 +25,20 @@ func TestOpenAPIMiningCompactSubmitContract(t *testing.T) {
 	if _, ok := blockTemplateProps["template_id"]; !ok {
 		t.Fatal("BlockTemplate schema missing template_id")
 	}
+	if _, ok := blockTemplateProps["template_expires_at_unix_ms"]; !ok {
+		t.Fatal("BlockTemplate schema missing template_expires_at_unix_ms")
+	}
+
+	renewRequest := mustGetMapAny(t, schemas, "RenewBlockTemplateRequest")
+	renewRequestProps := mustGetMapAny(t, renewRequest, "properties")
+	if _, ok := renewRequestProps["template_id"]; !ok {
+		t.Fatal("RenewBlockTemplateRequest missing template_id")
+	}
+	renewResponse := mustGetMapAny(t, schemas, "RenewBlockTemplateResponse")
+	renewResponseProps := mustGetMapAny(t, renewResponse, "properties")
+	if _, ok := renewResponseProps["template_expires_at_unix_ms"]; !ok {
+		t.Fatal("RenewBlockTemplateResponse missing template_expires_at_unix_ms")
+	}
 
 	compactSubmit := mustGetMapAny(t, schemas, "CompactSubmitBlock")
 	compactProps := mustGetMapAny(t, compactSubmit, "properties")
@@ -36,6 +50,44 @@ func TestOpenAPIMiningCompactSubmitContract(t *testing.T) {
 	}
 
 	paths := mustGetMapAny(t, spec, "paths")
+	blockTemplatePath := mustGetMapAny(t, paths, "/api/mining/blocktemplate")
+	blockTemplateGet := mustGetMapAny(t, blockTemplatePath, "get")
+	blockTemplateResponses := mustGetMapAny(t, blockTemplateGet, "responses")
+	blockTemplateUnavailable := mustGetMapAny(t, blockTemplateResponses, "503")
+	unavailableContent := mustGetMapAny(t, blockTemplateUnavailable, "content")
+	unavailableJSON := mustGetMapAny(t, unavailableContent, "application/json")
+	unavailableExamples := mustGetMapAny(t, unavailableJSON, "examples")
+	leaseCapacity := mustGetMapAny(t, unavailableExamples, "lease_capacity")
+	leaseCapacityValue := mustGetMapAny(t, leaseCapacity, "value")
+	if got := leaseCapacityValue["code"]; got != "mining_template_cache_full" {
+		t.Fatalf("blocktemplate capacity code mismatch: got %#v", got)
+	}
+	tipChanged := mustGetMapAny(t, unavailableExamples, "tip_changed")
+	tipChangedValue := mustGetMapAny(t, tipChanged, "value")
+	if got := tipChangedValue["code"]; got != "mining_template_tip_changed" {
+		t.Fatalf("blocktemplate tip-change code mismatch: got %#v", got)
+	}
+	unavailableHeaders := mustGetMapAny(t, blockTemplateUnavailable, "headers")
+	if _, ok := unavailableHeaders["Retry-After"]; !ok {
+		t.Fatal("blocktemplate 503 contract missing Retry-After header")
+	}
+
+	renewPath := mustGetMapAny(t, paths, "/api/mining/renewtemplate")
+	renewPost := mustGetMapAny(t, renewPath, "post")
+	renewBody := mustGetMapAny(t, renewPost, "requestBody")
+	renewContent := mustGetMapAny(t, renewBody, "content")
+	renewJSON := mustGetMapAny(t, renewContent, "application/json")
+	renewSchema := mustGetMapAny(t, renewJSON, "schema")
+	if got := renewSchema["$ref"]; got != "#/components/schemas/RenewBlockTemplateRequest" {
+		t.Fatalf("renewtemplate request schema mismatch: got %#v", got)
+	}
+	renewResponses := mustGetMapAny(t, renewPost, "responses")
+	for _, status := range []string{"200", "400", "401", "404", "409"} {
+		if _, ok := renewResponses[status]; !ok {
+			t.Fatalf("renewtemplate responses missing status %s", status)
+		}
+	}
+
 	submitPath := mustGetMapAny(t, paths, "/api/mining/submitblock")
 	submitPost := mustGetMapAny(t, submitPath, "post")
 	requestBody := mustGetMapAny(t, submitPost, "requestBody")

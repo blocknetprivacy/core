@@ -2277,14 +2277,67 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 
 	// Compute target for PoW validation
 	target := DifficultyToTarget(block.Header.Difficulty)
-	templateID := s.rememberMiningTemplate(block)
+	templateID, expiresAt, err := s.rememberMiningTemplateLease(block)
+	if err != nil {
+		switch {
+		case errors.Is(err, errMiningTemplateCacheFull):
+			var capacityErr *miningTemplateCacheFullError
+			if errors.As(err, &capacityErr) {
+				w.Header().Set("Retry-After", strconv.FormatInt(capacityErr.retryAfterSeconds, 10))
+			}
+			writeCodedError(w, http.StatusServiceUnavailable, "mining_template_cache_full", "mining template cache full, retry after a lease expires or the chain tip changes")
+		case errors.Is(err, errMiningTemplateStale):
+			writeCodedError(w, http.StatusServiceUnavailable, "mining_template_tip_changed", "chain tip changed while building template, retry")
+		default:
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		}
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"block":               block,
-		"target":              fmt.Sprintf("%x", target),
-		"header_base":         fmt.Sprintf("%x", block.Header.SerializeForPoW()),
-		"reward_address_used": rewardAddrUsed,
-		"template_id":         templateID,
+		"block":                       block,
+		"target":                      fmt.Sprintf("%x", target),
+		"header_base":                 fmt.Sprintf("%x", block.Header.SerializeForPoW()),
+		"reward_address_used":         rewardAddrUsed,
+		"template_id":                 templateID,
+		"template_expires_at_unix_ms": expiresAt.UnixMilli(),
+	})
+}
+
+// handleRenewBlockTemplate extends the compact-submission lease for a template
+// that is still live and still builds directly on the current canonical tip.
+// POST /api/mining/renewtemplate
+func (s *APIServer) handleRenewBlockTemplate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		TemplateID string `json:"template_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	templateID := strings.TrimSpace(req.TemplateID)
+	if templateID == "" {
+		writeError(w, http.StatusBadRequest, "template_id is required")
+		return
+	}
+
+	expiresAt, err := s.renewMiningTemplate(templateID)
+	if err != nil {
+		switch {
+		case errors.Is(err, errMiningTemplateUnavailable):
+			writeError(w, http.StatusNotFound, "unknown or expired template_id")
+		case errors.Is(err, errMiningTemplateStale):
+			writeError(w, http.StatusConflict, "template no longer builds on current tip")
+		default:
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"template_id":                 templateID,
+		"template_expires_at_unix_ms": expiresAt.UnixMilli(),
 	})
 }
 
@@ -2503,6 +2556,12 @@ func encodeJSONResponse(v any) ([]byte, error) {
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+// writeCodedError adds a stable machine-readable code while preserving the
+// existing human-readable error field for backward-compatible clients.
+func writeCodedError(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]string{"code": code, "error": msg})
 }
 
 // writeInternal logs err server-side and returns a generic client-facing error.
