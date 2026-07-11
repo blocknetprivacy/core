@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"blocknet/p2p"
 	"blocknet/wallet"
@@ -78,6 +79,9 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 	}
 
 	api := NewAPIServer(daemon, wA, nil, t.TempDir(), []byte("pw"))
+	templateNow := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
+	api.templateNow = func() time.Time { return templateNow }
+	api.templateTTL = 90 * time.Second
 	mux := http.NewServeMux()
 	api.registerPublicRoutes(mux)
 	api.registerPrivateRoutes(mux)
@@ -101,10 +105,12 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 	scannerB := wallet.NewScanner(wB, defaultScannerConfig())
 
 	type resp struct {
-		Block             *Block  `json:"block"`
-		RewardAddressUsed string  `json:"reward_address_used"`
-		Target            string  `json:"target"`
-		HeaderBase        string  `json:"header_base"`
+		Block                       *Block `json:"block"`
+		RewardAddressUsed           string `json:"reward_address_used"`
+		Target                      string `json:"target"`
+		HeaderBase                  string `json:"header_base"`
+		TemplateID                  string `json:"template_id"`
+		TemplateExpiresAtUnixMillis int64  `json:"template_expires_at_unix_ms"`
 	}
 
 	// Default: pays to wallet A (loaded wallet)
@@ -122,6 +128,12 @@ func TestHandleBlockTemplate_RewardAddressOverrideAlternates(t *testing.T) {
 		}
 		if got.RewardAddressUsed != wA.Address() {
 			t.Fatalf("reward_address_used mismatch: got %q want %q", got.RewardAddressUsed, wA.Address())
+		}
+		if got.TemplateID == "" {
+			t.Fatal("expected non-empty template_id")
+		}
+		if want := templateNow.Add(api.templateTTL).UnixMilli(); got.TemplateExpiresAtUnixMillis != want {
+			t.Fatalf("template expiry mismatch: got %d want %d", got.TemplateExpiresAtUnixMillis, want)
 		}
 
 		foundA, _ := scannerA.ScanBlock(mustBlockToWalletScanData(t, got.Block))
@@ -219,3 +231,56 @@ func TestHandleBlockTemplate_InvalidAddressOverrideReturns400(t *testing.T) {
 	}
 }
 
+func TestHandleBlockTemplate_LiveSameTipCacheFullReturns503(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+	daemon.syncMgr = new(p2p.SyncManager)
+
+	walletFile := filepath.Join(t.TempDir(), "wallet.dat")
+	w, err := wallet.NewWallet(walletFile, []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create wallet: %v", err)
+	}
+
+	api := NewAPIServer(daemon, w, nil, t.TempDir(), []byte("pw"))
+	now := time.Date(2026, time.July, 10, 19, 0, 0, 0, time.UTC)
+	api.templateNow = func() time.Time { return now }
+	api.templateTTL = time.Hour
+
+	tip := chain.TemplateParams()
+	cached := &Block{Header: BlockHeader{Version: 1, Height: tip.Height, PrevHash: tip.PrevHash}}
+	for i := 0; i < maxMiningTemplateCacheEntries; i++ {
+		if _, _, err := api.rememberMiningTemplateLease(cached); err != nil {
+			t.Fatalf("fill template cache at entry %d: %v", i, err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/mining/blocktemplate", nil)
+	rr := httptest.NewRecorder()
+	api.handleBlockTemplate(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	const want = "mining template cache full, retry after a lease expires or the chain tip changes"
+	if resp["error"] != want {
+		t.Fatalf("unexpected cache-full error: got %q want %q", resp["error"], want)
+	}
+	if got := resp["code"]; got != "mining_template_cache_full" {
+		t.Fatalf("unexpected cache-full code: got %q", got)
+	}
+	if got := rr.Header().Get("Retry-After"); got != "3600" {
+		t.Fatalf("unexpected Retry-After header: got %q want %q", got, "3600")
+	}
+	if len(api.templateCache) != maxMiningTemplateCacheEntries {
+		t.Fatalf("cache size changed on rejected template: got %d", len(api.templateCache))
+	}
+}

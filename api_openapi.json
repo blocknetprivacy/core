@@ -2815,7 +2815,7 @@
         "operationId": "getBlockTemplate",
         "tags": ["Mining"],
         "summary": "Get block template for pool mining",
-        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
+        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Its compact-submission lease expires at `template_expires_at_unix_ms`; clients may extend a live, current-tip lease with `POST /api/mining/renewtemplate`. The daemon retains at most 512 live leases for one tip and returns 503 rather than evicting a lease before its advertised expiry. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
         "parameters": [
           {
             "name": "address",
@@ -2850,14 +2850,99 @@
                   "target": "000000000000f4240000000000000000000000000000000000000000000000000",
                   "header_base": "0100000080370000...",
                   "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4",
-                  "template_id": "7b3d2f4a9d11c8ef"
+                  "template_id": "7b3d2f4a9d11c8ef",
+                  "template_expires_at_unix_ms": 1738800840000
                 }
               }
             }
           },
           "400": { "$ref": "#/components/responses/BadRequest" },
           "401": { "$ref": "#/components/responses/Unauthorized" },
-          "503": { "$ref": "#/components/responses/NoWallet" }
+          "503": {
+            "description": "A template cannot currently be served because no wallet is loaded, the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live. Capacity responses include Retry-After with the number of seconds until the earliest lease expiry.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until the earliest live template lease expires. Present for mining_template_cache_full responses.",
+                "schema": { "type": "integer", "minimum": 1 }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "no_wallet": {
+                    "value": { "error": "no wallet loaded" }
+                  },
+                  "syncing": {
+                    "value": { "error": "node is syncing" }
+                  },
+                  "tip_changed": {
+                    "value": {
+                      "code": "mining_template_tip_changed",
+                      "error": "chain tip changed while building template, retry"
+                    }
+                  },
+                  "lease_capacity": {
+                    "value": {
+                      "code": "mining_template_cache_full",
+                      "error": "mining template cache full, retry after a lease expires or the chain tip changes"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/mining/renewtemplate": {
+      "post": {
+        "operationId": "renewBlockTemplate",
+        "tags": ["Mining"],
+        "summary": "Renew a block-template lease",
+        "description": "Extends the compact-submission lease of an unexpired cached template. Renewal succeeds only while the template still builds directly on the current canonical chain tip. This does not rebuild or otherwise change the template.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/RenewBlockTemplateRequest" },
+              "example": { "template_id": "7b3d2f4a9d11c8ef" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Template lease renewed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/RenewBlockTemplateResponse" },
+                "example": {
+                  "template_id": "7b3d2f4a9d11c8ef",
+                  "template_expires_at_unix_ms": 1738801140000
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": {
+            "description": "The template ID is unknown or its lease has expired",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "unknown or expired template_id" }
+              }
+            }
+          },
+          "409": {
+            "description": "The template no longer builds on the current canonical tip",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "template no longer builds on current tip" }
+              }
+            }
+          }
         }
       }
     },
@@ -3049,6 +3134,10 @@
         "type": "object",
         "required": ["error"],
         "properties": {
+          "code": {
+            "type": "string",
+            "description": "Optional stable machine-readable error code. Clients should prefer this over matching the human-readable error string when present."
+          },
           "error": {
             "type": "string",
             "description": "Human-readable error message"
@@ -4042,6 +4131,37 @@
           "template_id": {
             "type": "string",
             "description": "Opaque template identifier used for compact submit payloads (`template_id` + `nonce`)."
+          },
+          "template_expires_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix timestamp in milliseconds when the compact-submission lease expires. Renew with POST /api/mining/renewtemplate before this instant to keep using the same template ID."
+          }
+        },
+        "required": ["block", "target", "header_base", "reward_address_used", "template_id", "template_expires_at_unix_ms"]
+      },
+      "RenewBlockTemplateRequest": {
+        "type": "object",
+        "required": ["template_id"],
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "description": "Unexpired template ID returned by GET /api/mining/blocktemplate."
+          }
+        }
+      },
+      "RenewBlockTemplateResponse": {
+        "type": "object",
+        "required": ["template_id", "template_expires_at_unix_ms"],
+        "properties": {
+          "template_id": {
+            "type": "string",
+            "description": "The renewed template ID."
+          },
+          "template_expires_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "New compact-submission lease expiry as a Unix timestamp in milliseconds."
           }
         }
       },
