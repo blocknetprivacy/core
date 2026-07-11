@@ -468,6 +468,134 @@ pub extern "C" fn blocknet_stealth_derive_secret_sender_indexed(
     0
 }
 
+/// Scan a batch of outputs from a single transaction against one wallet's keys.
+///
+/// Computes the ECDH shared point `view_privkey * tx_pubkey` ONCE for the whole
+/// transaction (the expensive variable-base scalar mult), then for each output
+/// derives the candidate one-time key and compares it to the output's public
+/// key. This replaces the per-output derive_secret + scalar_to_pubkey + point_add
+/// FFI sequence (which recomputed the shared point every time) with a single
+/// call per transaction.
+///
+/// mode selects which derivation(s) to attempt:
+///   0 = legacy only   (H(shared))                — coinbase, pre-activation
+///   1 = indexed only  (H(shared || out_index))   — post-activation regular
+///   2 = both (indexed first, then legacy)         — activation boundary window
+///
+/// For each output i, matched_out[i] is set to 1 if owned (0 otherwise) and,
+/// when owned, secrets_out[i*32..i*32+32] holds the shared secret scalar bytes
+/// (identical to what blocknet_stealth_derive_secret[_indexed] would return),
+/// so the caller can derive blindings/amounts exactly as before.
+#[no_mangle]
+pub extern "C" fn blocknet_stealth_scan_batch(
+    tx_pubkey: *const u8,
+    view_privkey: *const u8,
+    spend_pubkey: *const u8,
+    out_pubkeys: *const u8,
+    out_indices: *const u32,
+    count: usize,
+    mode: u32,
+    matched_out: *mut u8,
+    secrets_out: *mut u8,
+) -> i32 {
+    if tx_pubkey.is_null()
+        || view_privkey.is_null()
+        || spend_pubkey.is_null()
+        || matched_out.is_null()
+        || secrets_out.is_null()
+    {
+        return -1;
+    }
+    if count == 0 {
+        return 0;
+    }
+    if out_pubkeys.is_null() {
+        return -1;
+    }
+    if (mode == 1 || mode == 2) && out_indices.is_null() {
+        return -1;
+    }
+
+    unsafe {
+        let tx_pub_bytes = slice::from_raw_parts(tx_pubkey, 32);
+        let view_priv_bytes = slice::from_raw_parts(view_privkey, 32);
+        let spend_pub_bytes = slice::from_raw_parts(spend_pubkey, 32);
+
+        let tx_pub = match CompressedRistretto::from_slice(tx_pub_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        let view_priv = match Scalar::from_canonical_bytes(
+            view_priv_bytes.try_into().expect("slice length"),
+        )
+        .into_option()
+        {
+            Some(s) => s,
+            None => return -1,
+        };
+
+        let spend_pub = match CompressedRistretto::from_slice(spend_pub_bytes)
+            .expect("slice length")
+            .decompress()
+        {
+            Some(p) => p,
+            None => return -1,
+        };
+
+        // The single expensive operation, hoisted out of the per-output loop.
+        let shared_point = view_priv * tx_pub;
+        let shared_bytes = shared_point.compress();
+
+        let want_indexed = mode == 1 || mode == 2;
+        let want_legacy = mode == 0 || mode == 2;
+
+        // The legacy (non-indexed) secret and its candidate one-time key do not
+        // depend on the output index, so compute them at most once per tx.
+        let legacy_secret = if want_legacy {
+            Some(hash_to_scalar(shared_bytes.as_bytes()))
+        } else {
+            None
+        };
+        let legacy_expected =
+            legacy_secret.map(|s| (&s * RISTRETTO_BASEPOINT_TABLE + spend_pub).compress());
+
+        let out_pubkeys_all = slice::from_raw_parts(out_pubkeys, count * 32);
+        let matched = slice::from_raw_parts_mut(matched_out, count);
+        let secrets = slice::from_raw_parts_mut(secrets_out, count * 32);
+
+        for i in 0..count {
+            let out_pub = &out_pubkeys_all[i * 32..i * 32 + 32];
+            matched[i] = 0;
+
+            if want_indexed {
+                let idx = *out_indices.add(i);
+                let sec = hash_to_scalar_indexed(shared_bytes.as_bytes(), idx);
+                let expected = (&sec * RISTRETTO_BASEPOINT_TABLE + spend_pub).compress();
+                if expected.as_bytes() == out_pub {
+                    matched[i] = 1;
+                    secrets[i * 32..i * 32 + 32].copy_from_slice(sec.as_bytes());
+                    continue;
+                }
+            }
+
+            if want_legacy {
+                if let (Some(sec), Some(expected)) = (legacy_secret, legacy_expected) {
+                    if expected.as_bytes() == out_pub {
+                        matched[i] = 1;
+                        secrets[i * 32..i * 32 + 32].copy_from_slice(sec.as_bytes());
+                    }
+                }
+            }
+        }
+    }
+
+    0
+}
+
 /// Derive the one-time public key from one-time private key (for verification)
 #[no_mangle]
 pub extern "C" fn blocknet_scalar_to_pubkey(

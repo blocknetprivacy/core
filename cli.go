@@ -132,7 +132,8 @@ func defaultScannerConfig() wallet.ScannerConfig {
 		PointAdd: func(p1, p2 [32]byte) ([32]byte, error) {
 			return CommitmentAdd(p1, p2)
 		},
-		BlindingAdd: BlindingAdd,
+		BlindingAdd:      BlindingAdd,
+		ScanOutputsBatch: StealthScanBatch,
 	}
 }
 

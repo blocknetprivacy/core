@@ -728,21 +728,25 @@ func (c *CLI) cmdSync() {
 	// writer-preference overhead per height while the node is ingesting blocks.
 	blocks := c.daemon.Chain().GetBlocksByHeightRange(walletHeight+1, chainHeight)
 
-	scannedTo := walletHeight
+	// Convert to scan data up front, stopping at the first gap (nil block) to
+	// preserve the "don't scan past a missing block" behavior.
+	scanBlocks := make([]*wallet.BlockData, 0, len(blocks))
 	for _, block := range blocks {
 		if block == nil {
 			break
 		}
+		scanBlocks = append(scanBlocks, blockToScanData(block))
+	}
 
-		blockData := blockToScanData(block)
-		found, spent := c.scanner.ScanBlock(blockData)
-
-		h := block.Header.Height
+	// Scan the whole batch with one spendable-key-image index (built once,
+	// maintained incrementally) instead of rebuilding it per block.
+	scannedTo := walletHeight
+	c.scanner.ScanBlocksReport(scanBlocks, func(h uint64, found, spent int) {
 		scannedTo = h
 		if found > 0 || spent > 0 {
 			fmt.Printf("    Block %d: +%d outputs, %d spent\n", h, found, spent)
 		}
-	}
+	})
 
 	if scannedTo > walletHeight {
 		c.wallet.SetSyncedHeight(scannedTo)

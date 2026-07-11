@@ -561,6 +561,55 @@ func ScalarToPubKey(privKey [32]byte) ([32]byte, error) {
 	return pubKey, nil
 }
 
+// StealthScanBatch checks a batch of outputs from one transaction against the
+// wallet keys in a single FFI call. It computes the ECDH shared point
+// (view_priv * tx_pubkey) once for the whole transaction instead of per output.
+// mode: 0=legacy, 1=indexed, 2=both (indexed first, then legacy). It returns,
+// per output, whether it is owned and — for owned outputs — the shared secret
+// (identical to DeriveStealthSecret[Indexed]) so callers derive amounts/blindings
+// exactly as before.
+func StealthScanBatch(txPubKey, viewPriv, spendPub [32]byte, outPubKeys [][32]byte, outIndices []uint32, mode uint32) (matched []bool, secrets [][32]byte, err error) {
+	count := len(outPubKeys)
+	if count == 0 {
+		return nil, nil, nil
+	}
+	if len(outIndices) != count {
+		return nil, nil, fmt.Errorf("stealth scan batch: %d indices for %d outputs", len(outIndices), count)
+	}
+
+	flatPubs := make([]byte, count*32)
+	for i := range outPubKeys {
+		copy(flatPubs[i*32:], outPubKeys[i][:])
+	}
+	matchedBuf := make([]byte, count)
+	secretsBuf := make([]byte, count*32)
+
+	ret := C.blocknet_stealth_scan_batch(
+		(*C.uint8_t)(unsafe.Pointer(&txPubKey[0])),
+		(*C.uint8_t)(unsafe.Pointer(&viewPriv[0])),
+		(*C.uint8_t)(unsafe.Pointer(&spendPub[0])),
+		(*C.uint8_t)(unsafe.Pointer(&flatPubs[0])),
+		(*C.uint32_t)(unsafe.Pointer(&outIndices[0])),
+		C.size_t(count),
+		C.uint32_t(mode),
+		(*C.uint8_t)(unsafe.Pointer(&matchedBuf[0])),
+		(*C.uint8_t)(unsafe.Pointer(&secretsBuf[0])),
+	)
+	if ret != 0 {
+		return nil, nil, fmt.Errorf("stealth scan batch failed")
+	}
+
+	matched = make([]bool, count)
+	secrets = make([][32]byte, count)
+	for i := 0; i < count; i++ {
+		if matchedBuf[i] != 0 {
+			matched[i] = true
+			copy(secrets[i][:], secretsBuf[i*32:i*32+32])
+		}
+	}
+	return matched, secrets, nil
+}
+
 // DeriveStealthAddressWithKey creates a one-time address using a caller-provided tx private key.
 // Same math as DeriveStealthAddress but uses txPrivKey instead of generating a random r.
 func DeriveStealthAddressWithKey(spendPubKey, viewPubKey, txPrivKey [32]byte) (txPubKey, onetimePubKey [32]byte, err error) {

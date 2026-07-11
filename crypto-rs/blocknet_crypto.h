@@ -252,6 +252,22 @@ int32_t blocknet_stealth_derive_secret_sender_indexed(
     uint8_t* secret_out
 );
 
+// Scan a batch of outputs from one transaction against one wallet's keys.
+// Computes the ECDH shared point view_privkey*tx_pubkey once, then matches each
+// output. mode: 0=legacy, 1=indexed, 2=both. matched_out is count bytes (0/1);
+// secrets_out is count*32 bytes (shared secret for matched outputs).
+int32_t blocknet_stealth_scan_batch(
+    const uint8_t* tx_pubkey,
+    const uint8_t* view_privkey,
+    const uint8_t* spend_pubkey,
+    const uint8_t* out_pubkeys,
+    const uint32_t* out_indices,
+    size_t count,
+    uint32_t mode,
+    uint8_t* matched_out,
+    uint8_t* secrets_out
+);
+
 // Convert scalar private key to public key
 int32_t blocknet_scalar_to_pubkey(
     const uint8_t* privkey,

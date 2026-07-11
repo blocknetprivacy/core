@@ -5,7 +5,20 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"runtime"
+	"sync"
+	"sync/atomic"
+
+	"blocknet/protocol/params"
 )
+
+// derivationBoundaryWindow is the number of blocks above IndexedDerivationHeight
+// within which the scanner attempts both the indexed and legacy stealth
+// derivations. A transaction built just before the activation height can be
+// mined just after it, so near the boundary its outputs may use either
+// derivation. Outside this window the derivation is unambiguous from the block
+// height (and coinbase outputs are always legacy), so only one is attempted.
+const derivationBoundaryWindow = 128
 
 // BlockData is the minimal block info needed for scanning
 type BlockData struct {
@@ -45,6 +58,29 @@ type ScannerConfig struct {
 	ScalarToPoint func(scalar [32]byte) ([32]byte, error)
 	PointAdd      func(p1, p2 [32]byte) ([32]byte, error)
 	BlindingAdd   func(a, b [32]byte) ([32]byte, error)
+
+	// ScanOutputsBatch, if set, matches all of a transaction's outputs against
+	// the wallet keys in a single call — computing the ECDH shared point once
+	// per transaction instead of once per output. mode is one of scanMode*.
+	// It returns, per output, whether it is owned and the shared secret for
+	// owned outputs. When nil the scanner falls back to the per-output
+	// composed/legacy path. This is the hot-path fast lane for sync scanning.
+	ScanOutputsBatch func(txPubKey, viewPriv, spendPub [32]byte, outPubKeys [][32]byte, outIndices []uint32, mode uint32) (matched []bool, secrets [][32]byte, err error)
+}
+
+// Stealth-derivation modes for ScanOutputsBatch.
+const (
+	scanModeLegacy  uint32 = 0 // H(shared) — coinbase, pre-activation outputs
+	scanModeIndexed uint32 = 1 // H(shared || index) — post-activation outputs
+	scanModeBoth    uint32 = 2 // indexed first, then legacy — boundary window
+)
+
+// outputMatch records an owned output found during the (read-only) match phase:
+// its position in the transaction's Outputs slice and the recovered shared
+// secret, consumed later by the (stateful, ordered) apply phase.
+type outputMatch struct {
+	pos    int
+	secret [32]byte
 }
 
 // Scanner scans blocks for wallet-relevant transactions
@@ -62,138 +98,212 @@ func NewScanner(w *Wallet, cfg ScannerConfig) *Scanner {
 }
 
 // ScanBlock scans a block for owned outputs and spent outputs.
-// It tries indexed derivation first, then falls back to non-indexed.
 func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
-	keys := s.wallet.Keys()
 	spendableByKeyImage := s.buildSpendableKeyImageIndex()
+	return s.scanBlockWithIndex(block, spendableByKeyImage)
+}
+
+// scanBlockWithIndex scans a block using a caller-supplied spendable-key-image
+// index so a batch sync can build the index once instead of per block. The
+// index is mutated in place: newly found outputs are added and confirmed spends
+// are removed, so it stays correct across consecutive blocks.
+func (s *Scanner) scanBlockWithIndex(block *BlockData, spendableByKeyImage map[[32]byte][][32]byte) (found int, spent int) {
+	keys := s.wallet.Keys()
+	for i := range block.Transactions {
+		tx := &block.Transactions[i]
+		matches := s.matchTxOutputs(tx, block.Height, keys)
+		f, sp := s.applyTxMatches(tx, block.Height, keys, matches, spendableByKeyImage)
+		found += f
+		spent += sp
+	}
+	return found, spent
+}
+
+// txDerivationMode returns the ScanOutputsBatch mode for a transaction: which
+// stealth derivation(s) its outputs may use. Coinbase outputs always use the
+// non-indexed (legacy) derivation. Regular outputs use indexed derivation
+// at/after the activation height and legacy before it; near the boundary a tx
+// built just before the switch can be mined just after, so both are tried.
+func txDerivationMode(isCoinbase bool, height uint64) uint32 {
+	if isCoinbase || height < params.IndexedDerivationHeight {
+		return scanModeLegacy
+	}
+	if height < params.IndexedDerivationHeight+derivationBoundaryWindow {
+		return scanModeBoth
+	}
+	return scanModeIndexed
+}
+
+// matchTxOutputs finds which of a transaction's outputs are owned by the wallet.
+// It is read-only with respect to wallet state (it only reads the immutable key
+// material passed in), so it is safe to run concurrently across transactions.
+func (s *Scanner) matchTxOutputs(tx *TxData, height uint64, keys StealthKeys) []outputMatch {
+	if len(tx.Outputs) == 0 {
+		return nil
+	}
+
+	mode := txDerivationMode(tx.IsCoinbase, height)
+	tryIndexed := mode == scanModeIndexed || mode == scanModeBoth
+	tryLegacy := mode == scanModeLegacy || mode == scanModeBoth
+
+	// Fast path: one FFI call per transaction, shared point computed once.
+	if s.config.ScanOutputsBatch != nil {
+		outPubs := make([][32]byte, len(tx.Outputs))
+		outIdx := make([]uint32, len(tx.Outputs))
+		for j, out := range tx.Outputs {
+			outPubs[j] = out.PubKey
+			outIdx[j] = uint32(out.Index)
+		}
+		matched, secrets, err := s.config.ScanOutputsBatch(tx.TxPubKey, keys.ViewPrivKey, keys.SpendPubKey, outPubs, outIdx, mode)
+		if err == nil {
+			var ms []outputMatch
+			for j := range tx.Outputs {
+				if j < len(matched) && matched[j] {
+					ms = append(ms, outputMatch{pos: j, secret: secrets[j]})
+				}
+			}
+			return ms
+		}
+		// On error, fall through to the per-output path.
+	}
 
 	canCompose := s.config.ScalarToPoint != nil && s.config.PointAdd != nil && s.config.BlindingAdd != nil
 
-	for _, tx := range block.Transactions {
-		for _, out := range tx.Outputs {
-			var secret [32]byte
-			var matched bool
+	var ms []outputMatch
+	for j, out := range tx.Outputs {
+		var secret [32]byte
+		var matched bool
 
-			if canCompose {
-				// Try indexed derivation first.
-				if s.wallet.deriveOutputSecretIndexed != nil {
-					indexed, err := s.wallet.deriveOutputSecretIndexed(tx.TxPubKey, keys.ViewPrivKey, uint32(out.Index))
-					if err == nil {
-						point, err2 := s.config.ScalarToPoint(indexed)
-						if err2 == nil {
-							expected, err3 := s.config.PointAdd(point, keys.SpendPubKey)
-							if err3 == nil && expected == out.PubKey {
-								secret = indexed
-								matched = true
-							}
+		if canCompose {
+			if tryIndexed && s.wallet.deriveOutputSecretIndexed != nil {
+				indexed, err := s.wallet.deriveOutputSecretIndexed(tx.TxPubKey, keys.ViewPrivKey, uint32(out.Index))
+				if err == nil {
+					point, err2 := s.config.ScalarToPoint(indexed)
+					if err2 == nil {
+						expected, err3 := s.config.PointAdd(point, keys.SpendPubKey)
+						if err3 == nil && expected == out.PubKey {
+							secret = indexed
+							matched = true
 						}
-					}
-				}
-
-				// Fall back to non-indexed.
-				if !matched {
-					legacy, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
-					if err == nil {
-						point, err2 := s.config.ScalarToPoint(legacy)
-						if err2 == nil {
-							expected, err3 := s.config.PointAdd(point, keys.SpendPubKey)
-							if err3 == nil && expected == out.PubKey {
-								secret = legacy
-								matched = true
-							}
-						}
-					}
-				}
-			} else {
-				// Legacy path for callers that haven't wired the primitives.
-				if s.wallet.checkStealthOutput(tx.TxPubKey, out.PubKey, keys.ViewPrivKey, keys.SpendPubKey) {
-					sec, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
-					if err == nil {
-						secret = sec
-						matched = true
 					}
 				}
 			}
 
-			if !matched {
+			if !matched && tryLegacy {
+				legacy, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
+				if err == nil {
+					point, err2 := s.config.ScalarToPoint(legacy)
+					if err2 == nil {
+						expected, err3 := s.config.PointAdd(point, keys.SpendPubKey)
+						if err3 == nil && expected == out.PubKey {
+							secret = legacy
+							matched = true
+						}
+					}
+				}
+			}
+		} else if s.wallet.checkStealthOutput != nil {
+			// Legacy path for callers that haven't wired the primitives.
+			if s.wallet.checkStealthOutput(tx.TxPubKey, out.PubKey, keys.ViewPrivKey, keys.SpendPubKey) {
+				sec, err := s.wallet.deriveOutputSecret(tx.TxPubKey, keys.ViewPrivKey)
+				if err == nil {
+					secret = sec
+					matched = true
+				}
+			}
+		}
+
+		if matched {
+			ms = append(ms, outputMatch{pos: j, secret: secret})
+		}
+	}
+	return ms
+}
+
+// applyTxMatches records the wallet outputs found by matchTxOutputs and checks
+// the transaction's key images for spends. It mutates wallet state and the
+// key-image index, so it must run serially in block/transaction order.
+func (s *Scanner) applyTxMatches(tx *TxData, height uint64, keys StealthKeys, matches []outputMatch, spendableByKeyImage map[[32]byte][][32]byte) (found int, spent int) {
+	canCompose := s.config.BlindingAdd != nil
+
+	for _, m := range matches {
+		out := tx.Outputs[m.pos]
+		secret := m.secret
+
+		// Derive one-time private key: secret + spendPriv (scalar add).
+		var oneTimePriv [32]byte
+		if canCompose {
+			otp, err := s.config.BlindingAdd(secret, keys.SpendPrivKey)
+			if err != nil {
 				continue
 			}
-
-			// Derive one-time private key: secret + spendPriv (scalar add).
-			var oneTimePriv [32]byte
-			if canCompose {
-				otp, err := s.config.BlindingAdd(secret, keys.SpendPrivKey)
-				if err != nil {
-					continue
-				}
-				oneTimePriv = otp
-			} else {
-				otp, err := s.wallet.deriveSpendKey(tx.TxPubKey, keys.ViewPrivKey, keys.SpendPrivKey)
-				if err != nil {
-					continue
-				}
-				oneTimePriv = otp
+			oneTimePriv = otp
+		} else {
+			otp, err := s.wallet.deriveSpendKey(tx.TxPubKey, keys.ViewPrivKey, keys.SpendPrivKey)
+			if err != nil {
+				continue
 			}
-
-			var outputSecret [32]byte
-			var blinding [32]byte
-			if tx.IsCoinbase {
-				blinding = DeriveCoinbaseConsensusBlinding(tx.TxPubKey, block.Height, out.Index)
-			} else {
-				outputSecret = secret
-				blinding = DeriveBlinding(outputSecret, out.Index)
-			}
-
-			amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
-
-			if s.config.CreateCommitment != nil {
-				commitment, err := s.config.CreateCommitment(amount, blinding)
-				if err != nil {
-					continue
-				}
-				if commitment != out.Commitment {
-					continue
-				}
-			}
-
-			owned := &OwnedOutput{
-				TxID:           tx.TxID,
-				OutputIndex:    out.Index,
-				Amount:         amount,
-				Blinding:       blinding,
-				OneTimePrivKey: oneTimePriv,
-				OneTimePubKey:  out.PubKey,
-				Commitment:     out.Commitment,
-				BlockHeight:    block.Height,
-				IsCoinbase:     tx.IsCoinbase,
-				Spent:          false,
-			}
-
-			if !tx.IsCoinbase {
-				if memo, ok := DecryptMemo(out.EncryptedMemo, outputSecret, out.Index); ok {
-					owned.Memo = memo
-				} else {
-					s.wallet.recordMemoDecryptFailure(block.Height)
-				}
-			}
-
-			s.wallet.AddOutput(owned)
-			if keyImage, err := s.config.GenerateKeyImage(owned.OneTimePrivKey); err == nil {
-				spendableByKeyImage[keyImage] = append(spendableByKeyImage[keyImage], owned.OneTimePubKey)
-			}
-			found++
+			oneTimePriv = otp
 		}
 
-		// Check key images - did we spend something?
-		for _, keyImage := range tx.KeyImages {
-			ownedPubKeys := spendableByKeyImage[keyImage]
-			for _, ownedPubKey := range ownedPubKeys {
-				if s.wallet.MarkSpent(ownedPubKey, block.Height) {
-					spent++
-				}
-			}
-			delete(spendableByKeyImage, keyImage)
+		var outputSecret [32]byte
+		var blinding [32]byte
+		if tx.IsCoinbase {
+			blinding = DeriveCoinbaseConsensusBlinding(tx.TxPubKey, height, out.Index)
+		} else {
+			outputSecret = secret
+			blinding = DeriveBlinding(outputSecret, out.Index)
 		}
+
+		amount := DecryptAmount(out.EncryptedAmount, blinding, out.Index)
+
+		if s.config.CreateCommitment != nil {
+			commitment, err := s.config.CreateCommitment(amount, blinding)
+			if err != nil {
+				continue
+			}
+			if commitment != out.Commitment {
+				continue
+			}
+		}
+
+		owned := &OwnedOutput{
+			TxID:           tx.TxID,
+			OutputIndex:    out.Index,
+			Amount:         amount,
+			Blinding:       blinding,
+			OneTimePrivKey: oneTimePriv,
+			OneTimePubKey:  out.PubKey,
+			Commitment:     out.Commitment,
+			BlockHeight:    height,
+			IsCoinbase:     tx.IsCoinbase,
+			Spent:          false,
+		}
+
+		if !tx.IsCoinbase {
+			if memo, ok := DecryptMemo(out.EncryptedMemo, outputSecret, out.Index); ok {
+				owned.Memo = memo
+			} else {
+				s.wallet.recordMemoDecryptFailure(height)
+			}
+		}
+
+		s.wallet.AddOutput(owned)
+		if keyImage, err := s.config.GenerateKeyImage(owned.OneTimePrivKey); err == nil {
+			spendableByKeyImage[keyImage] = append(spendableByKeyImage[keyImage], owned.OneTimePubKey)
+		}
+		found++
+	}
+
+	// Check key images - did we spend something?
+	for _, keyImage := range tx.KeyImages {
+		ownedPubKeys := spendableByKeyImage[keyImage]
+		for _, ownedPubKey := range ownedPubKeys {
+			if s.wallet.MarkSpent(ownedPubKey, height) {
+				spent++
+			}
+		}
+		delete(spendableByKeyImage, keyImage)
 	}
 
 	return found, spent
@@ -211,16 +321,125 @@ func (s *Scanner) buildSpendableKeyImageIndex() map[[32]byte][][32]byte {
 	return spendableByKeyImage
 }
 
-// ScanBlocks scans multiple blocks
+// ScanBlocks scans multiple blocks. The spendable-key-image index is built once
+// for the whole batch and maintained incrementally, rather than rebuilt (and its
+// key images regenerated) per block.
 func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
-	for _, block := range blocks {
-		found, spent := s.ScanBlock(block)
-		totalFound += found
-		totalSpent += spent
-
+	return s.scanBatch(blocks, func(block *BlockData, found, spent int) {
 		s.wallet.SetSyncedHeight(block.Height)
+	})
+}
+
+// ScanBlocksReport scans a batch of blocks, building the spendable-key-image
+// index once for the whole batch. report, if non-nil, is called after each
+// block with its height and the per-block found/spent counts. Scanning stops at
+// the first nil block. It does not update the wallet's synced height; the caller
+// decides when to persist that.
+func (s *Scanner) ScanBlocksReport(blocks []*BlockData, report func(height uint64, found, spent int)) (totalFound, totalSpent int) {
+	return s.scanBatch(blocks, func(block *BlockData, found, spent int) {
+		if report != nil {
+			report(block.Height, found, spent)
+		}
+	})
+}
+
+// scanBatch scans a run of blocks in two phases: a parallel, read-only match
+// phase across every transaction, followed by a serial apply phase in block
+// order (which mutates the wallet and the shared key-image index). Splitting the
+// phases lets the expensive per-output crypto run concurrently while keeping the
+// stateful bookkeeping ordered and lock-free. onBlock runs after each block's
+// apply, in order. Scanning stops at the first nil block.
+func (s *Scanner) scanBatch(blocks []*BlockData, onBlock func(block *BlockData, found, spent int)) (totalFound, totalSpent int) {
+	// Truncate at the first gap so we never scan past a missing block.
+	end := len(blocks)
+	for i, b := range blocks {
+		if b == nil {
+			end = i
+			break
+		}
+	}
+	blocks = blocks[:end]
+	if len(blocks) == 0 {
+		return 0, 0
+	}
+
+	keys := s.wallet.Keys()
+	spendableByKeyImage := s.buildSpendableKeyImageIndex()
+
+	// Phase 1 (parallel): match every transaction's outputs.
+	matches := s.matchBlocksParallel(blocks, keys)
+
+	// Phase 2 (serial, ordered): apply matches and detect spends.
+	for bi, block := range blocks {
+		var bf, bsp int
+		for ti := range block.Transactions {
+			tx := &block.Transactions[ti]
+			f, sp := s.applyTxMatches(tx, block.Height, keys, matches[bi][ti], spendableByKeyImage)
+			bf += f
+			bsp += sp
+		}
+		totalFound += bf
+		totalSpent += bsp
+		if onBlock != nil {
+			onBlock(block, bf, bsp)
+		}
 	}
 	return totalFound, totalSpent
+}
+
+// matchBlocksParallel runs matchTxOutputs for every transaction across all
+// blocks, distributing the work over the available CPUs. The result is indexed
+// [blockIndex][txIndex]; each worker writes a distinct element, so no
+// synchronization is needed beyond the final barrier.
+func (s *Scanner) matchBlocksParallel(blocks []*BlockData, keys StealthKeys) [][][]outputMatch {
+	result := make([][][]outputMatch, len(blocks))
+	type task struct{ bi, ti int }
+	var tasks []task
+	for bi, block := range blocks {
+		result[bi] = make([][]outputMatch, len(block.Transactions))
+		for ti := range block.Transactions {
+			tasks = append(tasks, task{bi, ti})
+		}
+	}
+	if len(tasks) == 0 {
+		return result
+	}
+
+	// Respect GOMAXPROCS (honors container/cgroup CPU limits) rather than the
+	// raw core count.
+	workers := runtime.GOMAXPROCS(0)
+	if workers > len(tasks) {
+		workers = len(tasks)
+	}
+
+	// Small batches aren't worth the goroutine overhead.
+	if workers <= 1 {
+		for _, t := range tasks {
+			tx := &blocks[t.bi].Transactions[t.ti]
+			result[t.bi][t.ti] = s.matchTxOutputs(tx, blocks[t.bi].Height, keys)
+		}
+		return result
+	}
+
+	var next int64 = -1
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := 0; w < workers; w++ {
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(atomic.AddInt64(&next, 1))
+				if i >= len(tasks) {
+					return
+				}
+				t := tasks[i]
+				tx := &blocks[t.bi].Transactions[t.ti]
+				result[t.bi][t.ti] = s.matchTxOutputs(tx, blocks[t.bi].Height, keys)
+			}
+		}()
+	}
+	wg.Wait()
+	return result
 }
 
 // DeriveBlinding derives a blinding factor from the shared secret and output index.
