@@ -12,14 +12,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
+
 	"blocknet/p2p"
 	"blocknet/protocol/params"
 	"blocknet/wallet"
-
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const Version = "0.15.0"
+const Version = "0.16.0"
 
 type peerIDListFlag []string
 

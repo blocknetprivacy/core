@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
-    "version": "0.15.0",
+    "version": "0.16.0",
     "license": {
       "name": "MIT"
     }
@@ -580,6 +580,126 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "example": { "error": "verify rate limit exceeded" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stats": {
+      "get": {
+        "operationId": "getStats",
+        "tags": ["Node"],
+        "summary": "Network and emission statistics",
+        "description": "Returns chain, network, and emission/economics statistics as numeric JSON. All amounts are in atomic units (smallest units). Values are a deterministic function of the chain tip and require no wallet.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Network and emission statistics",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/StatsResponse" },
+                "example": {
+                  "height": 5000,
+                  "difficulty": 150000,
+                  "network_hashrate": 500.0,
+                  "avg_block_time": 300.0,
+                  "block_reward": 72325093035,
+                  "emitted": 361625465175000,
+                  "remaining": 9638374534825000,
+                  "target_supply": 10000000000000000,
+                  "pct_emitted": 3.61625465175,
+                  "tail_emission": 200000000,
+                  "months_to_tail": 48,
+                  "blocks_per_month": 8640,
+                  "block_interval_sec": 300
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/verify-proof": {
+      "post": {
+        "operationId": "verifyProof",
+        "tags": ["Node"],
+        "summary": "Verify a payment proof",
+        "description": "Verifies a sender's payment proof. Given a transaction id, the deterministic transaction private key (`tx_key` from `POST /api/wallet/prove`), and a recipient address, confirms the `tx_key` genuinely belongs to the transaction (`valid`) and reveals which of its outputs that address received, with amounts (atomic units) and any memo. Stateless — no wallet required. Rate-limited per IP.",
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/VerifyProofRequest" },
+              "example": {
+                "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                "tx_key": "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f",
+                "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verification result. `valid` is false when the tx_key does not correspond to the transaction; per-output `match` indicates which outputs the address received.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/VerifyProofResponse" },
+                "examples": {
+                  "valid": {
+                    "summary": "Valid proof, one output received by the address",
+                    "value": {
+                      "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                      "valid": true,
+                      "total_matched": 250000000,
+                      "outputs": [
+                        { "index": 0, "match": true, "amount": 250000000, "memo": "invoice 4821" },
+                        { "index": 1, "match": false }
+                      ]
+                    }
+                  },
+                  "invalid": {
+                    "summary": "tx_key does not match the transaction",
+                    "value": { "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2", "valid": false, "total_matched": 0, "outputs": [] }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "bad_txid": {
+                    "summary": "Malformed txid",
+                    "value": { "error": "txid must be 64 hex characters" }
+                  },
+                  "bad_address": {
+                    "summary": "Unparseable address",
+                    "value": { "error": "invalid address" }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Transaction not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "transaction not found" }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "verify-proof rate limit exceeded" }
               }
             }
           }
@@ -3188,6 +3308,40 @@
           "avg_fee": 14600.0
         }
       },
+      "StatsResponse": {
+        "type": "object",
+        "description": "Chain, network, and emission statistics. Amounts are in atomic units (smallest units).",
+        "properties": {
+          "height": { "type": "integer", "description": "Current chain height" },
+          "difficulty": { "type": "integer", "description": "Difficulty target for the next block (LWMA)" },
+          "network_hashrate": { "type": "number", "description": "Estimated network hashrate (hashes/sec) over recent blocks; 0 with insufficient history" },
+          "avg_block_time": { "type": "number", "description": "Average block time (seconds) over recent blocks; 0 with insufficient history" },
+          "block_reward": { "type": "integer", "description": "Coinbase reward at the current height (atomic units)" },
+          "emitted": { "type": "integer", "description": "Cumulative coins emitted through the current height (atomic units)" },
+          "remaining": { "type": "integer", "description": "Coins remaining toward target_supply; 0 once tail emission is reached (atomic units)" },
+          "target_supply": { "type": "integer", "description": "Approximate emission before tail emission begins (~100M coins, atomic units)" },
+          "pct_emitted": { "type": "number", "description": "Percent of target_supply emitted (0-100)" },
+          "tail_emission": { "type": "integer", "description": "Perpetual per-block tail emission (atomic units)" },
+          "months_to_tail": { "type": "integer", "description": "Months of decay before tail emission begins" },
+          "blocks_per_month": { "type": "integer", "description": "Blocks per month at the target interval" },
+          "block_interval_sec": { "type": "integer", "description": "Target seconds between blocks" }
+        },
+        "example": {
+          "height": 5000,
+          "difficulty": 150000,
+          "network_hashrate": 500.0,
+          "avg_block_time": 300.0,
+          "block_reward": 72325093035,
+          "emitted": 361625465175000,
+          "remaining": 9638374534825000,
+          "target_supply": 10000000000000000,
+          "pct_emitted": 3.61625465175,
+          "tail_emission": 200000000,
+          "months_to_tail": 48,
+          "blocks_per_month": 8640,
+          "block_interval_sec": 300
+        }
+      },
       "MempoolTransactions": {
         "type": "array",
         "description": "Array of unconfirmed transactions currently in the mempool.",
@@ -3495,6 +3649,62 @@
           "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
           "message": "blocknet-auth:1:blocknet.id:a1b2c3d4e5f6:1708531200",
           "signature": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+        }
+      },
+      "VerifyProofRequest": {
+        "type": "object",
+        "required": ["txid", "tx_key", "address"],
+        "properties": {
+          "txid": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Transaction hash (64 hex characters)"
+          },
+          "tx_key": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$",
+            "description": "Deterministic transaction private key from POST /api/wallet/prove (64 hex characters)"
+          },
+          "address": {
+            "type": "string",
+            "description": "Recipient's Blocknet stealth address (base58-encoded)"
+          }
+        },
+        "example": {
+          "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+          "tx_key": "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f",
+          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF"
+        }
+      },
+      "VerifyProofResponse": {
+        "type": "object",
+        "properties": {
+          "txid": { "type": "string", "description": "Transaction hash (echoed back)" },
+          "valid": { "type": "boolean", "description": "True if tx_key corresponds to the transaction's public key" },
+          "total_matched": { "type": "integer", "description": "Sum of amounts the address received in this transaction (atomic units)" },
+          "outputs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ProofOutput" },
+            "description": "Per-output match results"
+          }
+        },
+        "example": {
+          "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+          "valid": true,
+          "total_matched": 250000000,
+          "outputs": [
+            { "index": 0, "match": true, "amount": 250000000, "memo": "invoice 4821" },
+            { "index": 1, "match": false }
+          ]
+        }
+      },
+      "ProofOutput": {
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer", "description": "Output index within the transaction" },
+          "match": { "type": "boolean", "description": "True if this output was received by the address" },
+          "amount": { "type": "integer", "description": "Amount received (atomic units); present only when match is true" },
+          "memo": { "type": "string", "description": "Decrypted memo, if any; present only when match is true" }
         }
       },
       "SendRecipient": {

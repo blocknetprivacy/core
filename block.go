@@ -1386,6 +1386,40 @@ func (c *Chain) NextDifficulty() uint64 {
 	return c.nextDifficultyLocked()
 }
 
+// RecentBlockStats estimates network hashrate (hashes per second) and average
+// block time (seconds) over up to the most recent `samples` block intervals.
+// Returns zeros when there is insufficient history. It must be called without
+// holding c.mu — it acquires read locks internally, per interval.
+func (c *Chain) RecentBlockStats(samples int) (hashrate float64, avgBlockTime float64) {
+	if samples <= 0 {
+		return 0, 0
+	}
+	height := c.Height()
+	if height < 2 {
+		return 0, 0
+	}
+	var totalTime int64
+	var count int
+	for h := height; h > 0 && count < samples; h-- {
+		block := c.GetBlockByHeight(h)
+		prev := c.GetBlockByHeight(h - 1)
+		if block == nil || prev == nil {
+			continue
+		}
+		dt := block.Header.Timestamp - prev.Header.Timestamp
+		if dt > 0 {
+			totalTime += dt
+			count++
+		}
+	}
+	if count == 0 || totalTime == 0 {
+		return 0, 0
+	}
+	avgBlockTime = float64(totalTime) / float64(count)
+	hashrate = float64(c.NextDifficulty()) / avgBlockTime
+	return hashrate, avgBlockTime
+}
+
 // addGenesisBlock adds the genesis block to an empty chain.
 // For all non-genesis blocks, use ProcessBlock.
 func (c *Chain) addGenesisBlock(block *Block) error {

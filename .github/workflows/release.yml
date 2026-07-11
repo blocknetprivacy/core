@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 env:
-  VERSION: "0.15.0"
+  VERSION: "0.16.0"
 
 jobs:
   test:
@@ -40,13 +40,13 @@ jobs:
 
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-linux .
-      
+
       - name: Package
         run: |
           mkdir -p dist
           cp blocknet-core-amd64-linux dist/
           cd dist && zip -q ../blocknet-core-amd64-linux-${{ env.VERSION }}.zip blocknet-core-amd64-linux
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: blocknet-core-amd64-linux-${{ env.VERSION }}
@@ -61,19 +61,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      
+
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
-      
+
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-arm64-linux .
-      
+
       - name: Package
         run: |
           mkdir -p dist
           cp blocknet-core-arm64-linux dist/
           cd dist && zip -q ../blocknet-core-arm64-linux-${{ env.VERSION }}.zip blocknet-core-arm64-linux
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: blocknet-core-arm64-linux-${{ env.VERSION }}
@@ -88,19 +88,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      
+
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
-      
+
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-arm64-macos .
-      
+
       - name: Package
         run: |
           mkdir -p dist
           cp blocknet-core-arm64-macos dist/
           cd dist && zip -q ../blocknet-core-arm64-macos-${{ env.VERSION }}.zip blocknet-core-arm64-macos
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: blocknet-core-arm64-macos-${{ env.VERSION }}
@@ -115,19 +115,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-      
+
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
-      
+
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-macos .
-      
+
       - name: Package
         run: |
           mkdir -p dist
           cp blocknet-core-amd64-macos dist/
           cd dist && zip -q ../blocknet-core-amd64-macos-${{ env.VERSION }}.zip blocknet-core-amd64-macos
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: blocknet-core-amd64-macos-${{ env.VERSION }}
@@ -141,7 +141,7 @@ jobs:
         shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
-      
+
       - uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -151,19 +151,19 @@ jobs:
             mingw-w64-x86_64-rust
             mingw-w64-x86_64-go
             zip
-      
+
       - name: Build Rust library
         run: cd crypto-rs && cargo build --release
-      
+
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-windows.exe .
-      
+
       - name: Package
         run: |
           mkdir -p dist
           cp blocknet-core-amd64-windows.exe dist/
           cd dist && zip -q ../blocknet-core-amd64-windows-${{ env.VERSION }}.zip blocknet-core-amd64-windows.exe
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: blocknet-core-amd64-windows-${{ env.VERSION }}
@@ -177,13 +177,13 @@ jobs:
         with:
           path: releases
           merge-multiple: true
-      
+
       - name: Generate checksums
         run: |
           cd releases
           sha256sum *.zip > SHA256SUMS.txt
           cat SHA256SUMS.txt
-      
+
       - uses: actions/upload-artifact@v4
         with:
           name: blocknet-core-releases-${{ env.VERSION }}
@@ -200,7 +200,7 @@ jobs:
         with:
           name: blocknet-core-releases-${{ env.VERSION }}
           path: releases
-      
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:

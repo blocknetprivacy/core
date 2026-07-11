@@ -36,10 +36,6 @@ type Explorer struct {
 	statsSnapshot   explorerStatsSnapshot
 	statsReady      bool
 	statsRefreshing bool
-
-	supplyMu      sync.Mutex
-	supplyHeight  uint64
-	supplyEmitted uint64
 }
 
 type chartPoint struct {
@@ -147,34 +143,11 @@ func (e *Explorer) Start(addr string) error {
 	return e.httpServer(addr).ListenAndServe()
 }
 
-// Supply info
+// Supply info. Emitted/remaining/percent are a deterministic function of chain
+// height, computed by the shared SupplyBreakdown so the explorer and the
+// GET /api/stats endpoint never disagree.
 func (e *Explorer) getSupplyInfo() (emitted, remaining uint64, pctEmitted float64) {
-	height := e.daemon.chain.Height()
-
-	e.supplyMu.Lock()
-	defer e.supplyMu.Unlock()
-
-	// Handle chain rewind/reorg conservatively by rebuilding from zero.
-	if e.supplyHeight > height {
-		e.supplyHeight = 0
-		e.supplyEmitted = 0
-	}
-	for h := e.supplyHeight + 1; h <= height; h++ {
-		e.supplyEmitted += GetBlockReward(h)
-	}
-	e.supplyHeight = height
-	emitted = e.supplyEmitted
-
-	// Target supply is ~100M coins (before tail emission)
-	targetSupply := uint64(100_000_000 * 100_000_000) // in smallest units
-	if emitted >= targetSupply {
-		remaining = 0
-		pctEmitted = 100.0
-	} else {
-		remaining = targetSupply - emitted
-		pctEmitted = float64(emitted) / float64(targetSupply) * 100
-	}
-	return
+	return SupplyBreakdown(e.daemon.chain.Height())
 }
 
 func (e *Explorer) startStatsPrecompute() {
@@ -298,25 +271,7 @@ func (e *Explorer) buildStatsSnapshot() explorerStatsSnapshot {
 		avgBt = btSum / float64(btCount)
 	}
 
-	var hashrate float64
-	if height >= 2 {
-		var totalTime int64
-		var count int
-		for h := height; h > 0 && count < explorerHashrateSampleCount; h-- {
-			block := chain.GetBlockByHeight(h)
-			prevBlock := chain.GetBlockByHeight(h - 1)
-			if block != nil && prevBlock != nil {
-				blockTime := block.Header.Timestamp - prevBlock.Header.Timestamp
-				if blockTime > 0 {
-					totalTime += blockTime
-					count++
-				}
-			}
-		}
-		if count > 0 && totalTime > 0 {
-			hashrate = float64(chain.NextDifficulty()) / (float64(totalTime) / float64(count))
-		}
-	}
+	hashrate, _ := chain.RecentBlockStats(explorerHashrateSampleCount)
 
 	emitted, remaining, pctEmitted := e.getSupplyInfo()
 	genesisTs := int64(0)

@@ -19,10 +19,16 @@ const (
 	TailEmission  = 200_000_000    // 2.0 coins
 	MonthsToTail  = 48
 	DecayRate     = 0.75 // per year
+
+	// TargetSupply is the approximate cumulative emission before tail
+	// emission takes over (~100M coins), in smallest units. It is the
+	// denominator for emission-progress reporting; tail emission continues
+	// past this asymptote forever, so actual supply exceeds it over time.
+	TargetSupply = 100_000_000 * 100_000_000
 )
 
 // BlocksPerMonth is derived from block interval (defined in block.go)
-// ~8766 blocks/month at 5-minute intervals
+// 8640 blocks/month (30-day month) at 5-minute intervals
 const BlocksPerMonth = (30 * 24 * 60 * 60) / BlockIntervalSec
 
 // MinerConfig holds mining configuration
@@ -388,4 +394,39 @@ func GetBlockReward(height uint64) uint64 {
 		return TailEmission
 	}
 	return uint64(reward)
+}
+
+// TotalEmittedSupply returns the cumulative coins emitted through the given
+// height, in smallest units. The genesis block (height 0) carries no coinbase,
+// so emission is summed from height 1. The block reward is constant within a
+// month, so this sums per month — O(months), not O(height) — which keeps hot
+// callers (the explorer index page, GET /api/stats) cheap as the chain grows.
+// Deterministic and side-effect free.
+func TotalEmittedSupply(height uint64) uint64 {
+	var emitted uint64
+	for h := uint64(1); h <= height; {
+		month := h / BlocksPerMonth
+		monthEnd := (month+1)*BlocksPerMonth - 1
+		if monthEnd > height {
+			monthEnd = height
+		}
+		// GetBlockReward depends only on the month, so any height in the month
+		// yields this month's reward.
+		emitted += (monthEnd - h + 1) * GetBlockReward(month*BlocksPerMonth)
+		h = monthEnd + 1
+	}
+	return emitted
+}
+
+// SupplyBreakdown reports emitted supply, remaining supply toward TargetSupply,
+// and percent emitted at the given height, all in smallest units. Remaining is
+// clamped to zero once emission passes TargetSupply (i.e. into tail emission).
+func SupplyBreakdown(height uint64) (emitted, remaining uint64, pctEmitted float64) {
+	emitted = TotalEmittedSupply(height)
+	if emitted >= TargetSupply {
+		return emitted, 0, 100.0
+	}
+	remaining = TargetSupply - emitted
+	pctEmitted = float64(emitted) / float64(TargetSupply) * 100
+	return emitted, remaining, pctEmitted
 }

@@ -63,6 +63,16 @@ type APIServer struct {
 	// Template cache for compact mining submissions ({template_id, nonce}).
 	templateMu    sync.Mutex
 	templateCache map[string]cachedMiningTemplate
+
+	// Route-scoped abuse control for stateless payment-proof verification.
+	proofLimiter *perIPLimiter
+
+	// Cache for GET /api/stats. The response is a pure function of the chain
+	// tip, so it is memoized and recomputed only when the tip hash changes.
+	statsMu    sync.Mutex
+	statsCache map[string]any
+	statsTip   [32]byte
+	statsValid bool
 }
 
 type cachedMiningTemplate struct {
@@ -218,6 +228,7 @@ func NewAPIServer(daemon *Daemon, w *wallet.Wallet, scanner *wallet.Scanner, dat
 		sendSem:            make(chan struct{}, 1),
 		sendIdem:           newIdempotencyCache(30*24*time.Hour, 4096, filepath.Join(dataDir, "send-idempotency.json")),
 		verifyLimiter:      newPerIPLimiter(rate.Limit(5), 10, 10*time.Minute),
+		proofLimiter:       newPerIPLimiter(rate.Limit(2), 4, 10*time.Minute), // heavier: chain read + per-output ECDH
 		unlockAttempts:     newUnlockAttemptTracker(),
 		templateCache:      make(map[string]cachedMiningTemplate),
 	}

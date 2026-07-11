@@ -270,6 +270,200 @@ func (s *APIServer) handleVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"valid": true})
 }
 
+// statsHashrateSamples is the number of recent block intervals sampled when
+// estimating network hashrate and average block time for GET /api/stats.
+const statsHashrateSamples = 12
+
+// handleStats returns network and emission/economics statistics as numeric
+// JSON, with all amounts in smallest units. No wallet is required; the values
+// are a deterministic function of the chain tip.
+// GET /api/stats
+func (s *APIServer) handleStats(w http.ResponseWriter, r *http.Request) {
+	chain := s.daemon.Chain()
+	tip := chain.BestHash()
+
+	// The response depends only on the chain tip, so serve a memoized copy
+	// while the tip is unchanged and recompute only when a block/reorg lands.
+	s.statsMu.Lock()
+	if s.statsValid && s.statsTip == tip {
+		cached := s.statsCache
+		s.statsMu.Unlock()
+		writeJSON(w, http.StatusOK, cached)
+		return
+	}
+	s.statsMu.Unlock()
+
+	height := chain.Height()
+	emitted, remaining, pctEmitted := SupplyBreakdown(height)
+	hashrate, avgBlockTime := chain.RecentBlockStats(statsHashrateSamples)
+
+	resp := map[string]any{
+		"height":             height,
+		"difficulty":         chain.NextDifficulty(),
+		"network_hashrate":   hashrate,     // hashes/sec, recent sample
+		"avg_block_time":     avgBlockTime, // seconds, recent sample
+		"block_reward":       GetBlockReward(height),
+		"emitted":            emitted,
+		"remaining":          remaining,
+		"target_supply":      uint64(TargetSupply),
+		"pct_emitted":        pctEmitted,
+		"tail_emission":      uint64(TailEmission),
+		"months_to_tail":     int(MonthsToTail),
+		"blocks_per_month":   uint64(BlocksPerMonth),
+		"block_interval_sec": int(BlockIntervalSec),
+	}
+
+	s.statsMu.Lock()
+	s.statsCache = resp
+	s.statsTip = tip
+	s.statsValid = true
+	s.statsMu.Unlock()
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// findTxForProof locates a transaction by hex id, checking the chain then the
+// mempool. blockHeight is 0 for mempool txs (which are never coinbase).
+func (s *APIServer) findTxForProof(txHash string) (tx *Transaction, blockHeight uint64, isCoinbase bool, found bool) {
+	tx, blockHeight, found = s.daemon.Chain().FindTxByHashStr(txHash)
+	if !found {
+		hashBytes, err := hex.DecodeString(txHash)
+		if err == nil && len(hashBytes) == 32 {
+			var txID [32]byte
+			copy(txID[:], hashBytes)
+			tx, found = s.daemon.Mempool().GetTransaction(txID)
+		}
+	}
+	if !found {
+		return nil, 0, false, false
+	}
+	return tx, blockHeight, len(tx.Inputs) == 0, true
+}
+
+// handleVerifyProof verifies a sender's payment proof. Given a txid, the
+// deterministic tx private key (tx_key from POST /api/wallet/prove), and a
+// recipient address, it confirms the tx_key genuinely belongs to the
+// transaction and reveals which of its outputs that address received, with
+// amounts (smallest units) and any memo. Stateless — no wallet required.
+// POST /api/verify-proof
+func (s *APIServer) handleVerifyProof(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	if !s.proofLimiter.allow(ip) {
+		writeError(w, http.StatusTooManyRequests, "verify-proof rate limit exceeded")
+		return
+	}
+
+	var req struct {
+		TxID    string `json:"txid"`
+		TxKey   string `json:"tx_key"`
+		Address string `json:"address"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(req.TxID) != 64 {
+		writeError(w, http.StatusBadRequest, "txid must be 64 hex characters")
+		return
+	}
+	if _, err := hex.DecodeString(req.TxID); err != nil {
+		writeError(w, http.StatusBadRequest, "txid must be 64 hex characters")
+		return
+	}
+	if len(req.TxKey) != 64 {
+		writeError(w, http.StatusBadRequest, "tx_key must be 64 hex characters")
+		return
+	}
+	if req.Address == "" {
+		writeError(w, http.StatusBadRequest, "address is required")
+		return
+	}
+
+	txKeyBytes, err := hex.DecodeString(req.TxKey)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tx_key hex")
+		return
+	}
+	var txPriv [32]byte
+	copy(txPriv[:], txKeyBytes)
+
+	spendPub, viewPub, err := parseValidatedAddress(req.Address)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid address")
+		return
+	}
+
+	tx, blockHeight, isCoinbase, found := s.findTxForProof(req.TxID)
+	if !found {
+		writeError(w, http.StatusNotFound, "transaction not found")
+		return
+	}
+
+	// The proof holds only if the prover knows r such that r*G equals the
+	// transaction's on-chain public key. A well-formed but non-matching tx_key
+	// is a legitimate "invalid proof" result (200), mirroring POST /api/verify.
+	derivedPub, err := ScalarToPubKey(txPriv)
+	if err != nil || derivedPub != tx.TxPublicKey {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"txid":          req.TxID,
+			"valid":         false,
+			"total_matched": uint64(0),
+			"outputs":       []any{},
+		})
+		return
+	}
+
+	// ECDH is symmetric: H(tx_priv * view_pub) == H(view_priv * tx_pub), so the
+	// recipient's outputs can be identified from the sender side.
+	outputs, totalMatched := matchProofOutputs(tx, txPriv, spendPub, viewPub, isCoinbase, blockHeight)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"txid":          req.TxID,
+		"valid":         true,
+		"total_matched": totalMatched,
+		"outputs":       outputs,
+	})
+}
+
+// matchProofOutputs reports, for each output of tx, whether the recipient
+// (spendPub/viewPub) received it and — for matches — the amount (atomic units)
+// and any memo, using the sender's tx private key. It mirrors the explorer
+// prove-send crypto and is factored out so the match logic is unit-testable
+// without a live chain lookup.
+func matchProofOutputs(tx *Transaction, txPriv, spendPub, viewPub [32]byte, isCoinbase bool, blockHeight uint64) (outputs []map[string]any, totalMatched uint64) {
+	outputs = make([]map[string]any, 0, len(tx.Outputs))
+	for i, out := range tx.Outputs {
+		if !CheckStealthOutput(spendPub, txPriv, viewPub, out.PublicKey) {
+			outputs = append(outputs, map[string]any{"index": i, "match": false})
+			continue
+		}
+
+		var blinding [32]byte
+		var memo string
+		if isCoinbase {
+			blinding = wallet.DeriveCoinbaseConsensusBlinding(tx.TxPublicKey, blockHeight, i)
+		} else {
+			secret, serr := DeriveStealthSecretSender(txPriv, viewPub)
+			if serr == nil {
+				blinding = wallet.DeriveBlinding(secret, i)
+				if m, ok := wallet.DecryptMemo(out.EncryptedMemo, secret, i); ok && len(m) > 0 {
+					memo = string(m)
+				}
+			}
+		}
+
+		amount := wallet.DecryptAmount(out.EncryptedAmount, blinding, i)
+		totalMatched += amount
+
+		entry := map[string]any{"index": i, "match": true, "amount": amount}
+		if memo != "" {
+			entry["memo"] = memo
+		}
+		outputs = append(outputs, entry)
+	}
+	return outputs, totalMatched
+}
+
 // ============================================================================
 // Wallet handlers (require loaded + unlocked wallet)
 // ============================================================================

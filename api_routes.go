@@ -13,7 +13,9 @@ func (s *APIServer) registerPublicRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/mempool/txs", s.handleMempoolTxs)
 	mux.HandleFunc("GET /api/peers", s.handlePeers)
 	mux.HandleFunc("GET /api/peers/banned", s.handleBannedPeers)
+	mux.HandleFunc("GET /api/stats", s.handleStats)
 	mux.HandleFunc("POST /api/verify", s.handleVerify)
+	mux.HandleFunc("POST /api/verify-proof", s.handleVerifyProof)
 }
 
 // registerPrivateRoutes adds wallet, mining, and control endpoints.
