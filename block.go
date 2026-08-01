@@ -1399,6 +1399,7 @@ func (c *Chain) RecentBlockStats(samples int) (hashrate float64, avgBlockTime fl
 		return 0, 0
 	}
 	var totalTime int64
+	var totalWork uint64
 	var count int
 	for h := height; h > 0 && count < samples; h-- {
 		block := c.GetBlockByHeight(h)
@@ -1409,6 +1410,7 @@ func (c *Chain) RecentBlockStats(samples int) (hashrate float64, avgBlockTime fl
 		dt := block.Header.Timestamp - prev.Header.Timestamp
 		if dt > 0 {
 			totalTime += dt
+			totalWork += block.Header.Difficulty
 			count++
 		}
 	}
@@ -1416,7 +1418,10 @@ func (c *Chain) RecentBlockStats(samples int) (hashrate float64, avgBlockTime fl
 		return 0, 0
 	}
 	avgBlockTime = float64(totalTime) / float64(count)
-	hashrate = float64(c.NextDifficulty()) / avgBlockTime
+	// Each sampled interval ended with `block`, so its observed work is that
+	// block's difficulty. Using the next-block difficulty here biases the
+	// estimate whenever difficulty changes during the sample window.
+	hashrate = float64(totalWork) / float64(totalTime)
 	return hashrate, avgBlockTime
 }
 
