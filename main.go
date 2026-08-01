@@ -19,7 +19,7 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.18.0"
+const Version = "0.19.0"
 
 type peerIDListFlag []string
 

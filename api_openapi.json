@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
-    "version": "0.17.0",
+    "version": "0.19.0",
     "license": {
       "name": "MIT"
     }
@@ -1256,6 +1256,85 @@
                     }
                   ]
                 }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/WalletLocked" },
+          "503": { "$ref": "#/components/responses/NoWallet" }
+        }
+      }
+    },
+    "/api/wallet/history/page": {
+      "get": {
+        "operationId": "getHistoryPage",
+        "tags": ["Wallet"],
+        "summary": "Paginated wallet output history",
+        "description": "Same wallet outputs as GET /api/wallet/history, but returned newest-first in deterministic pages so busy wallets do not have to ship their entire output set at once. Ordering is stable across pages: pending outputs (block_height 0) first, then descending block height, then txid, then output index. Page with limit/offset and use the total field to know when to stop. The unpaginated /api/wallet/history endpoint remains available and unchanged. Requires unlocked wallet.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 0, "maximum": 500, "default": 20 },
+            "description": "Maximum number of outputs to return. Values above 500 are clamped to 500."
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer", "minimum": 0, "default": 0 },
+            "description": "Number of sorted outputs to skip."
+          },
+          {
+            "name": "order",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string", "enum": ["desc", "asc"], "default": "desc" },
+            "description": "Sort direction. desc is newest-first (pending, then descending block height); asc reverses it. Ties break by txid then output index."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Paginated wallet output list",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/WalletHistoryPageResponse" },
+                "example": {
+                  "count": 2,
+                  "total": 4213,
+                  "limit": 20,
+                  "offset": 0,
+                  "order": "desc",
+                  "outputs": [
+                    {
+                      "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+                      "output_index": 0,
+                      "amount": 500000000,
+                      "block_height": 14100,
+                      "is_coinbase": false,
+                      "spent": false
+                    },
+                    {
+                      "txid": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d",
+                      "output_index": 1,
+                      "amount": 750000000,
+                      "block_height": 13990,
+                      "is_coinbase": false,
+                      "spent": true,
+                      "spent_height": 14050
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pagination or order query",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "order must be asc or desc" }
               }
             }
           },
@@ -3694,6 +3773,36 @@
           "sends": {
             "type": "array",
             "items": { "$ref": "#/components/schemas/WalletSendEntry" }
+          }
+        }
+      },
+      "WalletHistoryPageResponse": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "Number of outputs returned in this response"
+          },
+          "total": {
+            "type": "integer",
+            "description": "Total wallet outputs available before pagination"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Effective page size"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "Requested page offset"
+          },
+          "order": {
+            "type": "string",
+            "enum": ["desc", "asc"],
+            "description": "Effective sort order"
+          },
+          "outputs": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/OutputEntry" }
           }
         }
       },

@@ -567,6 +567,118 @@ func (s *APIServer) handleHistory(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GET /api/wallet/history/page
+// Paginated view of the same wallet outputs as handleHistory. Busy wallets can
+// hold thousands of outputs; this lets a client fetch them newest-first in
+// fixed-size pages instead of shipping the entire set at once. The unpaginated
+// /api/wallet/history endpoint is left untouched for backward compatibility.
+func (s *APIServer) handleHistoryPage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	limit, err := parseWalletSendsIntQuery(r, "limit", 20, 0, 500)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	offset, err := parseWalletSendsIntQuery(r, "offset", 0, 0, 0)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	order := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("order")))
+	if order == "" {
+		order = "desc"
+	}
+	if order != "desc" && order != "asc" {
+		writeError(w, http.StatusBadRequest, "order must be asc or desc")
+		return
+	}
+
+	type outputEntry struct {
+		TxID        string `json:"txid"`
+		OutputIndex int    `json:"output_index"`
+		Amount      uint64 `json:"amount"`
+		BlockHeight uint64 `json:"block_height"`
+		IsCoinbase  bool   `json:"is_coinbase"`
+		Spent       bool   `json:"spent"`
+		SpentHeight uint64 `json:"spent_height,omitempty"`
+		MemoHex     string `json:"memo_hex,omitempty"`
+	}
+
+	outputs := s.wallet.AllOutputs()
+
+	// Precompute hex txids once so the comparator stays cheap.
+	txidHex := make(map[*wallet.OwnedOutput]string, len(outputs))
+	for _, out := range outputs {
+		txidHex[out] = fmt.Sprintf("%x", out.TxID)
+	}
+
+	// Canonical newest-first total order over (txid, output_index) unique keys:
+	// unconfirmed (block_height 0) first, then descending block height, with
+	// txid then output index as tie-breakers. Because (txid, output_index) is
+	// unique this is a strict total order, so a page never overlaps or skips an
+	// output. order=asc is the exact reverse of this order (matching the sibling
+	// /api/wallet/sends endpoint), not just a re-sort of the primary key.
+	descLess := func(a, b *wallet.OwnedOutput) bool {
+		aPending := a.BlockHeight == 0
+		bPending := b.BlockHeight == 0
+		if aPending != bPending {
+			return aPending
+		}
+		if a.BlockHeight != b.BlockHeight {
+			return a.BlockHeight > b.BlockHeight
+		}
+		if txidHex[a] != txidHex[b] {
+			return txidHex[a] < txidHex[b]
+		}
+		return a.OutputIndex < b.OutputIndex
+	}
+	sort.SliceStable(outputs, func(i, j int) bool {
+		if order == "asc" {
+			return descLess(outputs[j], outputs[i])
+		}
+		return descLess(outputs[i], outputs[j])
+	})
+
+	total := len(outputs)
+	start := offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	page := outputs[start:end]
+
+	entries := make([]outputEntry, len(page))
+	for i, out := range page {
+		entries[i] = outputEntry{
+			TxID:        txidHex[out],
+			OutputIndex: out.OutputIndex,
+			Amount:      out.Amount,
+			BlockHeight: out.BlockHeight,
+			IsCoinbase:  out.IsCoinbase,
+			Spent:       out.Spent,
+			SpentHeight: out.SpentHeight,
+		}
+		if len(out.Memo) > 0 {
+			entries[i].MemoHex = hex.EncodeToString(out.Memo)
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"count":   len(entries),
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+		"order":   order,
+		"outputs": entries,
+	})
+}
+
 func parseWalletSendsIntQuery(r *http.Request, name string, defaultValue, minValue, maxValue int) (int, error) {
 	raw := strings.TrimSpace(r.URL.Query().Get(name))
 	if raw == "" {
