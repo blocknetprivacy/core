@@ -1,11 +1,13 @@
 [package]
 name = "crypto-rs"
-version = "0.17.0"
+version = "0.17.1"
 edition = "2021"
 
 [lib]
 name = "blocknet_crypto"
-crate-type = ["cdylib", "staticlib"]
+# rlib added so Rust crates (the PQC signature benchmark) can link the real RingCT
+# code directly; cdylib/staticlib remain for the Go node's cgo FFI. Additive only.
+crate-type = ["rlib", "cdylib", "staticlib"]
 
 [dependencies]
 curve25519-dalek = "4.1"

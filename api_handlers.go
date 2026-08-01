@@ -1135,7 +1135,14 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	height := s.daemon.Chain().Height()
 	spendable := s.wallet.SpendableBalance(height)
 	if spendable < totalSend {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient spendable balance: have %d, need %d", spendable, totalSend))
+		pending := s.wallet.PendingBalance(height)
+		if pending > 0 {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient spendable balance: have %s spendable + %s pending (confirming), need %s",
+				formatAmount(spendable), formatAmount(pending), formatAmount(totalSend)))
+		} else {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient spendable balance: have %s, need %s",
+				formatAmount(spendable), formatAmount(totalSend)))
+		}
 		return
 	}
 
@@ -1400,8 +1407,8 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 		need, ok := wallet.AddU64(totalSend, fee)
 		if !ok || inputTotal < need {
 			writeError(w, http.StatusBadRequest, fmt.Sprintf(
-				"insufficient input amount: inputs total %d, need at least %d (amount %d + fee %d)",
-				inputTotal, totalSend+fee, totalSend, fee))
+				"insufficient input amount: inputs total %s, need at least %s (amount %s + fee %s)",
+				formatAmount(inputTotal), formatAmount(totalSend+fee), formatAmount(totalSend), formatAmount(fee)))
 			return
 		}
 

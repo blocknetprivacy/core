@@ -185,7 +185,7 @@ func (b *Builder) Transfer(recipients []Recipient, feeRate uint64, currentHeight
 			}
 		}
 		if totalInput < need {
-			return nil, fmt.Errorf("insufficient funds after selection: have %d need %d", totalInput, need)
+			return nil, fmt.Errorf("insufficient funds after selection: have %s need %s", FormatBNT(totalInput), FormatBNT(need))
 		}
 
 		change := totalInput - totalSend - fee
@@ -264,7 +264,7 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 		return nil, errors.New("send amount + fee overflows uint64")
 	}
 	if totalInput < need {
-		return nil, fmt.Errorf("insufficient funds after fee adjustment: have %d need %d", totalInput, need)
+		return nil, fmt.Errorf("insufficient funds after fee adjustment: have %s need %s", FormatBNT(totalInput), FormatBNT(need))
 	}
 	change := totalInput - totalSend - fee
 
@@ -480,7 +480,7 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 	fee := max(b.config.MinFee, uint64(estimatedSize)*feeRate)
 
 	if totalInput <= fee {
-		return nil, fmt.Errorf("balance too small to cover fee: have %d, fee %d", totalInput, fee)
+		return nil, fmt.Errorf("balance too small to cover fee: have %s, fee %s", FormatBNT(totalInput), FormatBNT(fee))
 	}
 
 	sendAmount := totalInput - fee

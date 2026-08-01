@@ -706,8 +706,8 @@ func (b *TxBuilder) Build(utxoSet *UTXOSet) (*Transaction, error) {
 		return nil, fmt.Errorf("output amount + fee overflows uint64")
 	}
 	if inputSum != outputPlusFee {
-		return nil, fmt.Errorf("amounts don't balance: inputs=%d, outputs=%d, fee=%d",
-			inputSum, outputSum, b.fee)
+		return nil, fmt.Errorf("amounts don't balance: inputs=%s, outputs=%s, fee=%s",
+			formatAmount(inputSum), formatAmount(outputSum), formatAmount(b.fee))
 	}
 
 	tx := &Transaction{
