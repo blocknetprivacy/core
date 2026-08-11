@@ -4,6 +4,7 @@ import (
 	"blocknet/p2p"
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	bolt "go.etcd.io/bbolt"
 )
 
 func mustCreateTestChain(t *testing.T) (*Chain, *Storage, func()) {
@@ -192,4 +194,164 @@ func assertPeerPenalized(t *testing.T, n *p2p.Node, pid peer.ID, minPenalty int)
 	if !n.IsBanned(pid) {
 		t.Fatalf("expected peer %s to be penalized/banned (minPenalty=%d)", pid, minPenalty)
 	}
+}
+func makeOutputOnlyTestBlock(height uint64, prevHash [32]byte, timestamp int64, outputs []TxOutput) *Block {
+	return &Block{
+		Header: BlockHeader{
+			Version:    1,
+			Height:     height,
+			PrevHash:   prevHash,
+			Timestamp:  timestamp,
+			Difficulty: MinDifficulty,
+		},
+		Transactions: []*Transaction{
+			{
+				Version: 1,
+				Outputs: outputs,
+			},
+		},
+	}
+}
+
+func blockOutputsForCommit(t *testing.T, block *Block) []*UTXO {
+	t.Helper()
+
+	var outputs []*UTXO
+	for _, tx := range block.Transactions {
+		txID, err := tx.TxID()
+		if err != nil {
+			t.Fatalf("failed to hash tx outputs: %v", err)
+		}
+		for idx, out := range tx.Outputs {
+			outputs = append(outputs, &UTXO{
+				TxID:        txID,
+				OutputIndex: uint32(idx),
+				Output:      out,
+				BlockHeight: block.Header.Height,
+			})
+		}
+	}
+	return outputs
+}
+
+func commitMainChainBlockForTest(t *testing.T, chain *Chain, storage *Storage, block *Block, work uint64) {
+	t.Helper()
+
+	hash := block.Hash()
+	if err := storage.CommitBlock(&BlockCommit{
+		Block:      block,
+		Height:     block.Header.Height,
+		Hash:       hash,
+		Work:       work,
+		IsMainTip:  true,
+		NewOutputs: blockOutputsForCommit(t, block),
+	}); err != nil {
+		t.Fatalf("failed to commit block at height %d: %v", block.Header.Height, err)
+	}
+
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+	chain.blocks[hash] = block
+	chain.workAt[hash] = work
+	chain.byHeight[block.Header.Height] = hash
+	chain.bestHash = hash
+	chain.height = block.Header.Height
+	chain.totalWork = work
+	chain.canonicalRingIndexDirty = true
+	// The real commit paths publish the tip snapshot on every tip change, and
+	// lock-free readers are served from it. A helper that skips this leaves
+	// them reading height 0.
+	chain.publishTipLocked()
+}
+
+func mustClearTxIndexForTest(t *testing.T, s *Storage) {
+	t.Helper()
+
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		if err := tx.DeleteBucket(bucketTxIndex); err != nil {
+			return err
+		}
+		if _, err := tx.CreateBucket(bucketTxIndex); err != nil {
+			return err
+		}
+		return tx.Bucket(bucketMeta).Delete(metaKeyTxIndexBuilt)
+	}); err != nil {
+		t.Fatalf("failed to clear tx index: %v", err)
+	}
+	s.setTxIndexBuilt(false)
+}
+
+func mustEvictBlockFromChainCacheForTest(t *testing.T, chain *Chain, height uint64) {
+	t.Helper()
+
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+
+	hash, ok := chain.byHeight[height]
+	if !ok {
+		t.Fatalf("height %d not in the chain height index", height)
+	}
+	chain.cacheForgetLocked(hash)
+}
+
+func mustPutLegacyJSONBlockForTest(t *testing.T, s *Storage, block *Block) {
+	t.Helper()
+
+	data, err := json.Marshal(block)
+	if err != nil {
+		t.Fatalf("failed to marshal legacy block: %v", err)
+	}
+	hash := block.Hash()
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketBlocks).Put(hash[:], data)
+	}); err != nil {
+		t.Fatalf("failed to write legacy block: %v", err)
+	}
+}
+
+func mustDeleteMainChainHeightForTest(t *testing.T, s *Storage, height uint64) {
+	t.Helper()
+
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketHeights).Delete(heightKey(height))
+	}); err != nil {
+		t.Fatalf("failed to delete height %d: %v", height, err)
+	}
+}
+
+func mustPutLegacyJSONOutputForTest(t *testing.T, s *Storage, output *UTXO) {
+	t.Helper()
+
+	data, err := json.Marshal(output)
+	if err != nil {
+		t.Fatalf("failed to marshal legacy output: %v", err)
+	}
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketOutputs).Put(outpointKey(output.TxID, output.OutputIndex), data)
+	}); err != nil {
+		t.Fatalf("failed to write legacy output: %v", err)
+	}
+}
+
+func mustSeedMempoolTx(t *testing.T, mempool *Mempool, tx *Transaction) [32]byte {
+	t.Helper()
+
+	txID, err := tx.TxID()
+	if err != nil {
+		t.Fatalf("failed to hash mempool tx: %v", err)
+	}
+	data := tx.Serialize()
+
+	mempool.mu.Lock()
+	defer mempool.mu.Unlock()
+	mempool.txByID[txID] = &MempoolEntry{
+		Tx:      tx,
+		TxID:    txID,
+		TxData:  data,
+		Fee:     tx.Fee,
+		FeeRate: 1,
+		Size:    len(data),
+		AddedAt: time.Now(),
+	}
+	return txID
 }

@@ -19,7 +19,7 @@ import (
 	"blocknet/wallet"
 )
 
-const Version = "0.19.0"
+const Version = "0.20.0"
 
 type peerIDListFlag []string
 
@@ -365,19 +365,25 @@ func outputPeerAddress(dataDir, listenAddr string) error {
 	return nil
 }
 
+// publicIPServices are third parties, so the reply is read under a cap. An
+// address is a few dozen bytes; without the cap a hostile or broken service
+// could stream until the node runs out of memory. Mirrors seed_resolve.go.
+var publicIPServices = []string{
+	"https://api.ipify.org",
+	"https://ifconfig.me/ip",
+	"https://icanhazip.com",
+}
+
+const publicIPMaxResponseBytes = 256
+
 func detectPublicIP() (string, error) {
-	services := []string{
-		"https://api.ipify.org",
-		"https://ifconfig.me/ip",
-		"https://icanhazip.com",
-	}
 	client := &http.Client{Timeout: 5 * time.Second}
-	for _, svc := range services {
+	for _, svc := range publicIPServices {
 		resp, err := client.Get(svc)
 		if err != nil {
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, publicIPMaxResponseBytes))
 		resp.Body.Close()
 		if err != nil {
 			continue

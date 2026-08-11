@@ -1145,6 +1145,7 @@ func (d *Daemon) processTxData(data []byte) error {
 
 // Stats returns daemon statistics
 type DaemonStats struct {
+	PID               int    `json:"pid"`
 	PeerID            string `json:"peer_id"`
 	Peers             int    `json:"peers"`
 	ChainHeight       uint64 `json:"chain_height"`
@@ -1165,6 +1166,7 @@ func (d *Daemon) Stats() DaemonStats {
 	mempoolStats := d.mempool.Stats()
 
 	stats := DaemonStats{
+		PID:               os.Getpid(),
 		PeerID:            d.node.PeerID().String(),
 		Peers:             len(d.node.Peers()),
 		ChainHeight:       height,

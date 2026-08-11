@@ -293,13 +293,15 @@ func (s *APIServer) handleStats(w http.ResponseWriter, r *http.Request) {
 	}
 	s.statsMu.Unlock()
 
-	height := chain.Height()
+	// Lock-free reads: this runs on a request, and c.mu is held for the whole
+	// of block validation. A stats page has no reason to wait on that.
+	height := chain.HeightFast()
 	emitted, remaining, pctEmitted := SupplyBreakdown(height)
 	hashrate, avgBlockTime := chain.RecentBlockStats(statsHashrateSamples)
 
 	resp := map[string]any{
 		"height":             height,
-		"difficulty":         chain.NextDifficulty(),
+		"difficulty":         chain.NextDifficultyFast(),
 		"network_hashrate":   hashrate,     // hashes/sec, recent sample
 		"avg_block_time":     avgBlockTime, // seconds, recent sample
 		"block_reward":       GetBlockReward(height),
@@ -3058,45 +3060,16 @@ func (s *APIServer) walletSendChainStates(txIDs [][32]byte, chainHeight uint64) 
 		pending[txID] = struct{}{}
 	}
 
-	storage := s.daemon.Chain().Storage()
-	if storage != nil && len(pending) > 0 {
-	scan:
-		for height := chainHeight; ; height-- {
-			hash, found := storage.GetBlockHashByHeight(height)
-			if !found {
-				if height == 0 {
-					break
-				}
-				continue
-			}
-
-			block, err := storage.GetBlock(hash)
-			if err == nil && block != nil {
-				for _, tx := range block.Transactions {
-					txID, _ := tx.TxID()
-					if _, ok := pending[txID]; !ok {
-						continue
-					}
-
-					confirmations := uint64(0)
-					if chainHeight >= height {
-						confirmations = chainHeight - height + 1
-					}
-					states[txID] = walletSendChainState{
-						chainState:    "confirmed",
-						confirmations: confirmations,
-					}
-					delete(pending, txID)
-					if len(pending) == 0 {
-						break scan
-					}
-				}
-			}
-
-			if height == 0 {
-				break
-			}
+	for txID, height := range s.daemon.Chain().FindTxHeights(pending) {
+		confirmations := uint64(0)
+		if chainHeight >= height {
+			confirmations = chainHeight - height + 1
 		}
+		states[txID] = walletSendChainState{
+			chainState:    "confirmed",
+			confirmations: confirmations,
+		}
+		delete(pending, txID)
 	}
 
 	for txID := range pending {

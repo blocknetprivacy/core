@@ -6,8 +6,8 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
-	"math/bits"
 	"math/big"
+	"math/bits"
 	"sync"
 
 	"blocknet/protocol/params"
@@ -84,11 +84,19 @@ type Transaction struct {
 
 	// TxPublicKey is used for stealth address derivation
 	TxPublicKey [32]byte `json:"tx_public_key"`
+
+	// txidOnce/txidValue memoize TxID. A Transaction is immutable once built:
+	// callers must not mutate it after the first TxID call.
+	txidOnce  sync.Once
+	txidValue [32]byte
 }
 
 // TxID returns the transaction ID (sha3-256 of canonical binary serialization).
 func (tx *Transaction) TxID() ([32]byte, error) {
-	return sha3.Sum256(tx.Serialize()), nil
+	tx.txidOnce.Do(func() {
+		tx.txidValue = sha3.Sum256(tx.Serialize())
+	})
+	return tx.txidValue, nil
 }
 
 // IsCoinbase returns true if this is a coinbase (mining reward) transaction
@@ -237,18 +245,25 @@ func (tx *Transaction) SigningHash() [32]byte {
 //
 //	then outputCount outputs, then inputCount inputs.
 func DeserializeTx(data []byte) (*Transaction, error) {
+	return deserializeTx(data, RingSize)
+}
+
+// deserializeTx takes the ring-size ceiling as a parameter. Consensus callers
+// pass RingSize through DeserializeTx; storage passes a permanent protocol
+// maximum so a node can still read history written under a different one.
+func deserializeTx(data []byte, ringCeiling int) (*Transaction, error) {
 	const (
-		maxInputs     = 256
-		maxOutputs    = 256
+		maxInputs  = 256
+		maxOutputs = 256
 		// Practical protocol ceilings:
-		// - ring size is fixed at RingSize for relaunch format
 		// - Bulletproof range proofs are bounded well below 1024 bytes in this implementation
-		// - RingCT signature is fixed-size given ringSize: 96 + 64*n
-		maxRingSize   = RingSize
 		maxProofSize  = 1024
-		maxSigSize    = 96 + 64*RingSize
 		minHeaderSize = 1 + 32 + 4 + 4 + 8 // 49 bytes
 	)
+
+	// RingCT signature is fixed-size given ringSize: 96 + 64*n
+	maxRingSize := uint32(ringCeiling)
+	maxSigSize := uint32(96 + 64*ringCeiling)
 
 	if len(data) < minHeaderSize {
 		return nil, fmt.Errorf("tx data too short: %d bytes", len(data))

@@ -36,6 +36,7 @@ func TestRecentBlockStatsUsesObservedIntervalWork(t *testing.T) {
 	chain.mu.Lock()
 	chain.height = 3
 	chain.bestHash = prev.Hash()
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	hashrate, avgBlockTime := chain.RecentBlockStats(3)

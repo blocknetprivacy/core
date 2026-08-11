@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"container/heap"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -36,13 +38,13 @@ func DefaultMempoolConfig() MempoolConfig {
 // MempoolEntry represents a transaction in the mempool
 type MempoolEntry struct {
 	Tx      *Transaction
-	TxID    [32]byte   // Transaction ID hash
-	TxData  []byte     // Serialized transaction
-	Fee     uint64     // Transaction fee
-	FeeRate uint64     // Fee per byte
-	Size    int        // Size in bytes
-	AddedAt time.Time  // When added to mempool
-	Height  uint64     // Block height when added
+	TxID    [32]byte  // Transaction ID hash
+	TxData  []byte    // Serialized transaction
+	Fee     uint64    // Transaction fee
+	FeeRate uint64    // Fee per byte
+	Size    int       // Size in bytes
+	AddedAt time.Time // When added to mempool
+	Height  uint64    // Block height when added
 
 	// For priority queue
 	index int
@@ -271,20 +273,20 @@ func (m *Mempool) GetTransactionsForBlockSnapshot(maxSize int, maxCount int) ([]
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Collect entries sorted by fee rate (priority queue gives us this)
 	entries := make([]*MempoolEntry, 0, len(m.txByID))
 	for _, entry := range m.txByID {
 		entries = append(entries, entry)
 	}
 
-	// Sort by fee rate descending
-	for i := 0; i < len(entries)-1; i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].FeeRate > entries[i].FeeRate {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
+	// Fee rate descending, then TxID. Selection is miner policy, not a
+	// validation rule, but the tie-break makes a template reproducible instead
+	// of depending on map iteration order.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].FeeRate != entries[j].FeeRate {
+			return entries[i].FeeRate > entries[j].FeeRate
 		}
-	}
+		return bytes.Compare(entries[i].TxID[:], entries[j].TxID[:]) < 0
+	})
 
 	// Select transactions
 	result := make([]*Transaction, 0, maxCount)
@@ -510,19 +512,22 @@ func (m *Mempool) GetAllEntries() []*MempoolEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Copies, not the live entries: MempoolEntry.index is mutated by the
+	// priority queue, so a caller reading after the lock drops would race.
 	entries := make([]*MempoolEntry, 0, len(m.txByID))
 	for _, entry := range m.txByID {
-		entries = append(entries, entry)
+		snapshot := *entry
+		entries = append(entries, &snapshot)
 	}
 
-	// Sort by fee rate descending
-	for i := 0; i < len(entries)-1; i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].FeeRate > entries[i].FeeRate {
-				entries[i], entries[j] = entries[j], entries[i]
-			}
+	// Fee rate descending, then TxID, so equal-fee transactions keep a stable
+	// order instead of following map iteration.
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].FeeRate != entries[j].FeeRate {
+			return entries[i].FeeRate > entries[j].FeeRate
 		}
-	}
+		return bytes.Compare(entries[i].TxID[:], entries[j].TxID[:]) < 0
+	})
 
 	return entries
 }

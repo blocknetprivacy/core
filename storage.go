@@ -3,13 +3,21 @@ package main
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	bolt "go.etcd.io/bbolt"
 )
+
+// chainDBLockTimeout bounds the wait for the database file lock. Without it
+// bbolt blocks forever, so a second node on the same data dir hangs silently
+// instead of failing with a message anyone can act on.
+const chainDBLockTimeout = 5 * time.Second
 
 // Bucket names
 var (
@@ -27,6 +35,39 @@ var (
 // Storage wraps bbolt for chain persistence
 type Storage struct {
 	db *bolt.DB
+
+	// tipMu guards the cached tip. Storage is the only writer of the tip
+	// metadata, so the cache is authoritative once loaded at open.
+	tipMu     sync.RWMutex
+	tipHash   [32]byte
+	tipHeight uint64
+	tipWork   uint64
+	tipFound  bool
+
+	txIndexMu    sync.RWMutex
+	txIndexBuilt bool
+}
+
+// decodeBlock is the single seam for reading a stored block. It accepts either
+// the current binary format or the legacy JSON one, so an upgraded node reads
+// its existing database in place with no resync.
+func decodeBlock(data []byte) (*Block, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("cannot decode empty block record")
+	}
+
+	switch data[0] {
+	case blockFormatBinaryV1:
+		return decodeBlockBinaryV1(data)
+	case blockFormatJSONMark:
+		block := &Block{}
+		if err := json.Unmarshal(data, block); err != nil {
+			return nil, err
+		}
+		return block, nil
+	default:
+		return nil, fmt.Errorf("unknown stored block format tag 0x%02x", data[0])
+	}
 }
 
 func heightKey(height uint64) []byte {
@@ -66,15 +107,19 @@ func NewStorage(dataDir string) (*Storage, error) {
 
 	dbPath := filepath.Join(dataDir, DefaultChainDBFilename)
 	db, err := bolt.Open(dbPath, 0600, &bolt.Options{
-		NoSync: false, // Ensure durability
+		NoSync:  false, // Ensure durability
+		Timeout: chainDBLockTimeout,
 	})
 	if err != nil {
+		if errors.Is(err, bolt.ErrTimeout) {
+			return nil, fmt.Errorf("another blocknet process is already using %s; stop it first", dataDir)
+		}
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
 	// Create buckets
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{bucketBlocks, bucketHeights, bucketOutputs, bucketKeyImages, bucketMeta} {
+		for _, bucket := range [][]byte{bucketBlocks, bucketHeights, bucketOutputs, bucketKeyImages, bucketMeta, bucketTxIndex} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return err
 			}
@@ -88,7 +133,60 @@ func NewStorage(dataDir string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to create buckets: %w", err)
 	}
 
-	return &Storage{db: db}, nil
+	s := &Storage{db: db}
+	if err := s.loadTipCache(); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to load tip metadata: %w (additionally failed to close db: %v)", err, closeErr)
+		}
+		return nil, fmt.Errorf("failed to load tip metadata: %w", err)
+	}
+
+	if err := s.backfillTxIndex(); err != nil {
+		if closeErr := db.Close(); closeErr != nil {
+			return nil, fmt.Errorf("failed to build transaction index: %w (additionally failed to close db: %v)", err, closeErr)
+		}
+		return nil, fmt.Errorf("failed to build transaction index: %w", err)
+	}
+
+	return s, nil
+}
+
+// loadTipCache reads the persisted tip into the in-memory cache. Called once at
+// open; afterwards the cache is refreshed by every path that writes the tip.
+func (s *Storage) loadTipCache() error {
+	var hash [32]byte
+	var height, work uint64
+	var found bool
+
+	if err := s.db.View(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bucketMeta)
+
+		if data := meta.Get(metaKeyTip); data != nil {
+			copy(hash[:], data)
+			found = true
+		}
+		if data := meta.Get(metaKeyHeight); len(data) == 8 {
+			height = binary.BigEndian.Uint64(data)
+		}
+		if data := meta.Get(metaKeyWork); len(data) == 8 {
+			work = binary.BigEndian.Uint64(data)
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	s.setTipCache(hash, height, work, found)
+	return nil
+}
+
+func (s *Storage) setTipCache(hash [32]byte, height, work uint64, found bool) {
+	s.tipMu.Lock()
+	s.tipHash = hash
+	s.tipHeight = height
+	s.tipWork = work
+	s.tipFound = found
+	s.tipMu.Unlock()
 }
 
 // Close closes the database
@@ -107,7 +205,7 @@ func (s *Storage) SaveBlock(block *Block) error {
 	}
 
 	hash := block.Hash()
-	data, err := json.Marshal(block)
+	data, err := encodeBlock(block)
 	if err != nil {
 		return err
 	}
@@ -130,8 +228,12 @@ func (s *Storage) GetBlock(hash [32]byte) (*Block, error) {
 		if data == nil {
 			return nil // Not found
 		}
-		block = &Block{}
-		return json.Unmarshal(data, block)
+		decoded, err := decodeBlock(data)
+		if err != nil {
+			return err
+		}
+		block = decoded
+		return nil
 	})
 
 	return block, err
@@ -211,7 +313,7 @@ func outpointKey(txid [32]byte, index uint32) []byte {
 // SaveOutput stores an output (never deleted - needed for ring selection)
 func (s *Storage) SaveOutput(output *UTXO) error {
 	key := outpointKey(output.TxID, output.OutputIndex)
-	data, err := json.Marshal(output)
+	data, err := encodeUTXO(output)
 	if err != nil {
 		return err
 	}
@@ -231,8 +333,12 @@ func (s *Storage) GetOutput(txid [32]byte, index uint32) (*UTXO, error) {
 		if data == nil {
 			return nil
 		}
-		output = &UTXO{}
-		return json.Unmarshal(data, output)
+		decoded, err := decodeUTXO(data)
+		if err != nil {
+			return err
+		}
+		output = decoded
+		return nil
 	})
 
 	return output, err
@@ -245,8 +351,8 @@ func (s *Storage) GetAllOutputs() ([]*UTXO, error) {
 	err := s.db.View(func(tx *bolt.Tx) error {
 		b := tx.Bucket(bucketOutputs)
 		return b.ForEach(func(k, v []byte) error {
-			output := &UTXO{}
-			if err := json.Unmarshal(v, output); err != nil {
+			output, err := decodeUTXO(v)
+			if err != nil {
 				return err
 			}
 			outputs = append(outputs, output)
@@ -326,30 +432,13 @@ func (s *Storage) GetSpentKeyImageCount() int {
 // Metadata Operations
 // ============================================================================
 
-// GetTip returns the best block hash and height
+// GetTip returns the best block hash and height. Served from the in-memory tip
+// cache: it is called once per ring member during transaction validation, so a
+// bbolt read transaction per call is far too expensive.
 func (s *Storage) GetTip() (hash [32]byte, height uint64, work uint64, found bool) {
-	if err := s.db.View(func(tx *bolt.Tx) error {
-		meta := tx.Bucket(bucketMeta)
-
-		if data := meta.Get(metaKeyTip); data != nil {
-			copy(hash[:], data)
-			found = true
-		}
-
-		if data := meta.Get(metaKeyHeight); len(data) == 8 {
-			height = binary.BigEndian.Uint64(data)
-		}
-
-		if data := meta.Get(metaKeyWork); len(data) == 8 {
-			work = binary.BigEndian.Uint64(data)
-		}
-
-		return nil
-	}); err != nil {
-		log.Printf("storage GetTip view failed: %v", err)
-		return [32]byte{}, 0, 0, false
-	}
-	return
+	s.tipMu.RLock()
+	defer s.tipMu.RUnlock()
+	return s.tipHash, s.tipHeight, s.tipWork, s.tipFound
 }
 
 // SetTip updates the chain tip
@@ -359,7 +448,7 @@ func (s *Storage) SetTip(hash [32]byte, height, work uint64) error {
 	binary.BigEndian.PutUint64(heightBytes, height)
 	binary.BigEndian.PutUint64(workBytes, work)
 
-	return s.db.Update(func(tx *bolt.Tx) error {
+	if err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bucketMeta)
 		if err := meta.Put(metaKeyTip, hash[:]); err != nil {
 			return err
@@ -368,7 +457,12 @@ func (s *Storage) SetTip(hash [32]byte, height, work uint64) error {
 			return err
 		}
 		return meta.Put(metaKeyWork, workBytes)
-	})
+	}); err != nil {
+		return err
+	}
+
+	s.setTipCache(hash, height, work, true)
+	return nil
 }
 
 // ============================================================================
@@ -402,7 +496,7 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 		return fmt.Errorf("commit hash mismatch with block header hash")
 	}
 
-	blockData, err := json.Marshal(commit.Block)
+	blockData, err := encodeBlock(commit.Block)
 	if err != nil {
 		return err
 	}
@@ -414,7 +508,7 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 	var outputEntries []serializedOutput
 	if commit.IsMainTip {
 		for _, out := range commit.NewOutputs {
-			data, err := json.Marshal(out)
+			data, err := encodeUTXO(out)
 			if err != nil {
 				return err
 			}
@@ -427,7 +521,7 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 
 	heightBytes := heightKey(commit.Height)
 
-	return s.db.Update(func(tx *bolt.Tx) error {
+	if err := s.db.Update(func(tx *bolt.Tx) error {
 		blocks := tx.Bucket(bucketBlocks)
 		heights := tx.Bucket(bucketHeights)
 		outputs := tx.Bucket(bucketOutputs)
@@ -467,6 +561,10 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 				return err
 			}
 
+			if err := indexBlockTxsLocked(tx.Bucket(bucketTxIndex), commit.Block, heightBytes); err != nil {
+				return err
+			}
+
 			for _, entry := range outputEntries {
 				if err := outputs.Put(entry.key, entry.data); err != nil {
 					return err
@@ -494,7 +592,14 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 		}
 
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	if commit.IsMainTip {
+		s.setTipCache(commit.Hash, commit.Height, commit.Work, true)
+	}
+	return nil
 }
 
 // ReorgCommit handles rolling back and applying blocks atomically
@@ -531,7 +636,7 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 
 	prepared := make([]serializedBlock, len(commit.Connect))
 	for i, block := range commit.Connect {
-		blockData, err := json.Marshal(block)
+		blockData, err := encodeBlock(block)
 		if err != nil {
 			return fmt.Errorf("failed to marshal block: %w", err)
 		}
@@ -549,7 +654,7 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 					Output:      out,
 					BlockHeight: block.Header.Height,
 				}
-				data, err := json.Marshal(newOutput)
+				data, err := encodeUTXO(newOutput)
 				if err != nil {
 					return fmt.Errorf("failed to marshal output: %w", err)
 				}
@@ -562,12 +667,13 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 		prepared[i] = sb
 	}
 
-	return s.db.Update(func(tx *bolt.Tx) error {
+	if err := s.db.Update(func(tx *bolt.Tx) error {
 		blocks := tx.Bucket(bucketBlocks)
 		heights := tx.Bucket(bucketHeights)
 		outputs := tx.Bucket(bucketOutputs)
 		keyImages := tx.Bucket(bucketKeyImages)
 		meta := tx.Bucket(bucketMeta)
+		txIndex := tx.Bucket(bucketTxIndex)
 
 		currentTip, currentHeight, found, err := readTipMeta(meta)
 		if err != nil {
@@ -655,6 +761,10 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 				return err
 			}
 
+			if err := unindexBlockTxsLocked(txIndex, block); err != nil {
+				return err
+			}
+
 			// Unmark key images from this block's transactions
 			for _, txn := range block.Transactions {
 				if !txn.IsCoinbase() {
@@ -680,6 +790,10 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 			}
 
 			if err := heights.Put(hKey, sb.hash[:]); err != nil {
+				return err
+			}
+
+			if err := indexBlockTxsLocked(txIndex, block, hKey); err != nil {
 				return err
 			}
 
@@ -717,5 +831,86 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 		}
 
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	s.setTipCache(commit.NewTip, commit.NewHeight, commit.NewWork, true)
+	return nil
+}
+
+// TruncateCommit removes main-chain blocks above a height and repoints the tip.
+type TruncateCommit struct {
+	// Disconnect are the blocks being removed; their key images and index
+	// entries are dropped.
+	Disconnect []*Block
+	// Heights are every main-chain height to unindex, including heights whose
+	// block data is already missing.
+	Heights   []uint64
+	NewTip    [32]byte
+	NewHeight uint64
+	NewWork   uint64
+}
+
+// CommitTruncate applies a truncation in one write transaction. Doing it per
+// height meant a separate bbolt commit — and fsync — for every height and every
+// key image, with the chain lock held throughout.
+func (s *Storage) CommitTruncate(commit *TruncateCommit) error {
+	if commit == nil {
+		return fmt.Errorf("nil truncate commit")
+	}
+
+	heightBytes := make([]byte, 8)
+	workBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(heightBytes, commit.NewHeight)
+	binary.BigEndian.PutUint64(workBytes, commit.NewWork)
+
+	if err := s.db.Update(func(tx *bolt.Tx) error {
+		heights := tx.Bucket(bucketHeights)
+		keyImages := tx.Bucket(bucketKeyImages)
+		meta := tx.Bucket(bucketMeta)
+		txIndex := tx.Bucket(bucketTxIndex)
+
+		if tx.Bucket(bucketBlocks).Get(commit.NewTip[:]) == nil {
+			return fmt.Errorf("truncate target block not found: %x", commit.NewTip[:8])
+		}
+
+		for _, height := range commit.Heights {
+			if err := heights.Delete(heightKey(height)); err != nil {
+				return err
+			}
+		}
+
+		for _, block := range commit.Disconnect {
+			if block == nil {
+				continue
+			}
+			if err := unindexBlockTxsLocked(txIndex, block); err != nil {
+				return err
+			}
+			for _, txn := range block.Transactions {
+				if txn.IsCoinbase() {
+					continue
+				}
+				for _, input := range txn.Inputs {
+					if err := keyImages.Delete(input.KeyImage[:]); err != nil {
+						return err
+					}
+				}
+			}
+		}
+
+		if err := meta.Put(metaKeyTip, commit.NewTip[:]); err != nil {
+			return err
+		}
+		if err := meta.Put(metaKeyHeight, heightBytes); err != nil {
+			return err
+		}
+		return meta.Put(metaKeyWork, workBytes)
+	}); err != nil {
+		return err
+	}
+
+	s.setTipCache(commit.NewTip, commit.NewHeight, commit.NewWork, true)
+	return nil
 }

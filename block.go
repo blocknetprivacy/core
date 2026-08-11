@@ -1243,13 +1243,44 @@ func (c *Chain) Storage() *Storage {
 
 // Height returns current chain height
 type tipSnapshot struct {
-	height    uint64
-	bestHash  [32]byte
-	totalWork uint64
+	height         uint64
+	bestHash       [32]byte
+	totalWork      uint64
+	nextDifficulty uint64
 }
 
 func (c *Chain) publishTipLocked() {
-	c.tipSnap.Store(&tipSnapshot{height: c.height, bestHash: c.bestHash, totalWork: c.totalWork})
+	// nextDifficulty is folded in here because it only changes when the tip
+	// does, and computing it needs the in-memory block cache this lock guards.
+	// Readers that just display it can then have it for free.
+	c.tipSnap.Store(&tipSnapshot{
+		height:         c.height,
+		bestHash:       c.bestHash,
+		totalWork:      c.totalWork,
+		nextDifficulty: c.snapshotDifficultyLocked(),
+	})
+}
+
+// snapshotDifficultyLocked is nextDifficultyLocked with the cache checked
+// first. The tip is published before loadFromStorage warms the block cache, so
+// the LWMA window is not always in memory when this runs. Consensus keeps
+// using nextDifficultyLocked untouched; this returns 0 when it cannot answer,
+// and readers fall back to the locking path.
+func (c *Chain) snapshotDifficultyLocked() uint64 {
+	if c.height < uint64(LWMAWindow) {
+		return MinDifficulty
+	}
+	for i := 0; i <= LWMAWindow; i++ {
+		height := c.height - uint64(LWMAWindow) + uint64(i)
+		hash, ok := c.byHeight[height]
+		if !ok {
+			return 0
+		}
+		if c.blocks[hash] == nil {
+			return 0
+		}
+	}
+	return c.nextDifficultyLocked()
 }
 
 // TipFast returns the chain tip without taking any lock.
@@ -1264,6 +1295,44 @@ func (c *Chain) Height() uint64 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.height
+}
+
+// HeightFast returns the tip height from the atomic tip snapshot, taking no
+// lock. Read paths that only need the height should use it: c.mu is held by
+// block processing, and Go's RWMutex is writer-preferring, so one waiting
+// writer parks every later reader behind it. A page that only prints the
+// height has no business queueing behind a block commit.
+func (c *Chain) HeightFast() uint64 {
+	if s := c.tipSnap.Load(); s != nil {
+		return s.height
+	}
+	// No snapshot published yet. Answering 0 here would read as an empty chain,
+	// so pay for the lock rather than report a height that is not true.
+	return c.Height()
+}
+
+// GetBlockFast reads a block straight from storage and takes no chain lock.
+// ProcessBlock holds c.mu for the whole of block validation, so a reader that
+// goes through the cache can wait on a ring-signature check before it can
+// display a block it already has on disk. Read-only viewers pay one bolt read
+// instead, and never stall the writer.
+func (c *Chain) GetBlockFast(hash [32]byte) *Block {
+	block, err := c.storage.GetBlock(hash)
+	if err != nil {
+		return nil
+	}
+	return block
+}
+
+// GetBlockByHeightFast is GetBlockByHeight without the chain lock. Same reason
+// as GetBlockFast: main-chain height to hash and the block itself both live in
+// storage, so a viewer needs nothing the writer holds.
+func (c *Chain) GetBlockByHeightFast(height uint64) *Block {
+	hash, found := c.storage.GetBlockHashByHeight(height)
+	if !found {
+		return nil
+	}
+	return c.GetBlockFast(hash)
 }
 
 // HasGenesis returns true if the chain has at least the genesis block
@@ -1316,11 +1385,30 @@ func (c *Chain) GetBlock(hash [32]byte) *Block {
 	return block
 }
 
-// GetBlockByHeight retrieves a block by height
+// GetBlockByHeight retrieves a block by height.
+//
+// The cache probe holds c.mu.RLock; the storage fallback deliberately does not,
+// so a cache miss cannot stall every later reader behind a waiting writer. A
+// reorg landing between the two can therefore return the block that was
+// main-chain at that height a moment earlier. bbolt gives per-transaction
+// snapshot isolation and blocks are never deleted, so the read is always
+// well-formed. Callers that need a consistent span use GetBlocksByHeightRange.
 func (c *Chain) GetBlockByHeight(height uint64) *Block {
 	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.getBlockByHeightLocked(height)
+	if hash, ok := c.byHeight[height]; ok {
+		if block, ok := c.blocks[hash]; ok {
+			c.mu.RUnlock()
+			return block
+		}
+	}
+	c.mu.RUnlock()
+
+	hash, found := c.storage.GetBlockHashByHeight(height)
+	if !found {
+		return nil
+	}
+	block, _ := c.storage.GetBlock(hash)
+	return block
 }
 
 // GetBlocksByHeightRange returns main-chain blocks in [startHeight, endHeight],
@@ -1386,15 +1474,27 @@ func (c *Chain) NextDifficulty() uint64 {
 	return c.nextDifficultyLocked()
 }
 
+// NextDifficultyFast returns the difficulty from the tip snapshot, taking no
+// lock. It is the same value NextDifficulty computes for the current tip, so
+// display paths never wait on block processing to render a number. Before the
+// block cache is warm the snapshot cannot carry it, and only then does this
+// fall back to the locking computation.
+func (c *Chain) NextDifficultyFast() uint64 {
+	if s := c.tipSnap.Load(); s != nil && s.nextDifficulty != 0 {
+		return s.nextDifficulty
+	}
+	return c.NextDifficulty()
+}
+
 // RecentBlockStats estimates network hashrate (hashes per second) and average
 // block time (seconds) over up to the most recent `samples` block intervals.
-// Returns zeros when there is insufficient history. It must be called without
-// holding c.mu — it acquires read locks internally, per interval.
+// Returns zeros when there is insufficient history. It reads the tip snapshot
+// and storage directly, so it takes no chain lock and never waits on a commit.
 func (c *Chain) RecentBlockStats(samples int) (hashrate float64, avgBlockTime float64) {
 	if samples <= 0 {
 		return 0, 0
 	}
-	height := c.Height()
+	height := c.HeightFast()
 	if height < 2 {
 		return 0, 0
 	}
@@ -1402,8 +1502,8 @@ func (c *Chain) RecentBlockStats(samples int) (hashrate float64, avgBlockTime fl
 	var totalWork uint64
 	var count int
 	for h := height; h > 0 && count < samples; h-- {
-		block := c.GetBlockByHeight(h)
-		prev := c.GetBlockByHeight(h - 1)
+		block := c.GetBlockByHeightFast(h)
+		prev := c.GetBlockByHeightFast(h - 1)
 		if block == nil || prev == nil {
 			continue
 		}
@@ -2347,40 +2447,23 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 		return nil // nothing to do
 	}
 
-	// Disconnect blocks from top down
+	commit := &TruncateCommit{}
+	var evict [][32]byte
+
+	// Collect first, write once: the old per-height loop hit storage before it
+	// knew the new tip was reachable, so a failure left a half-truncated chain.
 	for h := c.height; h > keepHeight; h-- {
+		commit.Heights = append(commit.Heights, h)
+
 		block := c.getBlockByHeightLocked(h)
 		if block == nil {
-			// Already missing, just clean up the index
-			if err := c.storage.RemoveMainChainBlock(h); err != nil {
-				return fmt.Errorf("failed to remove main-chain index at height %d: %w", h, err)
-			}
 			delete(c.byHeight, h)
 			continue
 		}
-
-		// Remove key images from this block
-		for _, tx := range block.Transactions {
-			if !tx.IsCoinbase() {
-				for _, input := range tx.Inputs {
-					delete(c.keyImages, input.KeyImage)
-					if err := c.storage.UnmarkKeyImageSpent(input.KeyImage); err != nil {
-						return fmt.Errorf("failed to unmark key image at height %d: %w", h, err)
-					}
-				}
-			}
-		}
-
-		// Remove from height index
-		if err := c.storage.RemoveMainChainBlock(h); err != nil {
-			return fmt.Errorf("failed to remove main-chain block at height %d: %w", h, err)
-		}
-		delete(c.byHeight, h)
-		hash := block.Hash()
-		c.cacheForgetLocked(hash)
+		commit.Disconnect = append(commit.Disconnect, block)
+		evict = append(evict, block.Hash())
 	}
 
-	// Set new tip
 	newTip := c.getBlockByHeightLocked(keepHeight)
 	if newTip == nil {
 		return fmt.Errorf("block at height %d not found after truncation", keepHeight)
@@ -2389,6 +2472,29 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 	newWork, err := c.cumulativeWorkAtLocked(newHash)
 	if err != nil {
 		return fmt.Errorf("failed to compute cumulative work for new tip: %w", err)
+	}
+
+	commit.NewTip = newHash
+	commit.NewHeight = keepHeight
+	commit.NewWork = newWork
+
+	if err := c.storage.CommitTruncate(commit); err != nil {
+		return fmt.Errorf("failed to truncate chain to height %d: %w", keepHeight, err)
+	}
+
+	for _, block := range commit.Disconnect {
+		for _, tx := range block.Transactions {
+			if tx.IsCoinbase() {
+				continue
+			}
+			for _, input := range tx.Inputs {
+				delete(c.keyImages, input.KeyImage)
+			}
+		}
+		delete(c.byHeight, block.Header.Height)
+	}
+	for _, hash := range evict {
+		c.cacheForgetLocked(hash)
 	}
 
 	c.bestHash = newHash
@@ -2410,11 +2516,6 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 		if b != nil {
 			c.timestamps = append(c.timestamps, b.Header.Timestamp)
 		}
-	}
-
-	// Persist new tip
-	if err := c.storage.SetTip(newHash, keepHeight, newWork); err != nil {
-		return fmt.Errorf("failed to persist new tip: %w", err)
 	}
 
 	// Rebuild the canonical ring-member index while we still hold the write
@@ -2638,6 +2739,13 @@ func (c *Chain) IsFinalized(height uint64) bool {
 // blocks from tip backwards. Returns the transaction, block height, and
 // whether it was found.
 func (c *Chain) FindTxByHashStr(hashStr string) (*Transaction, uint64, bool) {
+	if tx, height, ok := c.findTxByIndex(hashStr); ok {
+		return tx, height, true
+	}
+	if c.storage.TxIndexReady() {
+		return nil, 0, false
+	}
+
 	c.mu.RLock()
 	tipHeight := c.height
 	c.mu.RUnlock()
