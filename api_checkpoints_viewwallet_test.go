@@ -209,3 +209,16 @@ func TestHandleViewKeys_CreateRejectsMainWalletPassword(t *testing.T) {
 		t.Fatal("view wallet file should not exist after a rejected create")
 	}
 }
+
+func TestDeriveViewWalletFilenameAlwaysEndsInWalletDat(t *testing.T) {
+	for in, want := range map[string]string{
+		"/d/main.wallet.dat": "/d/main.view.wallet.dat",
+		"/d/main.dat":        "/d/main.view.wallet.dat",
+		"/d/main":            "/d/main.view.wallet.dat",
+		"/d.x/main":          "/d.x/main.view.wallet.dat",
+	} {
+		if got := deriveViewWalletFilename(in); got != want {
+			t.Fatalf("deriveViewWalletFilename(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

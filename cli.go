@@ -504,18 +504,13 @@ func sanitizeInput(s string) string {
 }
 
 // deriveViewWalletFilename maps a wallet path to its view-only sibling:
-// "main.wallet.dat" -> "main.view.wallet.dat".
+// "main.wallet.dat" and "main.dat" -> "main.view.wallet.dat".
 func deriveViewWalletFilename(walletFile string) string {
-	name := walletFile
-	if strings.HasSuffix(name, ".wallet.dat") {
-		return strings.TrimSuffix(name, ".wallet.dat") + ".view.wallet.dat"
+	name := strings.TrimSuffix(walletFile, ".wallet.dat")
+	if name == walletFile {
+		name = strings.TrimSuffix(name, filepath.Ext(name))
 	}
-	ext := ""
-	if dot := strings.LastIndex(name, "."); dot >= 0 {
-		ext = name[dot:]
-		name = name[:dot]
-	}
-	return name + ".view" + ext
+	return name + ".view.wallet.dat"
 }
 
 func (c *CLI) walletFilePath() string {
