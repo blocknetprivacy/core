@@ -73,6 +73,11 @@
                     {
                       "type": "object",
                       "properties": {
+                        "peer_addrs": {
+                          "type": "array",
+                          "items": { "type": "string" },
+                          "description": "This node's own non-loopback multiaddrs, each ending in /p2p/<peer_id>. Other nodes can connect with these."
+                        },
                         "wallet": { "$ref": "#/components/schemas/WalletDiagnostics" }
                       }
                     }
@@ -88,6 +93,7 @@
                   "mempool_bytes": 4821,
                   "syncing": false,
                   "identity_age": "2h34m12s",
+                  "peer_addrs": ["/ip4/203.0.113.7/tcp/28080/p2p/12D3KooWBLUPjZgAoizTkbNJvHxgHkb2tF1saUhmKBzFfo8zZLfj"],
                   "wallet": {
                     "data_version": 1,
                     "enc_format": "v1",
@@ -1004,19 +1010,31 @@
       "post": {
         "operationId": "importWallet",
         "tags": ["Wallet"],
-        "summary": "Import wallet from recovery seed",
-        "description": "Creates a new wallet from a BIP39 12-word recovery seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and a background scan of the entire blockchain is started to find outputs belonging to this seed. Check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "summary": "Import wallet from recovery seed or keys",
+        "description": "Creates a new wallet from exactly one source: a BIP39 12-word recovery seed (`mnemonic`), hex private keys (`spend_priv` + `view_priv`), or a view-only key pair (`spend_pub` + `view_priv`, which makes a wallet that can watch but not spend). It encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and a background scan of the entire blockchain is started to find outputs belonging to this seed. Check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "type": "object",
-                "required": ["mnemonic", "password"],
+                "required": ["password"],
                 "properties": {
                   "mnemonic": {
                     "type": "string",
                     "description": "BIP39 12-word recovery phrase"
+                  },
+                  "spend_priv": {
+                    "type": "string",
+                    "description": "Spend private key, 64 hex chars. Use with view_priv."
+                  },
+                  "view_priv": {
+                    "type": "string",
+                    "description": "View private key, 64 hex chars. Use with spend_priv, or with spend_pub for a view-only wallet."
+                  },
+                  "spend_pub": {
+                    "type": "string",
+                    "description": "Spend public key, 64 hex chars. Use with view_priv for a view-only wallet."
                   },
                   "password": {
                     "type": "string",
@@ -1046,6 +1064,7 @@
                   "type": "object",
                   "properties": {
                     "imported": { "type": "boolean" },
+                    "view_only": { "type": "boolean", "description": "True when the wallet was imported from spend_pub + view_priv" },
                     "address": {
                       "type": "string",
                       "description": "Wallet stealth address (base58-encoded)"

@@ -41,9 +41,14 @@ const (
 func (s *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := struct {
 		DaemonStats
-		Wallet *wallet.WalletDiagnostics `json:"wallet,omitempty"`
+		PeerAddrs []string                  `json:"peer_addrs"`
+		Wallet    *wallet.WalletDiagnostics `json:"wallet,omitempty"`
 	}{
 		DaemonStats: s.daemon.Stats(),
+		PeerAddrs:   []string{},
+	}
+	if node := s.daemon.Node(); node != nil {
+		resp.PeerAddrs = node.FullMultiaddrs()
 	}
 	if s.wallet != nil && !s.locked {
 		diag := s.wallet.Diagnostics()
@@ -1978,24 +1983,24 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	var req struct {
-		Mnemonic string `json:"mnemonic"`
-		Password string `json:"password"`
-		Filename string `json:"filename"`
+		Mnemonic  string `json:"mnemonic"`
+		SpendPriv string `json:"spend_priv"`
+		ViewPriv  string `json:"view_priv"`
+		SpendPub  string `json:"spend_pub"`
+		Password  string `json:"password"`
+		Filename  string `json:"filename"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if req.Mnemonic == "" {
-		writeError(w, http.StatusBadRequest, "mnemonic is required")
+	create, err := importWalletBuilder(req.Mnemonic, req.SpendPriv, req.ViewPriv, req.SpendPub)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if len(req.Password) < 3 {
 		writeError(w, http.StatusBadRequest, "password must be at least 3 characters")
-		return
-	}
-	if !wallet.ValidateMnemonic(req.Mnemonic) {
-		writeError(w, http.StatusBadRequest, "invalid mnemonic phrase")
 		return
 	}
 
@@ -2018,7 +2023,7 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 
 	password := []byte(req.Password)
 	passHash := passwordHash(password)
-	wl, err := wallet.NewWalletFromMnemonic(walletPath, password, req.Mnemonic, defaultWalletConfig())
+	wl, err := create(walletPath, password)
 	wipeBytes(password)
 	if err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
@@ -2063,11 +2068,82 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"imported":      true,
+		"view_only":     wl.IsViewOnly(),
 		"address":       wl.Address(),
 		"filename":      filepath.Base(walletPath),
 		"synced_height": wl.SyncedHeight(),
 		"chain_height":  chainHeight,
 	})
+}
+
+type walletBuilder func(path string, password []byte) (*wallet.Wallet, error)
+
+func importWalletBuilder(mnemonic, spendPrivHex, viewPrivHex, spendPubHex string) (walletBuilder, error) {
+	mnemonic = strings.TrimSpace(mnemonic)
+	spendPrivHex = strings.TrimSpace(spendPrivHex)
+	viewPrivHex = strings.TrimSpace(viewPrivHex)
+	spendPubHex = strings.TrimSpace(spendPubHex)
+
+	switch {
+	case mnemonic != "" && spendPrivHex == "" && viewPrivHex == "" && spendPubHex == "":
+		if !wallet.ValidateMnemonic(mnemonic) {
+			return nil, fmt.Errorf("invalid mnemonic phrase")
+		}
+		return func(path string, password []byte) (*wallet.Wallet, error) {
+			return wallet.NewWalletFromMnemonic(path, password, mnemonic, defaultWalletConfig())
+		}, nil
+
+	case mnemonic == "" && spendPrivHex != "" && viewPrivHex != "" && spendPubHex == "":
+		spendPriv, err := parseHex32(spendPrivHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid spend_priv: %w", err)
+		}
+		viewPriv, err := parseHex32(viewPrivHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid view_priv: %w", err)
+		}
+		spendPub, err := ScalarToPubKey(spendPriv)
+		if err != nil {
+			return nil, fmt.Errorf("invalid spend_priv: %w", err)
+		}
+		viewPub, err := ScalarToPubKey(viewPriv)
+		if err != nil {
+			return nil, fmt.Errorf("invalid view_priv: %w", err)
+		}
+		keys := wallet.StealthKeys{SpendPrivKey: spendPriv, SpendPubKey: spendPub, ViewPrivKey: viewPriv, ViewPubKey: viewPub}
+		return func(path string, password []byte) (*wallet.Wallet, error) {
+			return wallet.NewWalletFromStealthKeys(path, password, keys, defaultWalletConfig())
+		}, nil
+
+	case mnemonic == "" && spendPrivHex == "" && viewPrivHex != "" && spendPubHex != "":
+		spendPub, err := parseHex32(spendPubHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid spend_pub: %w", err)
+		}
+		viewPriv, err := parseHex32(viewPrivHex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid view_priv: %w", err)
+		}
+		viewPub, err := ScalarToPubKey(viewPriv)
+		if err != nil {
+			return nil, fmt.Errorf("invalid view_priv: %w", err)
+		}
+		keys := wallet.ViewOnlyKeys{SpendPubKey: spendPub, ViewPrivKey: viewPriv, ViewPubKey: viewPub}
+		return func(path string, password []byte) (*wallet.Wallet, error) {
+			return wallet.NewViewOnlyWallet(path, password, keys, defaultWalletConfig())
+		}, nil
+	}
+	return nil, fmt.Errorf("provide exactly one of: mnemonic, spend_priv + view_priv, or spend_pub + view_priv (view-only)")
+}
+
+func parseHex32(s string) ([32]byte, error) {
+	var out [32]byte
+	b, err := hex.DecodeString(s)
+	if err != nil || len(b) != 32 {
+		return out, fmt.Errorf("expected 64 hex chars")
+	}
+	copy(out[:], b)
+	return out, nil
 }
 
 // handleSeed returns the wallet recovery seed (BIP39 mnemonic).
