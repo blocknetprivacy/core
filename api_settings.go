@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"reflect"
 	"slices"
+	"strings"
 )
 
 type settingsResponse struct {
@@ -38,9 +43,7 @@ func (s *APIServer) handlePatchSettings(w http.ResponseWriter, r *http.Request) 
 
 	cur := s.cli.settings
 	next := cloneSettings(cur)
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&next); err != nil {
+	if err := decodeSettingsPatch(r.Body, &next); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid settings: "+err.Error())
 		return
 	}
@@ -73,4 +76,34 @@ func (s *APIServer) handlePatchSettings(w http.ResponseWriter, r *http.Request) 
 
 	s.cli.settings = next
 	writeJSON(w, http.StatusOK, settingsResponse{Settings: cloneSettings(next), RestartRequired: pendingRestart(next, s.cli.runningSettings)})
+}
+
+func decodeSettingsPatch(body io.Reader, next *Settings) error {
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(body).Decode(&raw); err != nil {
+		return err
+	}
+	defaults := reflect.ValueOf(defaultSettings())
+	target := reflect.ValueOf(next).Elem()
+	fields := map[string]int{}
+	for i := 0; i < target.NumField(); i++ {
+		fields[strings.Split(target.Type().Field(i).Tag.Get("json"), ",")[0]] = i
+	}
+	for name, value := range raw {
+		i, ok := fields[name]
+		if !ok {
+			return fmt.Errorf("unknown field %q", name)
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			target.Field(i).Set(defaults.Field(i))
+			delete(raw, name)
+		}
+	}
+	rest, err := json.Marshal(raw)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(rest))
+	dec.DisallowUnknownFields()
+	return dec.Decode(next)
 }

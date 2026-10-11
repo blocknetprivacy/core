@@ -55,7 +55,7 @@
         "operationId": "updateSettings",
         "tags": ["Node"],
         "summary": "Change node settings",
-        "description": "Changes only the fields in the body and saves them to <dataDir>/settings.json. Live fields apply at once. The others are listed in restart_required. Unknown fields are rejected. Requires Bearer token.",
+        "description": "Changes only the fields in the body and saves them to <dataDir>/settings.json. A field set to null goes back to its default. Live fields apply at once. The others are listed in restart_required. Unknown fields are rejected. Requires Bearer token.",
         "requestBody": {
           "required": true,
           "content": {

@@ -100,6 +100,31 @@ func TestPatchSettingsAppliesLiveFieldsAndPersists(t *testing.T) {
 	}
 }
 
+func TestPatchSettingsNullResetsFieldToDefault(t *testing.T) {
+	s, _, _ := newSettingsTestServer(t)
+	if rr := patchSettings(t, s, `{"listen":"/ip4/127.0.0.1/tcp/1234","seed":true,"p2p_whitelist":["`+testWhitelistPeer+`"],"save_checkpoints":true}`); rr.Code != http.StatusOK {
+		t.Fatalf("patch: %d %s", rr.Code, rr.Body.String())
+	}
+	rr := patchSettings(t, s, `{"listen":null,"seed":null,"p2p_whitelist":null}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp settingsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	def := defaultSettings()
+	if resp.Settings.Listen != def.Listen || resp.Settings.Seed || len(resp.Settings.P2PWhitelist) != 0 {
+		t.Fatalf("null did not reset to defaults: %+v", resp.Settings)
+	}
+	if !resp.Settings.SaveCheckpoints {
+		t.Fatal("a field missing from the patch was changed")
+	}
+	if rr := patchSettings(t, s, `{"no_such_setting":null}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("unknown null field: got %d, want 400", rr.Code)
+	}
+}
+
 func TestPatchSettingsRejectsBadInputWithoutSaving(t *testing.T) {
 	s, d, dir := newSettingsTestServer(t)
 	for _, body := range []string{
