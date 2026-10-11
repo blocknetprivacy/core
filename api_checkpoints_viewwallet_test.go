@@ -164,3 +164,22 @@ func TestHandleSaveCheckpoints_EmptyChain(t *testing.T) {
 		t.Fatalf("expected written=0 on empty chain, got %v", resp["written"])
 	}
 }
+
+func TestFinalizedCheckpointHeightNeverWithinReorgDepth(t *testing.T) {
+	cases := map[uint64]uint64{
+		0:     0,
+		99:    0,
+		100:   0,
+		199:   0,
+		200:   100,
+		299:   100,
+		63800: 63700,
+		63899: 63700,
+		63900: 63800,
+	}
+	for tip, want := range cases {
+		if got := finalizedCheckpointHeight(tip); got != want {
+			t.Fatalf("tip %d: got %d, want %d", tip, got, want)
+		}
+	}
+}

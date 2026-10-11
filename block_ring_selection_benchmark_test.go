@@ -118,6 +118,7 @@ func commitRingSelectionBenchmarkBlock(b *testing.B, chain *Chain, storage *Stor
 	chain.bestHash = hash
 	chain.height = block.Header.Height
 	chain.totalWork = work
+	chain.publishTipLocked()
 	chain.canonicalRingIndexDirty = true
 }
 

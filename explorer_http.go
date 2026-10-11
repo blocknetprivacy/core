@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"compress/gzip"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // explorerImmutableCache is applied to pages whose content can no longer
@@ -28,6 +30,10 @@ func setImmutableCacheIfFinal(w http.ResponseWriter, blockHeight, chainHeight ui
 // gzipMiddleware compresses explorer HTML. The event stream is excluded: it is
 // long-lived and incrementally flushed, and a compressing wrapper would both
 // buffer it and hide the http.Flusher the handler needs.
+var gzipWriterPool = sync.Pool{
+	New: func() any { return gzip.NewWriter(io.Discard) },
+}
+
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/events" || !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
@@ -38,16 +44,41 @@ func gzipMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("Content-Encoding", "gzip")
 		w.Header().Add("Vary", "Accept-Encoding")
 
-		gz := gzip.NewWriter(w)
-		defer gz.Close()
+		gz := gzipWriterPool.Get().(*gzip.Writer)
+		gz.Reset(w)
+		gw := &gzipResponseWriter{ResponseWriter: w, writer: gz}
+		defer func() {
+			if !gw.precompressed {
+				gz.Close()
+			}
+			gz.Reset(io.Discard)
+			gzipWriterPool.Put(gz)
+		}()
 
-		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, writer: gz}, r)
+		next.ServeHTTP(gw, r)
 	})
 }
 
 type gzipResponseWriter struct {
 	http.ResponseWriter
-	writer *gzip.Writer
+	writer        *gzip.Writer
+	precompressed bool
+}
+
+func (w *gzipResponseWriter) writeGzipped(b []byte) (int, error) {
+	w.precompressed = true
+	return w.ResponseWriter.Write(b)
+}
+
+func gzipBytes(b []byte) []byte {
+	var buf bytes.Buffer
+	gz := gzipWriterPool.Get().(*gzip.Writer)
+	gz.Reset(&buf)
+	gz.Write(b)
+	gz.Close()
+	gz.Reset(io.Discard)
+	gzipWriterPool.Put(gz)
+	return buf.Bytes()
 }
 
 func (w *gzipResponseWriter) Write(b []byte) (int, error) {

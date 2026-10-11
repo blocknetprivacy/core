@@ -176,6 +176,7 @@ func TestHandleSendIdempotencyKeyReplayAndMismatch(t *testing.T) {
 
 	chain.mu.Lock()
 	chain.height = 100
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)
@@ -262,6 +263,7 @@ func TestHandleSendIdempotencySuccessfulReplayPersistsAcrossRestart(t *testing.T
 
 	chain.mu.Lock()
 	chain.height = 100
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)
@@ -437,6 +439,7 @@ func TestHandleSendInsufficientFundsAfterFeeAdjustmentIsBadRequest(t *testing.T)
 
 	chain.mu.Lock()
 	chain.height = 100
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)

@@ -66,7 +66,7 @@ func (s *APIServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 
 	// Try as height first
 	if height, err := strconv.ParseUint(id, 10, 64); err == nil {
-		block = chain.GetBlockByHeight(height)
+		block = chain.GetBlockByHeightFast(height)
 	} else if len(id) == 64 {
 		// Try as hex hash
 		hashBytes, err := hex.DecodeString(id)
@@ -76,7 +76,7 @@ func (s *APIServer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		}
 		var hash [32]byte
 		copy(hash[:], hashBytes)
-		block = chain.GetBlock(hash)
+		block = chain.GetBlockFast(hash)
 	} else {
 		writeError(w, http.StatusBadRequest, "id must be a height or 64-char hex hash")
 		return

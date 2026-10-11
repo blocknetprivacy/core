@@ -68,6 +68,7 @@ func TestStatusTriggeredSync_IsDebouncedAndSerialized(t *testing.T) {
 		_, _, _ = readSyncMessage(s)
 	}
 
+	start := time.Now()
 	// Burst 1: lots of status spam that claims higher work to trigger requestSyncCheck().
 	lie := our
 	lie.TotalWork = our.TotalWork + 1
@@ -87,12 +88,13 @@ func TestStatusTriggeredSync_IsDebouncedAndSerialized(t *testing.T) {
 
 	// Allow any debounced runs to complete.
 	time.Sleep(500 * time.Millisecond)
+	limit := int64(time.Since(start)/smB.statusSyncMinInterval) + 1
 
 	// With a single peer, each checkSync() run produces ~1 inbound status request on A.
 	// We expect a very small number here (not proportional to the 150 inbound status messages).
 	got := inboundStatusRequests.Load()
-	if got > 4 {
-		t.Fatalf("expected debounced status-triggered checkSync runs; got %d inbound status requests", got)
+	if got > limit {
+		t.Fatalf("expected debounced status-triggered checkSync runs; got %d inbound status requests, limit %d", got, limit)
 	}
 }
 

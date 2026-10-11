@@ -22,6 +22,7 @@ func TestHandleHistoryPagePaginationContract(t *testing.T) {
 	mustAddGenesisBlock(t, chain)
 	chain.mu.Lock()
 	chain.height = 300
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)

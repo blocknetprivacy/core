@@ -12,8 +12,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"blocknet/p2p"
@@ -813,13 +815,15 @@ func (d *Daemon) releaseGossipBlockValidationSlot() {
 // Chain status callbacks for sync manager
 
 func (d *Daemon) getChainStatus() p2p.ChainStatus {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	height, bestHash, totalWork := d.chain.TipFast()
+	if bestHash == ([32]byte{}) {
+		bestHash, height, totalWork = d.chain.BestHash(), d.chain.Height(), d.chain.TotalWork()
+	}
 
 	return p2p.ChainStatus{
-		BestHash:  d.chain.BestHash(),
-		Height:    d.chain.Height(),
-		TotalWork: d.chain.TotalWork(),
+		BestHash:  bestHash,
+		Height:    height,
+		TotalWork: totalWork,
 		Version:   1,
 		NetworkID: params.NetworkID,
 		ChainID:   params.ChainID,
@@ -827,17 +831,14 @@ func (d *Daemon) getChainStatus() p2p.ChainStatus {
 }
 
 func (d *Daemon) getHeaders(startHeight uint64, max int) ([][]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
+	stored, err := d.chain.Storage().GetMainChainHeaders(startHeight, max)
+	if err != nil {
+		return nil, err
+	}
 
-	var headers [][]byte
-	for h := startHeight; h <= d.chain.Height() && len(headers) < max; h++ {
-		block := d.chain.GetBlockByHeight(h)
-		if block == nil {
-			break
-		}
-
-		headerData, err := json.Marshal(block.Header)
+	headers := make([][]byte, 0, len(stored))
+	for i := range stored {
+		headerData, err := json.Marshal(stored[i])
 		if err != nil {
 			continue
 		}
@@ -848,21 +849,14 @@ func (d *Daemon) getHeaders(startHeight uint64, max int) ([][]byte, error) {
 }
 
 func (d *Daemon) getBlocks(hashes [][32]byte) ([][]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
 	var blocks [][]byte
 	for _, hash := range hashes {
-		block := d.chain.GetBlock(hash)
+		block := d.chain.GetBlockFast(hash)
 		if block == nil {
 			continue
 		}
 
-		blockData, err := json.Marshal(block)
-		if err != nil {
-			continue
-		}
-		blocks = append(blocks, blockData)
+		blocks = append(blocks, marshalBlockJSON(block))
 	}
 
 	return blocks, nil
@@ -913,20 +907,17 @@ type checkpointEntry struct {
 // returns the entry to write. Caller must hold d.mu. The actual file I/O
 // should happen after releasing d.mu via writeCheckpoint.
 func (d *Daemon) prepareCheckpointLocked(block *Block) *checkpointEntry {
-	if !d.saveCheckpoints || block == nil {
+	if !d.saveCheckpoints || block == nil || d.checkpointsFile == "" {
 		return nil
 	}
-	h := block.Header.Height
-	if h == 0 || (h%100) != 0 {
+	h := finalizedCheckpointHeight(block.Header.Height)
+	if h == 0 || h <= d.lastCheckpointWritten {
 		return nil
 	}
-	if h <= d.lastCheckpointWritten {
+	hash, ok := d.chain.Storage().GetBlockHashByHeight(h)
+	if !ok {
 		return nil
 	}
-	if d.checkpointsFile == "" {
-		return nil
-	}
-	hash := block.Hash()
 	d.lastCheckpointWritten = h
 	return &checkpointEntry{
 		height: h,
@@ -1099,31 +1090,31 @@ func (d *Daemon) txDataMapForBlock(block *Block) map[[32]byte][]byte {
 
 // getBlocksByHeight returns blocks in a height range for sync requests
 func (d *Daemon) getBlocksByHeight(startHeight uint64, max int) ([][]byte, error) {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-
-	var blocks [][]byte
-	for i := 0; i < max; i++ {
-		height := startHeight + uint64(i)
-		block := d.chain.GetBlockByHeight(height)
-		if block == nil {
-			break // Reached end of chain
-		}
-
-		blockData, err := json.Marshal(block)
-		if err != nil {
-			return nil, err
-		}
-		blocks = append(blocks, blockData)
+	stored, err := d.chain.Storage().GetMainChainBlocks(startHeight, max)
+	if err != nil {
+		return nil, err
 	}
+
+	blocks := make([][]byte, len(stored))
+	workers := min(len(stored), runtime.GOMAXPROCS(0)/2+1)
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := int(next.Add(1) - 1); i < len(stored); i = int(next.Add(1) - 1) {
+				blocks[i] = marshalBlockJSON(stored[i])
+			}
+		}()
+	}
+	wg.Wait()
 
 	return blocks, nil
 }
 
 // getMempoolTxs returns all serialized transactions in the mempool.
 func (d *Daemon) getMempoolTxs() [][]byte {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
 	return d.mempool.GetAllTransactionData()
 }
 
@@ -1246,11 +1237,7 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 	writeCheckpoint(cp)
 
 	// Broadcast to peers
-	blockData, err := json.Marshal(block)
-	if err != nil {
-		return fmt.Errorf("failed to marshal block: %w", err)
-	}
-	d.syncMgr.BroadcastBlock(blockData)
+	d.syncMgr.BroadcastBlock(marshalBlockJSON(block))
 
 	// Notify subscribers
 	d.notifyBlock(block)

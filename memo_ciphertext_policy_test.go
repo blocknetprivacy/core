@@ -96,6 +96,7 @@ func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testi
 	topHeight := uint64(RingSize * 3)
 	chain.mu.Lock()
 	chain.height = topHeight + 100
+	chain.publishTipLocked()
 	chain.canonicalRingIndexDirty = true
 	chain.mu.Unlock()
 

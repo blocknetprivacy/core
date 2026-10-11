@@ -128,6 +128,7 @@ func TestBranchAwareSpentCheckerScopesSpendsToCandidateBranch(t *testing.T) {
 	chain.blocks[unrelatedSideHash] = unrelatedSide
 	chain.bestHash = mainTipHash
 	chain.height = 2
+	chain.publishTipLocked()
 
 	checker, err := chain.branchAwareSpentCheckerLocked(sideTipHash)
 	if err != nil {

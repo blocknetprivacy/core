@@ -264,7 +264,7 @@ func (c *CLI) cmdSaveCheckpoints() {
 	fmt.Printf("\n%s\n", c.sectionHead("Save Checkpoints"))
 
 	chain := c.daemon.Chain()
-	height := chain.Height()
+	height := finalizedCheckpointHeight(chain.Height())
 	if height == 0 {
 		fmt.Println("  Chain is empty, nothing to save.")
 		return

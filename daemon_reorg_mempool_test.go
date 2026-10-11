@@ -65,6 +65,7 @@ func TestUpdateMempoolForAcceptedMainChain_ReorgRequeuesDisconnectedAndRemovesCo
 	chain.byHeight[2] = hashB2
 	chain.bestHash = hashB2
 	chain.height = 2
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	txNewID, err := txNew.TxID()

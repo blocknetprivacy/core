@@ -203,3 +203,74 @@ func TestChainCache_EnforcesCapAndRetainsHotNonPinnedEntries(t *testing.T) {
 	chain.mu.Unlock()
 }
 
+func TestCumulativeWorkAtColdCacheMatchesStoredWork(t *testing.T) {
+	dataDir := t.TempDir()
+	chain, err := NewChain(dataDir)
+	if err != nil {
+		t.Fatalf("failed to create chain: %v", err)
+	}
+	mustAddGenesisBlock(t, chain)
+
+	st := chain.Storage()
+	prevHash, _, prevWork, _ := st.GetTip()
+	genesisWork := prevWork
+	const tipHeight = uint64(300)
+	for h := uint64(1); h <= tipHeight; h++ {
+		b := &Block{Header: BlockHeader{
+			Version:    1,
+			Height:     h,
+			PrevHash:   prevHash,
+			MerkleRoot: sha3.Sum256([]byte{0xB0, byte(h), byte(h >> 8)}),
+			Timestamp:  GenesisTimestamp + int64(h)*BlockIntervalSec,
+			Difficulty: MinDifficulty + h,
+		}}
+		hash := b.Hash()
+		work, err := addCumulativeWork(prevWork, b.Header.Difficulty)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CommitBlock(&BlockCommit{Block: b, Height: h, Hash: hash, Work: work, IsMainTip: true}); err != nil {
+			t.Fatalf("commit height %d: %v", h, err)
+		}
+		prevHash, prevWork = hash, work
+	}
+	if err := chain.Close(); err != nil {
+		t.Fatal(err)
+	}
+	chain, err = NewChain(dataDir)
+	if err != nil {
+		t.Fatalf("failed to restart chain: %v", err)
+	}
+	defer chain.Close()
+
+	chain.mu.Lock()
+	defer chain.mu.Unlock()
+
+	clear(chain.workAt)
+	got, err := chain.cumulativeWorkAtLocked(chain.bestHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != chain.totalWork || len(chain.workAt) != 0 {
+		t.Fatalf("tip work: got %d (cached %d), want %d with no walk", got, len(chain.workAt), chain.totalWork)
+	}
+
+	for _, h := range []uint64{1, 2, 150, tipHeight - 1} {
+		clear(chain.workAt)
+		hash, ok := chain.Storage().GetBlockHashByHeight(h)
+		if !ok {
+			t.Fatalf("missing hash at height %d", h)
+		}
+		want := genesisWork
+		for i := uint64(1); i <= h; i++ {
+			want += MinDifficulty + i
+		}
+		got, err := chain.cumulativeWorkAtLocked(hash)
+		if err != nil {
+			t.Fatalf("height %d: %v", h, err)
+		}
+		if got != want {
+			t.Fatalf("height %d: got work %d, want %d", h, got, want)
+		}
+	}
+}

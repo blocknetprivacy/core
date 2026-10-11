@@ -43,6 +43,7 @@ func TestValidateBlockP2P_EnforcesDifficultyOnNonTipFork(t *testing.T) {
 	chain.byHeight[1] = mainTipHash
 	chain.bestHash = mainTipHash
 	chain.height = 1
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	forkChild := &Block{

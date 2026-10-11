@@ -49,6 +49,7 @@ func TestEnforceReorgFinalityLocked_RejectsDeepReorg(t *testing.T) {
 	chain.bestHash = mainTip
 	chain.height = 105
 	chain.totalWork = 106
+	chain.publishTipLocked()
 
 	// Build heavier fork from height 1, which crosses finalized boundary.
 	forkParent := chain.blocks[mainByHeight[1]]
@@ -125,6 +126,7 @@ func TestEnforceReorgFinalityLocked_AllowsShallowReorg(t *testing.T) {
 	chain.bestHash = mainTip
 	chain.height = 105
 	chain.totalWork = 106
+	chain.publishTipLocked()
 
 	// Fork from height 10 (within reorg depth window), should be allowed.
 	forkParent := chain.blocks[mainByHeight[10]]

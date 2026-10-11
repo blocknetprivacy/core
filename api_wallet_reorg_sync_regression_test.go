@@ -16,6 +16,7 @@ func TestHandleLoadWallet_ReorgAtSameHeight_RewindsStaleWalletState(t *testing.T
 	// Simulate a chain that is currently at height 2.
 	chain.mu.Lock()
 	chain.height = 2
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	d, stop := mustStartTestDaemon(t, chain)
@@ -97,6 +98,7 @@ func TestHandleLoadWallet_ResponseIncludesSyncProgress(t *testing.T) {
 	chain.blocks[hash1] = block1
 	chain.byHeight[1] = hash1
 	chain.height = 2
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	d, stop := mustStartTestDaemon(t, chain)

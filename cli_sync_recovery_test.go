@@ -13,6 +13,7 @@ func TestCLIRecoverWalletAfterChainReset_RewindsWhenWalletAhead(t *testing.T) {
 
 	chain.mu.Lock()
 	chain.height = 2
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	d, stop := mustStartTestDaemon(t, chain)
@@ -43,6 +44,7 @@ func TestCLIRecoverWalletAfterChainReset_RewindsSameHeightStaleState(t *testing.
 
 	chain.mu.Lock()
 	chain.height = 2
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	d, stop := mustStartTestDaemon(t, chain)

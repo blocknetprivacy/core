@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -37,6 +38,12 @@ type Explorer struct {
 	statsSnapshot   explorerStatsSnapshot
 	statsReady      bool
 	statsRefreshing bool
+
+	statsPageMu  sync.Mutex
+	statsPageAt  time.Time
+	statsPageFor uint64
+	statsPage    []byte
+	statsPageGz  []byte
 
 	// proveLimiter guards /prove and /prove-send, which do a chain read plus a
 	// per-output ECDH. Same limits as the API's proofLimiter.
@@ -553,7 +560,38 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 func (e *Explorer) handleStats(w http.ResponseWriter, r *http.Request) {
 	snapshot := e.statsForRequest()
 
-	data := map[string]interface{}{
+	if !snapshot.ComputedAt.IsZero() {
+		e.statsPageMu.Lock()
+		page, pageGz := e.statsPage, e.statsPageGz
+		hit := page != nil && e.statsPageAt.Equal(snapshot.ComputedAt) && e.statsPageFor == snapshot.Height
+		e.statsPageMu.Unlock()
+		if !hit {
+			var buf bytes.Buffer
+			if err := explorerStatsPage.Execute(&buf, statsPageData(snapshot)); err != nil {
+				log.Printf("explorer template render failed: %v", err)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			page = buf.Bytes()
+			pageGz = gzipBytes(page)
+			e.statsPageMu.Lock()
+			e.statsPage, e.statsPageGz, e.statsPageAt, e.statsPageFor = page, pageGz, snapshot.ComputedAt, snapshot.Height
+			e.statsPageMu.Unlock()
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if gw, ok := w.(*gzipResponseWriter); ok {
+			gw.writeGzipped(pageGz)
+			return
+		}
+		w.Write(page)
+		return
+	}
+
+	renderTemplate(w, explorerStatsPage, statsPageData(snapshot))
+}
+
+func statsPageData(snapshot explorerStatsSnapshot) map[string]interface{} {
+	return map[string]interface{}{
 		"IsTestnet":    params.IsTestnet,
 		"Height":       snapshot.Height,
 		"Difficulty":   snapshot.Difficulty,
@@ -567,8 +605,6 @@ func (e *Explorer) handleStats(w http.ResponseWriter, r *http.Request) {
 		"DataJSON":     snapshot.DataJSON,
 		"GenesisTs":    snapshot.GenesisTs,
 	}
-
-	renderTemplate(w, explorerStatsPage, data)
 }
 
 // findTx searches for a transaction by hash in the blockchain.

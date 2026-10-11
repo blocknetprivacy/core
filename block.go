@@ -7,9 +7,12 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"os"
+	"runtime"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -869,6 +872,8 @@ func (c *Chain) SetTrustedCheckpoints(checkpoints map[uint64][32]byte, maxHeight
 	if len(checkpoints) == 0 || maxHeight == 0 {
 		c.trustedCheckpoints = nil
 		c.fastSyncUntilHeight = 0
+		c.fastSyncUntil.Store(0)
+		c.checkpointsSnap.Store(nil)
 		return
 	}
 	cp := make(map[uint64][32]byte, len(checkpoints))
@@ -877,6 +882,103 @@ func (c *Chain) SetTrustedCheckpoints(checkpoints map[uint64][32]byte, maxHeight
 	}
 	c.trustedCheckpoints = cp
 	c.fastSyncUntilHeight = maxHeight
+	c.fastSyncUntil.Store(maxHeight)
+	c.checkpointsSnap.Store(&cp)
+}
+
+func (c *Chain) predictSkipVerification(block *Block) bool {
+	until := c.fastSyncUntil.Load()
+	if until == 0 {
+		return false
+	}
+	height, bestHash, _ := c.TipFast()
+	h := block.Header.Height
+	return block.Header.PrevHash == bestHash && height < until && h > 0 && h <= until
+}
+
+func (c *Chain) passesCheapPrecheck(block *Block) bool {
+	h := &block.Header
+	if h.Version == 0 || h.Difficulty < MinDifficulty {
+		return false
+	}
+	if len(block.Transactions) == 0 || slices.Contains(block.Transactions, nil) || !block.Transactions[0].IsCoinbase() || block.Size() > MaxBlockSize {
+		return false
+	}
+	if cp := c.checkpointsSnap.Load(); cp != nil {
+		if want, ok := (*cp)[h.Height]; ok && want != block.Hash() {
+			return false
+		}
+	}
+	ancestors, err := c.storage.GetAncestorHeaders(h.PrevHash, LWMAWindow+1)
+	if err != nil {
+		return false
+	}
+	getParent := func(hash [32]byte) *Block { return ancestors[hash] }
+	parent := getParent(h.PrevHash)
+	if parent == nil || h.Height != parent.Header.Height+1 || h.Timestamp <= parent.Header.Timestamp {
+		return false
+	}
+	expected, err := expectedDifficultyFromParent(parent, getParent)
+	if err != nil || h.Difficulty != expected {
+		return false
+	}
+	median, err := medianTimestampFromParent(parent, getParent, 11)
+	if err != nil || validateTimestampWithMedian(h, median) != nil {
+		return false
+	}
+	root, err := block.ComputeMerkleRoot()
+	return err == nil && root == h.MerkleRoot
+}
+
+func preverifyBlockCrypto(block *Block) error {
+	if !validatePoW(&block.Header) {
+		return fmt.Errorf("invalid proof of work")
+	}
+
+	var (
+		wg       sync.WaitGroup
+		errOnce  sync.Once
+		firstErr error
+	)
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+	run := func(check func() error) {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			if err := check(); err != nil {
+				errOnce.Do(func() { firstErr = err })
+			}
+		}()
+	}
+	for i, tx := range block.Transactions {
+		if !tx.IsCoinbase() {
+			sigHash := tx.SigningHash()
+			for j, input := range tx.Inputs {
+				if len(input.RingMembers) != RingSize || len(input.RingCommitments) != RingSize {
+					wg.Wait()
+					return fmt.Errorf("invalid transaction %d: input %d: ring size must be %d", i, j, RingSize)
+				}
+				run(func() error {
+					sig := &RingCTSignature{Signature: input.RingSignature, RingSize: len(input.RingMembers)}
+					if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], sig); err != nil {
+						return fmt.Errorf("invalid transaction %d: input %d: invalid RingCT signature: %w", i, j, err)
+					}
+					return nil
+				})
+			}
+		}
+		for j, output := range tx.Outputs {
+			run(func() error {
+				if err := VerifyRangeProof(output.Commitment, &RangeProof{Proof: output.RangeProof}); err != nil {
+					return fmt.Errorf("invalid transaction %d: output %d: invalid range proof: %w", i, j, err)
+				}
+				return nil
+			})
+		}
+	}
+	wg.Wait()
+	return firstErr
 }
 
 func (c *Chain) shouldSkipPoWLocked(height uint64, extendsTip bool) bool {
@@ -976,6 +1078,8 @@ type Chain struct {
 	// requiring checkpoint-height hashes to match.
 	trustedCheckpoints  map[uint64][32]byte
 	fastSyncUntilHeight uint64
+	fastSyncUntil       atomic.Uint64
+	checkpointsSnap     atomic.Pointer[map[uint64][32]byte]
 }
 
 func chainProtectedBack() uint64 {
@@ -1065,29 +1169,41 @@ func (c *Chain) cacheTrimLocked() {
 }
 
 func (c *Chain) cumulativeWorkAtLocked(hash [32]byte) (uint64, error) {
-	if work, ok := c.workAt[hash]; ok {
-		return work, nil
+	var hashes [][32]byte
+	var difficulties []uint64
+	var work uint64
+	for cur := hash; ; {
+		if w, ok := c.workAt[cur]; ok {
+			work = w
+			break
+		}
+		if cur == c.bestHash && c.bestHash != ([32]byte{}) {
+			work = c.totalWork
+			break
+		}
+		block := c.getBlockByHashLocked(cur)
+		if block == nil {
+			return 0, fmt.Errorf("block not found for workAt: %x", cur[:8])
+		}
+		hashes = append(hashes, cur)
+		difficulties = append(difficulties, block.Header.Difficulty)
+		if block.Header.Height == 0 {
+			break
+		}
+		cur = block.Header.PrevHash
 	}
-	block := c.getBlockByHashLocked(hash)
-	if block == nil {
-		return 0, fmt.Errorf("block not found for workAt: %x", hash[:8])
-	}
-
-	var parentWork uint64
-	if block.Header.Height > 0 {
-		w, err := c.cumulativeWorkAtLocked(block.Header.PrevHash)
+	for i := len(hashes) - 1; i >= 0; i-- {
+		w, err := addCumulativeWork(work, difficulties[i])
 		if err != nil {
 			return 0, err
 		}
-		parentWork = w
+		work = w
+		c.workAt[hashes[i]] = work
+		c.cacheTouchLocked(hashes[i])
 	}
-	work, err := addCumulativeWork(parentWork, block.Header.Difficulty)
-	if err != nil {
-		return 0, err
+	if len(hashes) > 0 {
+		c.cacheTrimLocked()
 	}
-	c.workAt[hash] = work
-	c.cacheTouchLocked(hash)
-	c.cacheTrimLocked()
 	return work, nil
 }
 
@@ -1257,30 +1373,8 @@ func (c *Chain) publishTipLocked() {
 		height:         c.height,
 		bestHash:       c.bestHash,
 		totalWork:      c.totalWork,
-		nextDifficulty: c.snapshotDifficultyLocked(),
+		nextDifficulty: c.nextDifficultyLocked(),
 	})
-}
-
-// snapshotDifficultyLocked is nextDifficultyLocked with the cache checked
-// first. The tip is published before loadFromStorage warms the block cache, so
-// the LWMA window is not always in memory when this runs. Consensus keeps
-// using nextDifficultyLocked untouched; this returns 0 when it cannot answer,
-// and readers fall back to the locking path.
-func (c *Chain) snapshotDifficultyLocked() uint64 {
-	if c.height < uint64(LWMAWindow) {
-		return MinDifficulty
-	}
-	for i := 0; i <= LWMAWindow; i++ {
-		height := c.height - uint64(LWMAWindow) + uint64(i)
-		hash, ok := c.byHeight[height]
-		if !ok {
-			return 0
-		}
-		if c.blocks[hash] == nil {
-			return 0
-		}
-	}
-	return c.nextDifficultyLocked()
 }
 
 // TipFast returns the chain tip without taking any lock.
@@ -1292,6 +1386,9 @@ func (c *Chain) TipFast() (uint64, [32]byte, uint64) {
 }
 
 func (c *Chain) Height() uint64 {
+	if s := c.tipSnap.Load(); s != nil {
+		return s.height
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.height
@@ -1347,6 +1444,9 @@ func (c *Chain) HasGenesis() bool {
 
 // BestHash returns the hash of the best block
 func (c *Chain) BestHash() [32]byte {
+	if s := c.tipSnap.Load(); s != nil {
+		return s.bestHash
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.bestHash
@@ -1394,7 +1494,9 @@ func (c *Chain) GetBlock(hash [32]byte) *Block {
 // snapshot isolation and blocks are never deleted, so the read is always
 // well-formed. Callers that need a consistent span use GetBlocksByHeightRange.
 func (c *Chain) GetBlockByHeight(height uint64) *Block {
-	c.mu.RLock()
+	if !c.mu.TryRLock() {
+		return c.GetBlockByHeightFast(height)
+	}
 	if hash, ok := c.byHeight[height]; ok {
 		if block, ok := c.blocks[hash]; ok {
 			c.mu.RUnlock()
@@ -1434,6 +1536,14 @@ func (c *Chain) GetBlocksByHeightRange(startHeight, endHeight uint64) []*Block {
 		blocks = append(blocks, b)
 	}
 	return blocks
+}
+
+func (c *Chain) isMainChainHashLocked(height uint64, hash [32]byte) bool {
+	if mainHash, ok := c.byHeight[height]; ok {
+		return mainHash == hash
+	}
+	mainHash, ok := c.storage.GetBlockHashByHeight(height)
+	return ok && mainHash == hash
 }
 
 // getBlockByHeightLocked is the lock-safe inner implementation.
@@ -1476,9 +1586,7 @@ func (c *Chain) NextDifficulty() uint64 {
 
 // NextDifficultyFast returns the difficulty from the tip snapshot, taking no
 // lock. It is the same value NextDifficulty computes for the current tip, so
-// display paths never wait on block processing to render a number. Before the
-// block cache is warm the snapshot cannot carry it, and only then does this
-// fall back to the locking computation.
+// display paths never wait on block processing to render a number.
 func (c *Chain) NextDifficultyFast() uint64 {
 	if s := c.tipSnap.Load(); s != nil && s.nextDifficulty != 0 {
 		return s.nextDifficulty
@@ -1540,7 +1648,7 @@ func (c *Chain) addGenesisBlock(block *Block) error {
 	if _, _, _, found := c.storage.GetTip(); found {
 		return fmt.Errorf("genesis already exists; refusing unvalidated write path")
 	}
-	if err := c.validateBlockForProcessLocked(block); err != nil {
+	if err := c.validateBlockForProcessLocked(block, false); err != nil {
 		return fmt.Errorf("invalid genesis block: %w", err)
 	}
 
@@ -1636,10 +1744,18 @@ func (c *Chain) addBlockInternal(block *Block) error {
 // ProcessBlock validates and adds a block, handling fork choice
 // Returns true if block was accepted (even if not on main chain)
 func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err error) {
+	hash := block.Hash()
+
+	preverified := false
+	if block.Header.Height > 0 && !c.storage.HasBlock(hash) && !c.predictSkipVerification(block) && c.passesCheapPrecheck(block) {
+		if err := preverifyBlockCrypto(block); err != nil {
+			return false, false, err
+		}
+		preverified = true
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	hash := block.Hash()
 
 	// Already have this block? Check memory and storage
 	if _, exists := c.blocks[hash]; exists {
@@ -1649,7 +1765,7 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 		return false, false, nil
 	}
 
-	if err := c.validateBlockForProcessLocked(block); err != nil {
+	if err := c.validateBlockForProcessLocked(block, preverified); err != nil {
 		return false, false, err
 	}
 
@@ -1691,7 +1807,7 @@ func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err
 	return true, false, nil
 }
 
-func (c *Chain) validateBlockForProcessLocked(block *Block) error {
+func (c *Chain) validateBlockForProcessLocked(block *Block, preverified bool) error {
 	isSpent := c.isKeyImageSpentLocked
 	isCanonicalRingMember := c.isCanonicalRingMemberLocked
 	if block != nil && block.Header.Height > 0 {
@@ -1722,8 +1838,8 @@ func (c *Chain) validateBlockForProcessLocked(block *Block) error {
 	}
 
 	extendsTip := block != nil && block.Header.PrevHash == c.bestHash
-	skipPoW := false
-	if block != nil {
+	skipPoW := preverified
+	if block != nil && !skipPoW {
 		skipPoW = c.shouldSkipPoWLocked(block.Header.Height, extendsTip)
 	}
 
@@ -1757,8 +1873,7 @@ func (c *Chain) branchAwareSpentCheckerLocked(parentHash [32]byte) (KeyImageChec
 			return nil, ErrOrphanBlock
 		}
 
-		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
-		if onMainHeight && mainHashAtHeight == currentHash {
+		if c.isMainChainHashLocked(parent.Header.Height, currentHash) {
 			commonHeight = parent.Header.Height
 			break
 		}
@@ -1809,8 +1924,7 @@ func (c *Chain) branchAwareRingMemberCheckerLocked(parentHash [32]byte) (RingMem
 			return nil, ErrOrphanBlock
 		}
 
-		mainHashAtHeight, onMainHeight := c.byHeight[parent.Header.Height]
-		if onMainHeight && mainHashAtHeight == currentHash {
+		if c.isMainChainHashLocked(parent.Header.Height, currentHash) {
 			commonHeight = parent.Header.Height
 			break
 		}
@@ -2107,8 +2221,19 @@ func (c *Chain) nextDifficultyLocked() uint64 {
 	blocks := make([]*Block, LWMAWindow+1)
 	for i := 0; i <= LWMAWindow; i++ {
 		height := c.height - uint64(LWMAWindow) + uint64(i)
-		hash := c.byHeight[height]
+		hash, ok := c.byHeight[height]
+		if !ok {
+			if hash, ok = c.storage.GetBlockHashByHeight(height); !ok {
+				return c.nextDifficultyByHashLocked()
+			}
+		}
 		blocks[i] = c.blocks[hash]
+		if blocks[i] == nil {
+			blocks[i], _ = c.storage.GetBlock(hash)
+			if blocks[i] == nil {
+				return c.nextDifficultyByHashLocked()
+			}
+		}
 	}
 
 	// Calculate weighted sum of solve times and sum of difficulties
@@ -2140,6 +2265,15 @@ func (c *Chain) nextDifficultyLocked() uint64 {
 		newDiff = MinDifficulty
 	}
 	return newDiff
+}
+
+func (c *Chain) nextDifficultyByHashLocked() uint64 {
+	difficulty, err := expectedDifficultyFromParent(c.getBlockByHashLocked(c.bestHash), c.getBlockByHashLocked)
+	if err != nil {
+		log.Printf("next difficulty: %v", err)
+		return MinDifficulty
+	}
+	return difficulty
 }
 
 // reorganizeTo switches the main chain to end at newTip
@@ -2531,6 +2665,9 @@ func (c *Chain) TruncateToHeight(keepHeight uint64) error {
 
 // TotalWork returns the cumulative work of the main chain
 func (c *Chain) TotalWork() uint64 {
+	if s := c.tipSnap.Load(); s != nil {
+		return s.totalWork
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.totalWork
@@ -2547,6 +2684,13 @@ type BlockTemplateParams struct {
 // TemplateParams returns the next-block height, previous hash, and difficulty
 // as a consistent snapshot.
 func (c *Chain) TemplateParams() BlockTemplateParams {
+	if s := c.tipSnap.Load(); s != nil && s.nextDifficulty != 0 {
+		return BlockTemplateParams{
+			Height:     s.height + 1,
+			PrevHash:   s.bestHash,
+			Difficulty: s.nextDifficulty,
+		}
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return BlockTemplateParams{
@@ -2726,13 +2870,11 @@ func finalizeRingSelection(decoyPool []ringMemberCandidate, realPubKey, realComm
 
 // IsFinalized returns true if a block at given height is beyond reorg depth
 func (c *Chain) IsFinalized(height uint64) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	if c.height < height {
+	tip := c.Height()
+	if tip < height {
 		return false
 	}
-	return c.height-height >= MaxReorgDepth
+	return tip-height >= MaxReorgDepth
 }
 
 // FindTxByHashStr searches for a transaction by hex hash string, scanning

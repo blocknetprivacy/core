@@ -14,13 +14,14 @@ import (
 // POST /api/checkpoints/save
 func (s *APIServer) handleSaveCheckpoints(w http.ResponseWriter, r *http.Request) {
 	chain := s.daemon.Chain()
-	height := chain.Height()
+	tip := chain.Height()
+	height := finalizedCheckpointHeight(tip)
 	cpPath := checkpointsPath(s.dataDir)
 
 	if height == 0 {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"written":         0,
-			"chain_height":    0,
+			"chain_height":    tip,
 			"last_checkpoint": 0,
 			"path":            cpPath,
 			"message":         "chain is empty, nothing to save",
@@ -42,7 +43,7 @@ func (s *APIServer) handleSaveCheckpoints(w http.ResponseWriter, r *http.Request
 	if start > height {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"written":         0,
-			"chain_height":    height,
+			"chain_height":    tip,
 			"last_checkpoint": lastWritten,
 			"path":            cpPath,
 			"message":         "already up to date",
@@ -80,7 +81,7 @@ func (s *APIServer) handleSaveCheckpoints(w http.ResponseWriter, r *http.Request
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"written":         written,
-		"chain_height":    height,
+		"chain_height":    tip,
 		"last_checkpoint": lastHeight,
 		"path":            cpPath,
 	})

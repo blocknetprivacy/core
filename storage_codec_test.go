@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
+
+	bolt "go.etcd.io/bbolt"
 )
 
 func richTestBlockForCodec(t *testing.T) *Block {
@@ -218,5 +220,28 @@ func TestOutputCodecRoundTripsAndReadsLegacyJSON(t *testing.T) {
 	}
 	if loaded.Output.PublicKey != output.Output.PublicKey || loaded.BlockHeight != output.BlockHeight {
 		t.Fatal("legacy output changed on read")
+	}
+}
+
+func TestMainChainRangeReadsServePrefixBeforeCorruptRecord(t *testing.T) {
+	chain, _, _ := newPrecheckTestChain(t, 5)
+	st := chain.Storage()
+	bad, ok := st.GetBlockHashByHeight(3)
+	if !ok {
+		t.Fatal("missing height 3")
+	}
+	if err := st.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketBlocks).Put(bad[:], []byte{blockFormatBinaryV1, 1, 2, 3})
+	}); err != nil {
+		t.Fatalf("corrupt record: %v", err)
+	}
+
+	blocks, err := st.GetMainChainBlocks(1, 5)
+	if err != nil || len(blocks) != 2 {
+		t.Fatalf("GetMainChainBlocks: got %d blocks, err %v; want 2 blocks, nil", len(blocks), err)
+	}
+	headers, err := st.GetMainChainHeaders(1, 5)
+	if err != nil || len(headers) != 2 {
+		t.Fatalf("GetMainChainHeaders: got %d headers, err %v; want 2 headers, nil", len(headers), err)
 	}
 }

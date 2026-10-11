@@ -23,6 +23,7 @@ func TestOpenAPIAndHandlerMemoContractParity(t *testing.T) {
 	// We only need a "current height" that makes our synthetic output mature.
 	chain.mu.Lock()
 	chain.height = 100
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)
@@ -283,6 +284,7 @@ func TestOpenAPISendAdvancedContractParity(t *testing.T) {
 
 	chain.mu.Lock()
 	chain.height = 100
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)

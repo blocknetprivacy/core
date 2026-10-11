@@ -143,6 +143,7 @@ func TestReorgLeavesStaleSpendableWalletOutput(t *testing.T) {
 	chain.mu.Lock()
 	chain.height = 1
 	chain.bestHash = blockB.Hash()
+	chain.publishTipLocked()
 	chain.mu.Unlock()
 
 	// The wallet processes the new tip through the same entrypoint the live scan

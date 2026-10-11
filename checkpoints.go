@@ -96,6 +96,14 @@ func ensureCheckpointsFile(path string) (downloaded bool, err error) {
 	return true, nil
 }
 
+func finalizedCheckpointHeight(tip uint64) uint64 {
+	if tip < MaxReorgDepth {
+		return 0
+	}
+	final := tip - MaxReorgDepth
+	return final - final%100
+}
+
 func loadCheckpointsFile(path string) (checkpoints map[uint64][32]byte, heights []uint64, maxHeight uint64, err error) {
 	f, err := os.Open(path)
 	if err != nil {

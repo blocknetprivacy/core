@@ -114,3 +114,86 @@ func TestVerifyChain_DifficultyDerivedFromParentWindow(t *testing.T) {
 	}
 }
 
+
+func restartLWMATestChain(t *testing.T) (*Chain, []*Block, uint64) {
+	t.Helper()
+	dataDir := t.TempDir()
+	chain, err := NewChain(dataDir)
+	if err != nil {
+		t.Fatalf("failed to create chain: %v", err)
+	}
+	mustAddGenesisBlock(t, chain)
+
+	st := chain.Storage()
+	prevHash, _, prevWork, _ := st.GetTip()
+	genesis, err := st.GetBlock(prevHash)
+	if err != nil || genesis == nil {
+		t.Fatalf("failed to load genesis: %v", err)
+	}
+	const tipHeight = uint64(LWMAWindow + 10)
+	blocks := []*Block{genesis}
+	prevTimestamp := GenesisTimestamp
+	for h := uint64(1); h <= tipHeight; h++ {
+		difficulty := uint64(MinDifficulty)
+		if h-1 >= uint64(LWMAWindow) {
+			difficulty = computeLWMA(blocks, h-1)
+		}
+		b := &Block{Header: BlockHeader{
+			Version:    1,
+			Height:     h,
+			PrevHash:   prevHash,
+			MerkleRoot: sha3.Sum256([]byte{byte(h)}),
+			Timestamp:  prevTimestamp + int64(h%7) + 1,
+			Difficulty: difficulty,
+		}}
+		blocks = append(blocks, b)
+		work, err := addCumulativeWork(prevWork, difficulty)
+		if err != nil {
+			t.Fatalf("work at height %d: %v", h, err)
+		}
+		if err := st.CommitBlock(&BlockCommit{Block: b, Height: h, Hash: b.Hash(), Work: work, IsMainTip: true}); err != nil {
+			t.Fatalf("commit at height %d: %v", h, err)
+		}
+		prevHash, prevWork, prevTimestamp = b.Hash(), work, b.Header.Timestamp
+	}
+	if err := chain.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	restarted, err := NewChain(dataDir)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	t.Cleanup(func() { _ = restarted.Close() })
+
+	restarted.mu.Lock()
+	for hash := range restarted.blocks {
+		restarted.cacheForgetLocked(hash)
+	}
+	restarted.mu.Unlock()
+	return restarted, blocks, tipHeight
+}
+
+func TestNextDifficultyReadsWindowFromStorageWhenCacheIsCold(t *testing.T) {
+	chain, blocks, tipHeight := restartLWMATestChain(t)
+	want := computeLWMA(blocks, tipHeight)
+	if got := chain.NextDifficulty(); got != want {
+		t.Fatalf("NextDifficulty with cold cache: got %d, want %d", got, want)
+	}
+}
+
+func TestNextDifficultyWalksHashesWhenHeightIndexIsMissing(t *testing.T) {
+	chain, blocks, tipHeight := restartLWMATestChain(t)
+	missing := tipHeight - 5
+	chain.mu.Lock()
+	delete(chain.byHeight, missing)
+	chain.mu.Unlock()
+	if err := chain.Storage().RemoveMainChainBlock(missing); err != nil {
+		t.Fatalf("remove height index: %v", err)
+	}
+
+	want := computeLWMA(blocks, tipHeight)
+	if got := chain.NextDifficulty(); got != want {
+		t.Fatalf("NextDifficulty with a missing height index: got %d, want %d", got, want)
+	}
+}

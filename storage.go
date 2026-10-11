@@ -287,6 +287,111 @@ func (s *Storage) GetBlockHashByHeight(height uint64) ([32]byte, bool) {
 	return hash, found
 }
 
+func decodeBlockHeader(data []byte) (BlockHeader, error) {
+	if len(data) > 0 && data[0] == blockFormatBinaryV1 {
+		if len(data) < 1+blockHeaderSerializedSize {
+			return BlockHeader{}, fmt.Errorf("stored block too short: %d bytes", len(data))
+		}
+		return deserializeBlockHeader(data[1 : 1+blockHeaderSerializedSize])
+	}
+	block, err := decodeBlock(data)
+	if err != nil {
+		return BlockHeader{}, err
+	}
+	return block.Header, nil
+}
+
+func (s *Storage) GetAncestorHeaders(hash [32]byte, n int) (map[[32]byte]*Block, error) {
+	out := make(map[[32]byte]*Block, n)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		stored := tx.Bucket(bucketBlocks)
+		for range n {
+			data := stored.Get(hash[:])
+			if data == nil {
+				return nil
+			}
+			header, err := decodeBlockHeader(data)
+			if err != nil {
+				return err
+			}
+			out[hash] = &Block{Header: header}
+			if header.Height == 0 {
+				return nil
+			}
+			hash = header.PrevHash
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Storage) GetMainChainHeaders(startHeight uint64, max int) ([]BlockHeader, error) {
+	if max <= 0 {
+		return nil, nil
+	}
+	headers := make([]BlockHeader, 0, max)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		heights := tx.Bucket(bucketHeights)
+		stored := tx.Bucket(bucketBlocks)
+		for i := 0; i < max; i++ {
+			hash := heights.Get(heightKey(startHeight + uint64(i)))
+			if hash == nil {
+				return nil
+			}
+			data := stored.Get(hash)
+			if data == nil {
+				return nil
+			}
+			header, err := decodeBlockHeader(data)
+			if err != nil {
+				log.Printf("storage: undecodable block at height %d: %v", startHeight+uint64(i), err)
+				return nil
+			}
+			headers = append(headers, header)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return headers, nil
+}
+
+func (s *Storage) GetMainChainBlocks(startHeight uint64, max int) ([]*Block, error) {
+	if max <= 0 {
+		return nil, nil
+	}
+	blocks := make([]*Block, 0, max)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		heights := tx.Bucket(bucketHeights)
+		stored := tx.Bucket(bucketBlocks)
+		for i := 0; i < max; i++ {
+			hash := heights.Get(heightKey(startHeight + uint64(i)))
+			if hash == nil {
+				return nil
+			}
+			data := stored.Get(hash)
+			if data == nil {
+				return nil
+			}
+			block, err := decodeBlock(data)
+			if err != nil {
+				log.Printf("storage: undecodable block at height %d: %v", startHeight+uint64(i), err)
+				return nil
+			}
+			blocks = append(blocks, block)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return blocks, nil
+}
+
 // RemoveMainChainBlock removes a height from main chain index (for reorgs)
 func (s *Storage) RemoveMainChainBlock(height uint64) error {
 	key := heightKey(height)
