@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Blocknet Daemon API",
-    "description": "Authenticated JSON API for the Blocknet privacy blockchain daemon. All private endpoints require Bearer token authentication via a cookie file (`<dataDir>/api.cookie`) written on daemon startup. Public routes (GET-only blockchain queries) are also served unauthenticated when using `--explorer` mode.",
+    "description": "JSON API for the Blocknet privacy blockchain daemon. The API starts when the core runs with `--api <addr>`. Private endpoints require Bearer token authentication with the token in `<dataDir>/api.cookie`, written on startup. Public blockchain routes (`GET /api/health`, `/api/status`, `/api/block/{id}`, `/api/tx/{hash}`, `/api/mempool`, `/api/mempool/txs`, `/api/peers`, `/api/peers/banned`, `/api/stats`, and `POST /api/verify`, `/api/verify-proof`) need no token. Node settings are read and changed with `GET` and `PATCH /api/settings`.",
     "version": "0.21.0",
     "license": {
       "name": "MIT"
@@ -11,7 +11,7 @@
   "servers": [
     {
       "url": "http://127.0.0.1:8332",
-      "description": "Local daemon (default --api binding)"
+      "description": "Local daemon (mantle default for --api on mainnet)"
     }
   ],
   "security": [
@@ -46,6 +46,16 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": {
+            "description": "Settings are not available in this server mode",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "settings unavailable" }
               }
             }
           }
@@ -100,6 +110,25 @@
                 "schema": {
                   "$ref": "#/components/schemas/Error"
                 }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "503": {
+            "description": "Settings are not available in this server mode",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "settings unavailable" }
+              }
+            }
+          },
+          "500": {
+            "description": "Settings were valid but could not be saved",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
               }
             }
           }
@@ -170,6 +199,7 @@
                   ]
                 },
                 "example": {
+                  "pid": 4182,
                   "peer_id": "12D3KooWBLUPjZgAoizTkbNJvHxgHkb2tF1saUhmKBzFfo8zZLfj",
                   "peers": 8,
                   "chain_height": 14207,
@@ -193,13 +223,14 @@
                     "address_format": "checksummed",
                     "file_size_bytes": 2048,
                     "synced_height": 14200
-                  }
+                  },
+                  "mempool_generation": 17
                 }
               }
             }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
-        }
+          }
+        },
+        "security": []
       }
     },
     "/api/block/{id}": {
@@ -277,7 +308,6 @@
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": {
             "description": "Block not found",
             "content": {
@@ -287,7 +317,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/tx/{hash}": {
@@ -295,7 +326,7 @@
         "operationId": "getTx",
         "tags": ["Blockchain"],
         "summary": "Get transaction by hash",
-        "description": "Searches mempool first (fast), then scans the blockchain from tip backwards. Returns the transaction with confirmation count and mempool status.",
+        "description": "Searches mempool first (fast), then the transaction index (a chain scan is used only while the index is still building). Returns the transaction with confirmation count and mempool status.",
         "parameters": [
           {
             "name": "hash",
@@ -404,7 +435,6 @@
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" },
           "404": {
             "description": "Transaction not found in mempool or chain",
             "content": {
@@ -414,7 +444,8 @@
               }
             }
           }
-        }
+        },
+        "security": []
       }
     },
     "/api/mempool": {
@@ -434,15 +465,16 @@
                 "example": {
                   "count": 5,
                   "size_bytes": 8420,
+                  "generation": 42,
                   "min_fee": 10000,
                   "max_fee": 25000,
                   "avg_fee": 14600.0
                 }
               }
             }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
-        }
+          }
+        },
+        "security": []
       }
     },
     "/api/mempool/txs": {
@@ -500,9 +532,9 @@
                 }
               }
             }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
-        }
+          }
+        },
+        "security": []
       }
     },
     "/api/peers": {
@@ -545,9 +577,9 @@
                 }
               }
             }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
-        }
+          }
+        },
+        "security": []
       }
     },
     "/api/peers/banned": {
@@ -593,9 +625,9 @@
                 }
               }
             }
-          },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
-        }
+          }
+        },
+        "security": []
       }
     },
     "/api/verify": {
@@ -603,7 +635,7 @@
         "operationId": "verifyMessage",
         "tags": ["Node"],
         "summary": "Verify a signed message",
-        "description": "Verifies an ed25519 signature against a Blocknet stealth address. Does not require a wallet — uses only stateless cryptographic verification. Useful for 'login with Blocknet' flows where any node can validate a signature produced by `POST /api/wallet/sign`. Rate-limited per IP.",
+        "description": "Verifies a Schnorr signature (Ristretto255) against a Blocknet stealth address. Does not require a wallet — uses only stateless cryptographic verification. Useful for 'login with Blocknet' flows where any node can validate a signature produced by `POST /api/wallet/sign`. Rate-limited per IP.",
         "security": [],
         "requestBody": {
           "required": true,
@@ -803,7 +835,7 @@
         "operationId": "loadWallet",
         "tags": ["Wallet"],
         "summary": "Load wallet",
-        "description": "Loads an existing wallet from disk, decrypting with the given password. Primarily used in `--daemon` mode where the app starts without a wallet. If `filepath` is provided, only the basename is used and the file is resolved relative to the configured `--wallet` directory; if omitted, the default wallet path is used. After loading, the wallet is unlocked, all wallet endpoints become available, and miner reward keys are pointed at this wallet. If blocks arrived while the wallet was offline, a background scan is started automatically — check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called once — returns 409 if a wallet is already loaded.",
+        "description": "Loads an existing wallet from disk, decrypting with the given password. The node always starts without a wallet, so a client calls this (or create/import) first. If `filepath` is provided, only the basename is used and the file is resolved in the folder of the `wallet_file` setting; if omitted, `wallet_file` itself is loaded. After loading, the wallet is unlocked, all wallet endpoints become available, and miner reward keys are pointed at this wallet. If blocks arrived while the wallet was offline, a background scan is started automatically — check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Returns 409 while a wallet is loaded or another load is running. After `POST /api/wallet/unload` it can be called again.",
         "requestBody": {
           "required": true,
           "content": {
@@ -819,7 +851,7 @@
                   },
                   "filepath": {
                     "type": "string",
-                    "description": "Optional wallet filename (basename only, no path separators). Resolved relative to the configured `--wallet` directory. Defaults to the configured `--wallet` path."
+                    "description": "Optional wallet file name. Only the base name is used: any folder part is dropped. The file goes in the folder of the `wallet_file` setting (see `PATCH /api/settings`). Defaults to the `wallet_file` setting."
                   }
                 }
               },
@@ -890,20 +922,20 @@
             }
           },
           "401": {
-            "description": "Unauthorized — missing/invalid Bearer token, or wrong wallet password",
+            "description": "Missing or invalid Bearer token (text/plain), or wrong wallet password (JSON)",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
-                  "no_token": {
-                    "summary": "Missing or invalid Bearer token",
-                    "value": { "error": "unauthorized" }
-                  },
                   "wrong_password": {
                     "summary": "Incorrect wallet decryption password",
                     "value": { "error": "wrong password" }
                   }
                 }
+              },
+              "text/plain": {
+                "schema": { "type": "string" },
+                "example": "unauthorized"
               }
             }
           },
@@ -960,7 +992,7 @@
         "operationId": "createWallet",
         "tags": ["Wallet"],
         "summary": "Create new wallet",
-        "description": "Generates a new wallet with a fresh BIP39 seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon. Since this is a brand-new wallet, no chain scanning is needed — the synced height is set to the current chain tip. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "description": "Generates a new wallet with a fresh BIP39 seed, encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon. Since this is a brand-new wallet, no chain scanning is needed — the synced height is set to the current chain tip. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the folder of the `wallet_file` setting; if omitted, `wallet_file` itself is used. Will not overwrite an existing file.",
         "requestBody": {
           "required": true,
           "content": {
@@ -976,7 +1008,7 @@
                   },
                   "filename": {
                     "type": "string",
-                    "description": "Optional wallet filename (basename only, no path separators). Defaults to the configured `--wallet` path."
+                    "description": "Optional wallet file name. Only the base name is used: any folder part is dropped. The file goes in the folder of the `wallet_file` setting (see `PATCH /api/settings`). Defaults to the `wallet_file` setting."
                   }
                 }
               },
@@ -1071,7 +1103,7 @@
         "operationId": "unloadWallet",
         "tags": ["Wallet"],
         "summary": "Unload wallet",
-        "description": "Locks and unloads the currently loaded wallet, releasing all in-memory key material. After this call the node returns to the same state as before load was called — all /api/wallet/* endpoints return 503 until a wallet is loaded again. Mining reward keys are cleared. No request body required.",
+        "description": "Locks and unloads the currently loaded wallet, releasing all in-memory key material. After this call the node returns to the same state as before load was called — wallet endpoints that need a wallet return 503 until one is loaded again with load, create or import. Mining reward keys are cleared. No request body required.",
         "responses": {
           "200": {
             "description": "Wallet unloaded successfully",
@@ -1097,7 +1129,7 @@
         "operationId": "importWallet",
         "tags": ["Wallet"],
         "summary": "Import wallet from recovery seed or keys",
-        "description": "Creates a new wallet from exactly one source: a BIP39 12-word recovery seed (`mnemonic`), hex private keys (`spend_priv` + `view_priv`), or a view-only key pair (`spend_pub` + `view_priv`, which makes a wallet that can watch but not spend). It encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and a background scan of the entire blockchain is started to find outputs belonging to this seed. Check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the configured `--wallet` path; if omitted, the default wallet path is used. Will not overwrite an existing file.",
+        "description": "Creates a new wallet from exactly one source: a BIP39 12-word recovery seed (`mnemonic`), hex private keys (`spend_priv` + `view_priv`), or a view-only key pair (`spend_pub` + `view_priv`, which makes a wallet that can watch but not spend). It encrypts it with the given password, and saves it to disk. The wallet is loaded and unlocked in the running daemon and a background scan of the entire blockchain is started to find outputs belonging to this seed. Check `synced_height` vs `chain_height` in the response or the balance endpoint to track progress. Can only be called when no wallet is currently loaded (returns 409 otherwise). If `filename` is provided, only the basename is used and the file is placed in the same directory as the folder of the `wallet_file` setting; if omitted, the default wallet path is used. Will not overwrite an existing file.",
         "requestBody": {
           "required": true,
           "content": {
@@ -1129,7 +1161,7 @@
                   },
                   "filename": {
                     "type": "string",
-                    "description": "Optional wallet filename (basename only, no path separators). Defaults to the configured --wallet path."
+                    "description": "Optional wallet file name. Only the base name is used: any folder part is dropped. The file goes in the folder of the `wallet_file` setting (see `PATCH /api/settings`). Defaults to the `wallet_file` setting."
                   }
                 }
               },
@@ -1171,6 +1203,7 @@
                 },
                 "example": {
                   "imported": true,
+                  "view_only": false,
                   "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
                   "filename": "restored.dat",
                   "synced_height": 0,
@@ -1189,13 +1222,19 @@
                     "summary": "Malformed JSON",
                     "value": { "error": "invalid JSON body" }
                   },
-                  "missing_mnemonic": {
-                    "summary": "Missing mnemonic",
-                    "value": { "error": "mnemonic is required" }
+                  "bad_source": {
+                    "summary": "No key source, or more than one",
+                    "value": {
+                      "error": "provide exactly one of: mnemonic, spend_priv + view_priv, or spend_pub + view_priv (view-only)"
+                    }
                   },
                   "bad_mnemonic": {
                     "summary": "Invalid seed phrase",
                     "value": { "error": "invalid mnemonic phrase" }
+                  },
+                  "bad_key": {
+                    "summary": "Key is not 64 hex chars",
+                    "value": { "error": "invalid spend_priv: expected 64 hex chars" }
                   },
                   "short_password": {
                     "summary": "Password too short",
@@ -1233,7 +1272,7 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "failed to create wallet: invalid mnemonic: checksum mismatch" }
+                "example": { "error": "internal error" }
               }
             }
           }
@@ -1245,7 +1284,7 @@
         "operationId": "getBalance",
         "tags": ["Wallet"],
         "summary": "Wallet balance",
-        "description": "Returns spendable, pending, and total confirmed balance in atomic units (1 BNT = 100,000,000 atomic units). Spendable excludes immature coinbase outputs. Also includes an optional UX-only `pending_unconfirmed` amount (typically change from your most recent send) plus an estimated unlock ETA in seconds, assuming ~5 minute blocks. If the wallet is more than 100 blocks behind the chain (background scan in progress), balance numbers are omitted and `scanning: true` is returned with progress info instead. Requires unlocked wallet.",
+        "description": "Returns spendable, pending, and total confirmed balance in atomic units (1 BNT = 100,000,000 atomic units). Spendable counts only mature outputs: coinbase outputs need coinbase maturity, and regular outputs need 10 confirmations. Also includes an optional UX-only `pending_unconfirmed` amount (typically change from your most recent send) plus an estimated unlock ETA in seconds, assuming ~5 minute blocks. If the wallet is more than 100 blocks behind the chain (background scan in progress), balance numbers are omitted and `scanning: true` is returned with progress info instead. Requires unlocked wallet.",
         "responses": {
           "200": {
             "description": "Balance breakdown",
@@ -1262,7 +1301,11 @@
                   "total": 73575093035,
                   "outputs_total": 14,
                   "outputs_unspent": 9,
-                  "chain_height": 14207
+                  "chain_height": 14207,
+                  "scanning": false,
+                  "synced_height": 14207,
+                  "memo_decrypt_failures": 0,
+                  "memo_decrypt_last_height": 0
                 }
               }
             }
@@ -1278,7 +1321,7 @@
         "operationId": "getAddress",
         "tags": ["Wallet"],
         "summary": "Wallet stealth address",
-        "description": "Returns the wallet's public stealth address (base58-encoded spend_pub || view_pub, 64 bytes). Senders derive unique one-time addresses from this. Requires unlocked wallet.",
+        "description": "Returns the wallet's public stealth address (base58 of spend_pub || view_pub || 4-byte checksum, 68 bytes). Senders derive unique one-time addresses from this. Requires unlocked wallet.",
         "responses": {
           "200": {
             "description": "Wallet address",
@@ -1289,7 +1332,7 @@
                   "properties": {
                     "address": {
                       "type": "string",
-                      "description": "Base58-encoded stealth address (spend_pub || view_pub, 64 raw bytes)"
+                      "description": "Base58-encoded stealth address (spend_pub || view_pub || 4-byte checksum, 68 raw bytes)"
                     },
                     "view_only": {
                       "type": "boolean",
@@ -1315,7 +1358,7 @@
         "operationId": "getHistory",
         "tags": ["Wallet"],
         "summary": "Wallet output history",
-        "description": "Returns wallet outputs (spendable UTXOs) with amounts, block heights, coinbase flag, and spent status. Requires unlocked wallet.",
+        "description": "Returns every wallet output, spent and immature ones included, with amounts, block heights, coinbase flag, and spent status. Requires unlocked wallet.",
         "responses": {
           "200": {
             "description": "Output list",
@@ -1619,7 +1662,7 @@
             "in": "header",
             "required": false,
             "schema": { "type": "string", "maxLength": 128 },
-            "description": "Optional idempotency key for retry-safe client behavior. Duplicate requests with the same key and identical JSON payload replay the original response for a bounded window (~10 minutes). Reusing a key with a different payload fails with 409."
+            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. A key whose request was still running when the node stopped stays in progress and returns 409 for that key."
           }
         ],
         "requestBody": {
@@ -1657,7 +1700,8 @@
                       "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
                       "amount": 500000000
                     }
-                  ]
+                  ],
+                  "dry_run": false
                 }
               }
             }
@@ -1670,15 +1714,25 @@
                 "examples": {
                   "bad_address": {
                     "summary": "Invalid stealth address",
-                    "value": { "error": "invalid address: checksum mismatch" }
+                    "value": { "error": "recipient 0: invalid address" }
                   },
                   "zero_amount": {
                     "summary": "Zero amount",
-                    "value": { "error": "amount must be greater than 0" }
+                    "value": { "error": "recipient 0: amount must be greater than 0" }
                   },
                   "insufficient": {
                     "summary": "Insufficient balance",
-                    "value": { "error": "insufficient spendable balance: have 250000000, need 500000000" }
+                    "value": { "error": "insufficient spendable balance: have 2.5 BNT, need 5 BNT" }
+                  },
+                  "insufficient_pending": {
+                    "summary": "Funds still confirming",
+                    "value": {
+                      "error": "insufficient spendable balance: have 2.5 BNT spendable + 3 BNT pending (confirming), need 5 BNT"
+                    }
+                  },
+                  "key_too_long": {
+                    "summary": "Idempotency key over 128 chars",
+                    "value": { "error": "idempotency key too long" }
                   }
                 }
               }
@@ -1701,12 +1755,63 @@
               }
             }
           },
+          "409": {
+            "description": "Idempotency conflict or double spend",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "mismatch": {
+                    "summary": "Same key, different payload",
+                    "value": { "error": "idempotency key reuse with different request" }
+                  },
+                  "inflight": {
+                    "summary": "Previous request still processing",
+                    "value": { "error": "idempotency key in progress" }
+                  },
+                  "double_spend": {
+                    "summary": "Input already spent in the mempool or chain",
+                    "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...)" }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Transaction was built but the mempool rejected it",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "mempool rejected: mempool full" }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited (about 1 send per 2 s per IP, burst 2, one at a time)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "rate": {
+                    "summary": "Per-IP rate limit",
+                    "value": { "error": "send rate limit exceeded" }
+                  },
+                  "busy": {
+                    "summary": "Another send is running",
+                    "value": { "error": "send busy, retry later" }
+                  }
+                }
+              }
+            }
+          },
           "500": {
             "description": "Transaction build or broadcast failed",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "failed to build transaction: not enough ring members available" }
+                "example": {
+                  "error": "failed to select ring members: not enough outputs for ring (need 15, have 9)"
+                }
               }
             }
           },
@@ -1763,7 +1868,7 @@
             "in": "header",
             "required": false,
             "schema": { "type": "string", "maxLength": 128 },
-            "description": "Optional idempotency key (same behavior as POST /api/wallet/send). Namespaced separately from the standard send endpoint."
+            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. A key whose request was still running when the node stopped stays in progress and returns 409 for that key."
           }
         ],
         "requestBody": {
@@ -1883,23 +1988,47 @@
                   },
                   "not_found": {
                     "summary": "Output not found",
-                    "value": { "error": "input 0: output not found (txid abcd...1234, index 0)" }
+                    "value": { "error": "input 0: output not found (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)" }
                   },
                   "immature": {
                     "summary": "Immature output",
-                    "value": { "error": "input 1: immature, has 3 confirmations, needs 10 (txid abcd...1234, index 0)" }
+                    "value": { "error": "input 1: immature, has 3 confirmations, needs 10 (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)" }
                   },
                   "in_mempool": {
                     "summary": "Key image already in mempool",
-                    "value": { "error": "input 0: key image already in mempool (txid abcd...1234, index 0)" }
+                    "value": { "error": "input 0: key image already in mempool (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)" }
                   },
                   "duplicate": {
                     "summary": "Duplicate input reference",
                     "value": { "error": "input 2: duplicate of input 0 (txid b3c4d5...a2b3c4, index 0)" }
                   },
                   "insufficient": {
+                    "summary": "Dry run: inputs don't cover amount + fee",
+                    "value": {
+                      "error": "insufficient input amount: inputs total 0.001 BNT, need at least 5.00015 BNT (amount 5 BNT + fee 0.00015 BNT)"
+                    }
+                  },
+                  "insufficient_build": {
                     "summary": "Inputs don't cover amount + fee",
-                    "value": { "error": "insufficient input amount: inputs total 100000, need 500015000 (amount 500000000 + fee 15000)" }
+                    "value": { "error": "insufficient funds after fee adjustment: have 0.001 BNT need 5.00015 BNT" }
+                  },
+                  "too_many_inputs": {
+                    "summary": "More than 256 inputs",
+                    "value": { "error": "too many inputs (max 256)" }
+                  },
+                  "bad_txid": {
+                    "summary": "txid is not 64 hex chars",
+                    "value": { "error": "input 0: txid must be 64 hex characters" }
+                  },
+                  "spent": {
+                    "summary": "Output already spent",
+                    "value": {
+                      "error": "input 0: output already spent (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)"
+                    }
+                  },
+                  "bad_split": {
+                    "summary": "change_split above 4",
+                    "value": { "error": "change_split must be 1-4" }
                   }
                 }
               }
@@ -1919,7 +2048,7 @@
             }
           },
           "409": {
-            "description": "Idempotency key conflict",
+            "description": "Idempotency conflict or double spend",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
@@ -1931,8 +2060,21 @@
                   "inflight": {
                     "summary": "Previous request still processing",
                     "value": { "error": "idempotency key in progress" }
+                  },
+                  "double_spend": {
+                    "summary": "Input already spent in the mempool or chain",
+                    "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...)" }
                   }
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Transaction was built but the mempool rejected it",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "mempool rejected: mempool full" }
               }
             }
           },
@@ -2009,7 +2151,7 @@
         "operationId": "signMessage",
         "tags": ["Wallet"],
         "summary": "Sign a message",
-        "description": "Signs an arbitrary message with the wallet's spend private key (ed25519). Useful for proving address ownership to external services ('login with Blocknet'). Response includes `Cache-Control: no-store`. Requires unlocked full wallet (not view-only).",
+        "description": "Signs an arbitrary message with the wallet's spend private key (Schnorr over Ristretto255). Useful for proving address ownership to external services ('login with Blocknet'). Response includes `Cache-Control: no-store`. Requires unlocked full wallet (not view-only).",
         "requestBody": {
           "required": true,
           "content": {
@@ -2172,15 +2314,59 @@
             }
           },
           "401": {
-            "description": "Incorrect password or missing Bearer token",
+            "description": "Missing or invalid Bearer token (text/plain), or incorrect password (JSON)",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "incorrect password" }
+                "examples": {
+                  "wrong_password": {
+                    "summary": "Incorrect password",
+                    "value": { "error": "wrong password" }
+                  }
+                }
+              },
+              "text/plain": {
+                "schema": { "type": "string" },
+                "example": "unauthorized"
               }
             }
           },
-          "503": { "$ref": "#/components/responses/NoWallet" }
+          "429": {
+            "description": "Too many failed attempts (lockout after 8 failures). A Retry-After header is set.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "lockout": {
+                    "summary": "Locked out",
+                    "value": { "error": "too many unlock attempts; try again later" }
+                  },
+                  "backoff": {
+                    "summary": "Backoff between attempts",
+                    "value": { "error": "unlock backoff active; retry later" }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No wallet loaded, or password state missing",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "no_wallet": {
+                    "summary": "No wallet loaded",
+                    "value": { "error": "no wallet loaded" }
+                  },
+                  "no_state": {
+                    "summary": "Password state not set",
+                    "value": { "error": "unlock unavailable: password state not initialized" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -2260,7 +2446,51 @@
               }
             }
           },
-          "503": { "$ref": "#/components/responses/NoWallet" }
+          "429": {
+            "description": "Too many failed password attempts. A Retry-After header is set.",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "lockout": {
+                    "summary": "Locked out",
+                    "value": { "error": "too many attempts; try again later" }
+                  },
+                  "backoff": {
+                    "summary": "Backoff between attempts",
+                    "value": { "error": "attempt backoff active; retry later" }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Seed could not be read",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
+              }
+            }
+          },
+          "503": {
+            "description": "No wallet loaded, or password state missing",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "no_wallet": {
+                    "summary": "No wallet loaded",
+                    "value": { "error": "no wallet loaded" }
+                  },
+                  "no_state": {
+                    "summary": "Password state not set",
+                    "value": { "error": "seed unavailable: password state not initialized" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -2315,7 +2545,7 @@
         "operationId": "provePayment",
         "tags": ["Wallet"],
         "summary": "Prove payment ownership",
-        "description": "Derives the deterministic transaction private key to prove a transaction was sent by this wallet. The tx key can be shared with a recipient or third party to verify payment. Works on both full and view-only wallets (uses the view private key). Requires loaded, unlocked wallet.",
+        "description": "Derives the deterministic transaction private key to prove a transaction was sent by this wallet. The tx key can be shared with a recipient or third party to verify payment. Works on both full and view-only wallets (uses the view private key). Requires loaded, unlocked wallet. Response includes `Cache-Control: no-store`.",
         "requestBody": {
           "required": true,
           "content": {
@@ -2328,8 +2558,7 @@
                     "type": "string",
                     "minLength": 64,
                     "maxLength": 64,
-                    "pattern": "^[0-9a-f]{64}$",
-                    "description": "Transaction hash (64 hex characters)"
+                    "description": "Transaction hash (64 characters). Only the length is checked; a value that is not hex returns 404."
                   }
                 }
               },
@@ -2442,9 +2671,8 @@
                       "description": "Number of outputs where key image derivation failed"
                     },
                     "duplicate_groups": {
-                      "type": "array",
-                      "nullable": true,
-                      "description": "Groups of outputs sharing a key image (null if none)",
+                      "type": ["array", "null"],
+                      "description": "Groups of outputs sharing a key image. null when none are found.",
                       "items": {
                         "type": "object",
                         "properties": {
@@ -2553,11 +2781,11 @@
                   },
                   "file_password": {
                     "type": "string",
-                    "description": "Password for the new view-only wallet file (required when create_file is true; must differ from the main wallet password)"
+                    "description": "Password for the new view-only wallet file (min 3 characters, required when create_file is true). Use a different password from the main wallet; the core does not check this."
                   },
                   "filename": {
                     "type": "string",
-                    "description": "Optional basename for the view-only wallet file (defaults to <wallet>.view.wallet.dat)"
+                    "description": "Optional file name for the view-only wallet. `.wallet.dat` is added when missing. Only the base name is used: any folder part is dropped. The file goes in the folder of the `wallet_file` setting (see `PATCH /api/settings`). Defaults to the main wallet name with `.view` added, for example `main.view.wallet.dat`."
                   }
                 }
               },
@@ -2614,11 +2842,24 @@
             }
           },
           "400": {
-            "description": "Invalid JSON body",
+            "description": "Invalid request",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "invalid JSON body" }
+                "examples": {
+                  "bad_json": {
+                    "summary": "Malformed JSON",
+                    "value": { "error": "invalid JSON body" }
+                  },
+                  "short_file_password": {
+                    "summary": "file_password too short",
+                    "value": { "error": "file_password must be at least 3 characters" }
+                  },
+                  "bad_filename": {
+                    "summary": "Invalid filename",
+                    "value": { "error": "invalid filename" }
+                  }
+                }
               }
             }
           },
@@ -2657,21 +2898,50 @@
             }
           },
           "429": {
-            "description": "Too many failed password attempts",
+            "description": "Too many failed password attempts. A Retry-After header is set.",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "too many attempts; try again later" }
-              }
-            },
-            "headers": {
-              "Retry-After": {
-                "schema": { "type": "integer" },
-                "description": "Seconds until the next attempt is allowed"
+                "examples": {
+                  "lockout": {
+                    "summary": "Locked out",
+                    "value": { "error": "too many attempts; try again later" }
+                  },
+                  "backoff": {
+                    "summary": "Backoff between attempts",
+                    "value": { "error": "attempt backoff active; retry later" }
+                  }
+                }
               }
             }
           },
-          "503": { "$ref": "#/components/responses/NoWallet" }
+          "500": {
+            "description": "View-only wallet file could not be written",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "failed to create view-only wallet" }
+              }
+            }
+          },
+          "503": {
+            "description": "No wallet loaded, or password state missing",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "no_wallet": {
+                    "summary": "No wallet loaded",
+                    "value": { "error": "no wallet loaded" }
+                  },
+                  "no_state": {
+                    "summary": "Password state not set",
+                    "value": { "error": "viewkeys unavailable: password state not initialized" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -2680,7 +2950,7 @@
         "operationId": "saveCheckpoints",
         "tags": ["Blockchain"],
         "summary": "Write block checkpoints to disk",
-        "description": "Appends checkpoints (block height + hash, every 100 blocks) to the on-disk checkpoints file, resuming after the last one already written. Checkpoints let nodes fast-sync by skipping proof-of-work re-verification at or below the checkpointed height. Requires Bearer token.",
+        "description": "Appends checkpoints (block height + hash, every 100 blocks) to `<dataDir>/checkpoints.dat`, resuming after the last one already written. Only finalized heights are written: up to the chain tip minus 100 blocks, rounded down to a multiple of 100. If no height is final yet, it writes nothing and returns `message: \"chain is empty, nothing to save\"`. Checkpoints let nodes fast-sync by skipping proof-of-work re-verification at or below the checkpointed height. Requires Bearer token.",
         "responses": {
           "200": {
             "description": "Checkpoints written (or already up to date)",
@@ -2702,11 +2972,24 @@
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "500": {
-            "description": "Failed to write checkpoints",
+            "description": "Failed to write the checkpoints file",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "failed to write checkpoint" }
+                "examples": {
+                  "mkdir": {
+                    "summary": "Data dir could not be created",
+                    "value": { "error": "failed to create data dir" }
+                  },
+                  "open": {
+                    "summary": "File could not be opened",
+                    "value": { "error": "failed to open checkpoints file" }
+                  },
+                  "write": {
+                    "summary": "Write failed",
+                    "value": { "error": "failed to write checkpoint" }
+                  }
+                }
               }
             }
           }
@@ -2741,7 +3024,7 @@
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "502": {
-            "description": "Failed to fetch checkpoints",
+            "description": "Checkpoints file could not be downloaded or saved locally",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
@@ -2785,8 +3068,7 @@
                     },
                     "violations": {
                       "type": "array",
-                      "nullable": true,
-                      "description": "List of violations (absent when clean)",
+                      "description": "List of violations. Omitted when the chain is clean.",
                       "items": {
                         "type": "object",
                         "properties": {
@@ -2817,8 +3099,8 @@
                       "height": 14207,
                       "clean": false,
                       "violations": [
-                        { "height": 8042, "message": "difficulty mismatch: expected 1234 got 5678" },
-                        { "height": 8043, "message": "timestamp not greater than median of last 11 blocks" }
+                        { "height": 8042, "message": "difficulty mismatch: stored 5678, expected 1234" },
+                        { "height": 8043, "message": "timestamp 1708531200 <= median 1708531260" }
                       ]
                     }
                   }
@@ -2876,7 +3158,7 @@
         "operationId": "startMining",
         "tags": ["Mining"],
         "summary": "Start mining",
-        "description": "Starts the Argon2id proof-of-work miner. Each thread allocates ~2GB RAM. No request body required.",
+        "description": "Starts the Argon2id proof-of-work miner. Load a wallet first: the miner pays the wallet that was loaded when the core started mining, and with no wallet the coinbase pays throwaway keys and the reward is lost. The miner waits until it has at least one peer. Each thread allocates ~2GB RAM. No request body required.",
         "responses": {
           "200": {
             "description": "Mining started",
@@ -2956,7 +3238,7 @@
                   "threads": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "Number of mining threads"
+                    "description": "Number of mining threads, from 1 to the number of CPU cores. A larger value returns 400 \"threads must be <= N\"."
                   }
                 }
               },
@@ -2999,7 +3281,7 @@
         "operationId": "getBlockTemplate",
         "tags": ["Mining"],
         "summary": "Get block template for pool mining",
-        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce, used as input to the PoW hash function. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Its compact-submission lease expires at `template_expires_at_unix_ms`; clients may extend a live, current-tip lease with `POST /api/mining/renewtemplate`. The daemon retains at most 512 live leases for one tip and returns 503 rather than evicting a lease before its advertised expiry. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
+        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce. PoW hash = Argon2id(password = nonce as 8 bytes little-endian, salt = header_base bytes), 32-byte output. The `block` field is the raw consensus form (PascalCase header keys, byte arrays as integer arrays), not the `GET /api/block` summary. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Its compact-submission lease expires at `template_expires_at_unix_ms`; clients may extend a live, current-tip lease with `POST /api/mining/renewtemplate`. The daemon retains at most 512 live leases for one tip and returns 503 rather than evicting a lease before its advertised expiry. Requires a loaded wallet (for coinbase keys) but does not require it to be unlocked.",
         "parameters": [
           {
             "name": "address",
@@ -3021,17 +3303,33 @@
                 "example": {
                   "block": {
                     "header": {
-                      "version": 1,
-                      "height": 14208,
-                      "prev_hash": "0000c3a5b7e2d1f489a1bc37e5d204f8c612aa9b33e7f04d12b8a9e6c7f50321",
-                      "merkle_root": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-                      "timestamp": 1738800240,
-                      "difficulty": 100000,
-                      "nonce": 0
+                      "Version": 1,
+                      "Height": 14208,
+                      "PrevHash": [0,0,195,165,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                      "MerkleRoot": [171,205,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                      "Timestamp": 1708531200,
+                      "Difficulty": 14208,
+                      "Nonce": 0
                     },
-                    "transactions": []
+                    "transactions": [
+                      {
+                        "version": 1,
+                        "inputs": [],
+                        "outputs": [
+                          {
+                            "commitment": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                            "public_key": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                            "range_proof": "",
+                            "encrypted_amount": [0,0,0,0,0,0,0,0],
+                            "encrypted_memo": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+                          }
+                        ],
+                        "fee": 0,
+                        "tx_public_key": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
+                      }
+                    ]
                   },
-                  "target": "000000000000f4240000000000000000000000000000000000000000000000000",
+                  "target": "0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
                   "header_base": "0100000080370000...",
                   "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4",
                   "template_id": "7b3d2f4a9d11c8ef",
@@ -3041,7 +3339,15 @@
               }
             }
           },
-          "400": { "$ref": "#/components/responses/BadRequest" },
+          "400": {
+            "description": "Invalid address override",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "invalid address" }
+              }
+            }
+          },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "503": {
             "description": "A template cannot currently be served because no wallet is loaded, the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live. Capacity responses include Retry-After with the number of seconds until the earliest lease expiry.",
@@ -3074,6 +3380,15 @@
                     }
                   }
                 }
+              }
+            }
+          },
+          "500": {
+            "description": "Template could not be built",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
               }
             }
           }
@@ -3127,6 +3442,15 @@
                 "example": { "error": "template no longer builds on current tip" }
               }
             }
+          },
+          "500": {
+            "description": "Lease could not be renewed",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "internal error" }
+              }
+            }
           }
         }
       }
@@ -3136,14 +3460,14 @@
         "operationId": "submitBlock",
         "tags": ["Mining"],
         "summary": "Submit a solved block",
-        "description": "Accepts a solved block (from pool mining or external miner) and adds it to the chain. The block must pass full validation: correct height, prev_hash linking to current tip, valid difficulty, valid Argon2id proof-of-work, valid merkle root, and valid transactions. On success the block is broadcast to all peers and subscribers are notified.",
+        "description": "Accepts a solved block (from pool mining or an external miner). Send either the full block in the raw consensus form (see `RawBlock`, as returned in `GET /api/mining/blocktemplate`) or a compact `template_id` + `nonce`. The block must pass full validation: correct height, prev hash linking to the current tip, valid difficulty, valid Argon2id proof-of-work, valid merkle root, and valid transactions. On success the block is broadcast to peers and `mined_block` subscribers are notified. `accepted: true` is also returned when the block is valid but lands on a side chain. Rate limit: 2 requests/s per IP (burst 4), 2 at a time.",
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
                 "oneOf": [
-                  { "$ref": "#/components/schemas/Block" },
+                  { "$ref": "#/components/schemas/RawBlock" },
                   { "$ref": "#/components/schemas/CompactSubmitBlock" }
                 ]
               },
@@ -3178,23 +3502,49 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
-                  "invalid_pow": {
-                    "summary": "Failed PoW validation",
-                    "value": { "error": "invalid block: invalid proof of work" }
+                  "rejected": {
+                    "summary": "Failed validation (details are logged, not returned)",
+                    "value": { "error": "block rejected" }
                   },
-                  "bad_height": {
-                    "summary": "Wrong height",
-                    "value": { "error": "invalid block: invalid height: expected 14208, got 14209" }
+                  "stale": {
+                    "summary": "Block is for an old tip",
+                    "value": { "error": "block rejected as stale" }
                   },
-                  "duplicate": {
-                    "summary": "Already known",
-                    "value": { "error": "block not accepted (duplicate or stale)" }
+                  "bad_json": {
+                    "summary": "Body is not valid JSON or not a block",
+                    "value": { "error": "invalid JSON body" }
+                  },
+                  "no_nonce": {
+                    "summary": "template_id without nonce",
+                    "value": { "error": "nonce is required with template_id" }
+                  },
+                  "bad_template": {
+                    "summary": "Template lease is unknown or expired",
+                    "value": { "error": "unknown or expired template_id" }
                   }
                 }
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "rate": {
+                    "summary": "Per-IP rate limit",
+                    "value": { "error": "submitblock rate limit exceeded" }
+                  },
+                  "busy": {
+                    "summary": "Too many submits at once",
+                    "value": { "error": "submitblock busy, retry later" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -3203,7 +3553,7 @@
         "operationId": "purgeData",
         "tags": ["Admin"],
         "summary": "Purge blockchain data",
-        "description": "Deletes all blockchain data from disk. Requires explicit confirmation. Stops the daemon, removes the data directory, then shuts down the API server. A restart is required after this operation. This is irreversible.",
+        "description": "Deletes all blockchain data from disk. Requires explicit confirmation. Stops the daemon, removes the data directory (chain database, checkpoints file, send idempotency records and the API cookie), keeps `settings.json`, then shuts down the API server. A restart is required after this operation. This is irreversible.",
         "requestBody": {
           "required": true,
           "content": {
@@ -3258,7 +3608,7 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "failed to purge blockchain data: permission denied" }
+                "example": { "error": "internal error" }
               }
             }
           }
@@ -3270,7 +3620,7 @@
         "operationId": "getEvents",
         "tags": ["Events"],
         "summary": "Real-time event stream (SSE)",
-        "description": "Server-Sent Events stream for real-time updates. On connection, emits a `connected` event with current chain state. Then streams `new_block` for every new block added to the chain and `mined_block` for blocks mined by this node. Sends SSE comment keepalives every 30s. Write timeout is disabled for this long-lived connection.",
+        "description": "Server-Sent Events stream for real-time updates. On connection, emits a `connected` event with current chain state. Then streams `new_block` for every new block added to the chain and `mined_block` for every block accepted through `POST /api/mining/submitblock` or the built-in miner. Sends SSE comment keepalives every 30s. Write timeout is disabled for this long-lived connection.",
         "responses": {
           "200": {
             "description": "SSE event stream (long-lived connection)",
@@ -3301,7 +3651,25 @@
               }
             }
           },
-          "401": { "$ref": "#/components/responses/Unauthorized" }
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": {
+            "description": "Streaming is not available",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "examples": {
+                  "no_flush": {
+                    "summary": "Server cannot stream",
+                    "value": { "error": "streaming not supported" }
+                  },
+                  "init": {
+                    "summary": "Stream setup failed",
+                    "value": { "error": "failed to initialize SSE stream" }
+                  }
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -3319,60 +3687,61 @@
         "type": "object",
         "properties": {
           "listen": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "P2P listen multiaddr. Applies after restart."
           },
           "seed": {
-            "type": "boolean",
+            "type": ["boolean", "null"],
             "description": "Seed mode with a fixed identity. Applies after restart."
           },
           "full_sync": {
-            "type": "boolean",
+            "type": ["boolean", "null"],
             "description": "Ignore checkpoints and verify the whole chain. Applies after restart. Always on for testnet."
           },
           "save_checkpoints": {
-            "type": "boolean",
+            "type": ["boolean", "null"],
             "description": "Append a checkpoint every 100 finalized blocks. Applies now."
           },
           "explorer_addr": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Explorer HTTP address. Empty turns the explorer off. Applies now."
           },
           "wallet_file": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Default wallet file. Its folder holds every wallet the API loads, creates or imports. Applies now."
           },
           "p2p_max_inbound": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "description": "Max inbound peers, 0 = default. Applies after restart."
           },
           "p2p_max_outbound": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "description": "Max outbound peers, 0 = default. Applies after restart."
           },
           "p2p_whitelist": {
-            "type": "array",
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             },
             "description": "Peer IDs that are never banned. Applies now."
           },
           "extra_peers": {
-            "type": "array",
+            "type": ["array", "null"],
             "items": {
               "type": "string"
             },
             "description": "Extra peer multiaddrs to dial at startup. Applies after restart."
           },
           "identity_key_path": {
-            "type": "string",
+            "type": ["string", "null"],
             "description": "Path of a fixed P2P identity key. Empty uses the seed default or an ephemeral identity. Applies after restart."
           },
           "chain_cache_cap": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "description": "Blocks kept in memory, 0 = default. Applies after restart."
           }
-        }
+        },
+        "description": "Node settings saved in `<dataDir>/settings.json`. In a PATCH body, a field set to null goes back to its default. Responses never contain null."
       },
       "Error": {
         "type": "object",
@@ -3392,6 +3761,7 @@
       "DaemonStats": {
         "type": "object",
         "properties": {
+          "pid": { "type": "integer", "description": "Process ID of the core" },
           "peer_id": { "type": "string", "description": "This node's libp2p peer ID" },
           "peers": { "type": "integer", "description": "Currently connected peer count" },
           "chain_height": { "type": "integer", "description": "Current chain tip height" },
@@ -3401,9 +3771,22 @@
           "mempool_bytes": { "type": "integer", "description": "Total mempool size in bytes" },
           "mempool_generation": { "type": "integer", "format": "int64", "description": "Monotonic mempool content generation used by mining clients to detect template changes" },
           "syncing": { "type": "boolean", "description": "True if the node is currently syncing blocks from peers" },
+          "sync_progress": {
+            "type": "integer",
+            "description": "Blocks synced so far in the current sync. Only present while syncing."
+          },
+          "sync_target": {
+            "type": "integer",
+            "description": "Target height of the current sync. Only present while syncing."
+          },
+          "sync_percent": {
+            "type": "string",
+            "description": "Sync progress as a percent string such as \"12.3%\". Only present while syncing."
+          },
           "identity_age": { "type": "string", "description": "Duration since last P2P identity rotation (e.g. \"2h34m12s\")" }
         },
         "example": {
+          "pid": 4182,
           "peer_id": "12D3KooWBLUPjZgAoizTkbNJvHxgHkb2tF1saUhmKBzFfo8zZLfj",
           "peers": 8,
           "chain_height": 14207,
@@ -3561,8 +3944,9 @@
         "properties": {
           "version": { "type": "integer", "minimum": 0, "maximum": 255 },
           "inputs": {
-            "type": "array",
-            "items": { "$ref": "#/components/schemas/TxInput" }
+            "type": ["array", "null"],
+            "items": { "$ref": "#/components/schemas/TxInput" },
+            "description": "Transaction inputs. null for a coinbase transaction read from the chain."
           },
           "outputs": {
             "type": "array",
@@ -3570,6 +3954,33 @@
           },
           "fee": { "type": "integer", "description": "Fee in atomic units" },
           "tx_public_key": { "$ref": "#/components/schemas/Bytes32" }
+        }
+      },
+      "RawBlockHeader": {
+        "type": "object",
+        "description": "Block header in Go's default JSON form. Keys are PascalCase and hashes are 32-integer arrays.",
+        "required": ["Version", "Height", "PrevHash", "MerkleRoot", "Timestamp", "Difficulty", "Nonce"],
+        "properties": {
+          "Version": { "type": "integer" },
+          "Height": { "type": "integer" },
+          "PrevHash": { "$ref": "#/components/schemas/Bytes32" },
+          "MerkleRoot": { "$ref": "#/components/schemas/Bytes32" },
+          "Timestamp": { "type": "integer", "description": "Unix seconds" },
+          "Difficulty": { "type": "integer" },
+          "Nonce": { "type": "integer", "description": "PoW nonce, an unsigned 64-bit integer" }
+        }
+      },
+      "RawBlock": {
+        "type": "object",
+        "description": "Full block in the raw consensus JSON form used by mining.",
+        "required": ["header", "transactions"],
+        "properties": {
+          "header": { "$ref": "#/components/schemas/RawBlockHeader" },
+          "transactions": {
+            "type": "array",
+            "description": "Coinbase first, then the selected mempool transactions",
+            "items": { "$ref": "#/components/schemas/Transaction" }
+          }
         }
       },
       "TxLookupResult": {
@@ -3745,7 +4156,7 @@
           "synced_height": { "type": "integer", "description": "Wallet's last scanned block height" },
           "chain_height": { "type": "integer", "description": "Current chain tip height" },
           "spendable": { "type": "integer", "description": "Mature, spendable balance in atomic units (omitted while scanning)" },
-          "pending": { "type": "integer", "description": "Immature coinbase outputs awaiting maturity (atomic units, omitted while scanning)" },
+          "pending": { "type": "integer", "description": "Unspent outputs that are not mature yet: coinbase outputs before maturity and regular outputs with fewer than 10 confirmations (atomic units, omitted while scanning)" },
           "pending_unconfirmed": { "type": "integer", "description": "Unconfirmed expected credits not yet scanned from a block (typically change from your most recent send). UX-only; not part of confirmed balance totals (atomic units). Omitted while scanning." },
           "pending_unconfirmed_eta": { "type": "integer", "description": "Estimated seconds until `pending_unconfirmed` becomes spendable, assuming ~5 minute blocks and requiring next block + 10 confirmations. 0 when no pending_unconfirmed. Omitted while scanning." },
           "total": { "type": "integer", "description": "Total unspent balance: spendable + pending (atomic units, omitted while scanning)" },
@@ -3980,7 +4391,7 @@
           "signature": {
             "type": "string",
             "pattern": "^[a-f0-9]{128}$",
-            "description": "Hex-encoded 64-byte ed25519 signature (128 hex chars)"
+            "description": "Hex-encoded 64-byte Schnorr signature over Ristretto255 (128 hex chars)"
           },
           "message": {
             "type": "string",
@@ -4003,13 +4414,12 @@
           },
           "message": {
             "type": "string",
-            "maxLength": 1024,
-            "description": "The message that was signed (max 1024 bytes)"
+            "description": "The message that was signed (max 1024 bytes of UTF-8)"
           },
           "signature": {
             "type": "string",
             "pattern": "^[a-f0-9]{128}$",
-            "description": "Hex-encoded 64-byte ed25519 signature (128 hex chars)"
+            "description": "Hex-encoded 64-byte Schnorr signature over Ristretto255 (128 hex chars), as returned by `POST /api/wallet/sign`"
           }
         },
         "example": {
@@ -4262,7 +4672,7 @@
             "minimum": 1,
             "maximum": 4,
             "default": 1,
-            "description": "Number of change outputs to create (1-4). Higher values improve back-to-back send concurrency at the cost of reduced privacy (deviates from the standard 2-output transaction fingerprint). Actual split count is clamped to min(change_split, change_amount_in_atomic_units)."
+            "description": "Number of change outputs to create (1-4). The core treats 0 or less as 1. Higher values improve back-to-back send concurrency at the cost of reduced privacy (deviates from the standard 2-output transaction fingerprint). The actual count is min(change_split, change in atomic units), and 0 when there is no change."
           }
         },
         "example": {
@@ -4294,7 +4704,7 @@
           },
           "change_split": {
             "type": "integer",
-            "description": "Number of change outputs created"
+            "description": "The change split that was requested (1 if not given). The actual number of change outputs can be lower: min(change_split, change), or 0 when change is 0."
           },
           "input_total": {
             "type": "integer",
@@ -4391,16 +4801,16 @@
         "type": "object",
         "properties": {
           "block": {
-            "$ref": "#/components/schemas/Block",
-            "description": "Complete block with nonce=0. Submit back with a valid nonce via POST /api/mining/submitblock."
+            "$ref": "#/components/schemas/RawBlock",
+            "description": "Complete block with nonce=0, in the raw consensus JSON form (not the `GET /api/block` summary). Submit back with a valid nonce via POST /api/mining/submitblock, or send only `template_id` + `nonce`."
           },
           "target": {
             "type": "string",
-            "description": "Hex-encoded 32-byte PoW target. The Argon2id hash of (header_base + nonce) must be less than this value."
+            "description": "Hex-encoded 32-byte PoW target (64 hex chars). The Argon2id hash for a nonce must be less than this value, compared as a big-endian number."
           },
           "header_base": {
             "type": "string",
-            "description": "Hex-encoded 92-byte serialized header without the nonce. This is the input to the Argon2id PoW hash function; append the 8-byte little-endian nonce to complete the hash input."
+            "description": "Hex-encoded 92-byte serialized header without the nonce. PoW = Argon2id(password = nonce as 8 bytes little-endian, salt = header_base bytes), 32-byte output. The nonce is not appended to header_base."
           },
           "reward_address_used": {
             "type": "string",
@@ -4520,7 +4930,7 @@
         }
       },
       "NoWallet": {
-        "description": "No wallet loaded on this node. In `--daemon` mode, call `POST /api/wallet/load` first.",
+        "description": "No wallet loaded on this node. Call `POST /api/wallet/load`, `/api/wallet/create` or `/api/wallet/import` first.",
         "content": {
           "application/json": {
             "schema": { "$ref": "#/components/schemas/Error" },
@@ -4545,7 +4955,7 @@
     },
     {
       "name": "Wallet",
-      "description": "Balance, address, history, and sending. In `--daemon` mode the node starts without a wallet — call `POST /api/wallet/load` first. All other wallet endpoints require a loaded, unlocked wallet (except lock/unlock themselves)."
+      "description": "Balance, address, history, and sending. The node always starts without a wallet. Call `POST /api/wallet/load`, `/api/wallet/create` or `/api/wallet/import` first. Wallet files live in the folder of the `wallet_file` setting. Most other wallet endpoints need a loaded, unlocked wallet. `lock`, `unlock`, `send/status` and `send/advanced/status` do not need it unlocked."
     },
     {
       "name": "Mining",
