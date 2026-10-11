@@ -302,7 +302,10 @@ These commands are available inside `blocknet attach`. Each is routed to the tar
 The core is the current `blocknet` binary with the following changes:
 
 - The core always runs headless. As of 0.21.0 the interactive shell is removed. `--cli`, `--daemon=false`, `--recover`, `--viewonly`, `--spend-pub`, `--view-priv`, `--view-priv-env` and `--output-peer-address` print the mantle replacement and exit 1.
-- Mantle always passes `--no-version-check` when spawning a core. Mantle owns version management; the core should not check on its own.
+- As of 0.21.0 the core takes only `--data`, `--testnet`, `--api` and `--version`. Every other setting lives in `<data>/settings.json` and is read and changed with `GET` and `PATCH /api/settings`. `save_checkpoints`, `explorer_addr`, `wallet_file` and `p2p_whitelist` apply at once. The others are listed in `restart_required` until the next start.
+- The old setting flags (`--wallet`, `--listen`, `--seed`, `--explorer`, `--full-sync`, `--save-checkpoints`, `--p2p-max-inbound`, `--p2p-max-outbound`, `--p2p-whitelist-peer`, `--p2p-whitelist`, `--nocolor`, `--no-version-check`) still work in 0.21.0 so older mantle versions keep running. When any of them is passed, they set those settings, are saved to `settings.json`, and the core prints a deprecation warning.
+- Extra arguments are rejected. Use `extra_peers` in `/api/settings`.
+- The `BLOCKNET_P2P_KEY`, `BLOCKNET_CHAIN_CACHE_CAP`, `BLOCKNET_CHECKPOINTS_URL`, `BLOCKNET_ID_BASE_URL`, `BLOCKNET_ID_PUBKEY`, `BLOCKNET_EXPORT_PEER_ON_START_FAIL` and `BLOCKNET_LOCK_TRACE*` environment variables are removed. Use `identity_key_path` and `chain_cache_cap` in `/api/settings`.
 - Periodic version check and upgrade notification are removed (mantle handles this).
 
 Everything else stays: the HTTP API, wallet, chain, mempool, miner, p2p, sync manager, stealth keys, SSE events, mining API, and all existing API routes.

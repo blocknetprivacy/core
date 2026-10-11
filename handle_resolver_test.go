@@ -59,8 +59,9 @@ func TestResolveRecipientAddressVerifiesSignature(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("BLOCKNET_ID_BASE_URL", srv.URL)
-	t.Setenv("BLOCKNET_ID_PUBKEY", "")
+	oldBaseURL := handleResolverBaseURL
+	handleResolverBaseURL = srv.URL
+	t.Cleanup(func() { handleResolverBaseURL = oldBaseURL })
 	resetHandleResolverPubkeyCache()
 
 	gotAddr, info, err := resolveRecipientAddress("@CubeCabin")
@@ -111,8 +112,9 @@ func TestResolveRecipientAddressRejectsInvalidSignature(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	t.Setenv("BLOCKNET_ID_BASE_URL", srv.URL)
-	t.Setenv("BLOCKNET_ID_PUBKEY", "")
+	oldBaseURL := handleResolverBaseURL
+	handleResolverBaseURL = srv.URL
+	t.Cleanup(func() { handleResolverBaseURL = oldBaseURL })
 	resetHandleResolverPubkeyCache()
 
 	if _, _, err := resolveRecipientAddress("$cubecabin"); err == nil {

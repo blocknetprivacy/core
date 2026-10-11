@@ -140,6 +140,13 @@ func (n *Node) BannedCount() int {
 	return n.pex.BannedPeerCount()
 }
 
+func (n *Node) SetBanWhitelist(ids []string) error {
+	if n.pex == nil {
+		return fmt.Errorf("peer exchange not ready")
+	}
+	return n.pex.SetBanWhitelist(ids)
+}
+
 // NewNode creates and starts a new P2P node
 func NewNode(cfg NodeConfig) (*Node, error) {
 	ctx, cancel := context.WithCancel(context.Background())

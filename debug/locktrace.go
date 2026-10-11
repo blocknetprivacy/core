@@ -2,7 +2,6 @@ package debug
 
 import (
 	"log"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -14,12 +13,8 @@ import (
 // Lock tracing is intentionally simple: it's a debug aid to spot mutex contention
 // (time spent waiting to acquire locks). It is disabled by default.
 //
-// Enable with:
-//   BLOCKNET_LOCK_TRACE=1
-//
-// Optional filters (milliseconds; default 0 = log everything):
-//   BLOCKNET_LOCK_TRACE_MIN_WAIT_MS
-//   BLOCKNET_LOCK_TRACE_MIN_HOLD_MS   (only applies to exclusive Lock/Unlock)
+// Enable with SetLockTrace. Filters default to 0, which logs everything. The
+// hold filter only applies to exclusive Lock/Unlock.
 //
 // Note: For RWMutex read locks (RLock/RUnlock), we can log wait time, but we do
 // not try to compute "hold time" because multiple readers may be active at once.
@@ -33,53 +28,12 @@ var (
 	// Global sequence to make it easier to correlate acquire/release lines for
 	// exclusive locks (Mutex + RWMutex write Lock).
 	lockSeq atomic.Uint64
-
-	lockTraceInitOnce sync.Once
 )
 
-func lockTraceInit() {
-	lockTraceInitOnce.Do(func() {
-		lockTraceEnabled.Store(envBool("BLOCKNET_LOCK_TRACE", false))
-
-		minWait := envInt("BLOCKNET_LOCK_TRACE_MIN_WAIT_MS", 0)
-		if minWait < 0 {
-			minWait = 0
-		}
-		minWaitNS.Store(int64(time.Duration(minWait) * time.Millisecond))
-
-		minHold := envInt("BLOCKNET_LOCK_TRACE_MIN_HOLD_MS", 0)
-		if minHold < 0 {
-			minHold = 0
-		}
-		minHoldNS.Store(int64(time.Duration(minHold) * time.Millisecond))
-	})
-}
-
-func envBool(key string, def bool) bool {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	switch strings.ToLower(v) {
-	case "1", "true", "t", "yes", "y", "on":
-		return true
-	case "0", "false", "f", "no", "n", "off":
-		return false
-	default:
-		return def
-	}
-}
-
-func envInt(key string, def int) int {
-	v := strings.TrimSpace(os.Getenv(key))
-	if v == "" {
-		return def
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return def
-	}
-	return n
+func SetLockTrace(enabled bool, minWait, minHold time.Duration) {
+	minWaitNS.Store(int64(max(minWait, 0)))
+	minHoldNS.Store(int64(max(minHold, 0)))
+	lockTraceEnabled.Store(enabled)
 }
 
 func callerShort(skip int) string {
@@ -119,7 +73,6 @@ func NewRWMutex(name string) RWMutex {
 func (m *RWMutex) SetName(name string) { m.name = name }
 
 func (m *RWMutex) Lock() {
-	lockTraceInit()
 	if !lockTraceEnabled.Load() {
 		m.mu.Lock()
 		return
@@ -139,7 +92,6 @@ func (m *RWMutex) Lock() {
 }
 
 func (m *RWMutex) Unlock() {
-	lockTraceInit()
 	if !lockTraceEnabled.Load() {
 		m.mu.Unlock()
 		return
@@ -156,7 +108,6 @@ func (m *RWMutex) Unlock() {
 }
 
 func (m *RWMutex) RLock() {
-	lockTraceInit()
 	if !lockTraceEnabled.Load() {
 		m.mu.RLock()
 		return
@@ -172,7 +123,6 @@ func (m *RWMutex) RLock() {
 }
 
 func (m *RWMutex) RUnlock() {
-	lockTraceInit()
 	if !lockTraceEnabled.Load() {
 		m.mu.RUnlock()
 		return
@@ -208,7 +158,6 @@ func NewMutex(name string) Mutex {
 func (m *Mutex) SetName(name string) { m.name = name }
 
 func (m *Mutex) Lock() {
-	lockTraceInit()
 	if !lockTraceEnabled.Load() {
 		m.mu.Lock()
 		return
@@ -228,7 +177,6 @@ func (m *Mutex) Lock() {
 }
 
 func (m *Mutex) Unlock() {
-	lockTraceInit()
 	if !lockTraceEnabled.Load() {
 		m.mu.Unlock()
 		return
@@ -250,4 +198,3 @@ func (m *Mutex) safeName() string {
 	}
 	return m.name
 }
-

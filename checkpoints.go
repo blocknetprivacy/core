@@ -31,9 +31,6 @@ func checkpointsPath(dataDir string) string {
 }
 
 func checkpointsURL() string {
-	if v := strings.TrimSpace(os.Getenv("BLOCKNET_CHECKPOINTS_URL")); v != "" {
-		return v
-	}
 	return DefaultCheckpointsURL
 }
 

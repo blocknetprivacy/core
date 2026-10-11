@@ -14,11 +14,9 @@ func TestChainCache_EnforcesCapAndRetainsHotNonPinnedEntries(t *testing.T) {
 	// - ensure cacheTrimLocked() enforces a hard cap
 	// - ensure "hot" non-pinned blocks remain cached under adversarial lookup pressure
 
-	t.Setenv("BLOCKNET_CHAIN_CACHE_CAP", "164") // min cap for this codebase: MaxReorgDepth + slack
-
 	dataDir := t.TempDir()
 
-	chain, err := NewChain(dataDir)
+	chain, err := NewChainWithCacheCap(dataDir, 164)
 	if err != nil {
 		t.Fatalf("failed to create chain: %v", err)
 	}

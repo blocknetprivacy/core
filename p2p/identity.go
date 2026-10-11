@@ -35,11 +35,13 @@ type IdentityManager struct {
 // IdentityConfig configures identity behavior
 type IdentityConfig struct {
 	// RotationInterval is how often to rotate identity (0 = never)
-	// Only applies in ephemeral mode (no BLOCKNET_P2P_KEY env var, no XDG key)
+	// Only applies in ephemeral mode (no KeyPath, no XDG key)
 	RotationInterval time.Duration
 
 	// OnRotate is called when identity changes
 	OnRotate func(newKey crypto.PrivKey, newID peer.ID)
+
+	KeyPath string
 }
 
 // DefaultIdentityConfig returns sensible defaults
@@ -53,7 +55,7 @@ func DefaultIdentityConfig() IdentityConfig {
 // NewIdentityManager creates a new identity manager.
 //
 // Identity resolution order:
-//  1. BLOCKNET_P2P_KEY env var → load or create key at that path, never rotate
+//  1. KeyPath → load or create key at that path, never rotate
 //  2. XDG config dir (e.g. ~/.config/blocknet/mainnet/identity.key) → if exists, load it, never rotate
 //  3. Otherwise → ephemeral identity with rotation
 func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
@@ -62,8 +64,7 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 	var persistPath string
 	var rotationAge time.Duration
 
-	// 1. BLOCKNET_P2P_KEY env var — explicit persistent identity
-	if envPath := os.Getenv("BLOCKNET_P2P_KEY"); envPath != "" {
+	if envPath := cfg.KeyPath; envPath != "" {
 		var err error
 		key, id, err = loadIdentity(envPath)
 		if err != nil {
@@ -73,7 +74,7 @@ func NewIdentityManager(cfg IdentityConfig) (*IdentityManager, error) {
 				return nil, err
 			}
 			if err := saveIdentity(envPath, key); err != nil {
-				return nil, fmt.Errorf("failed to save identity to BLOCKNET_P2P_KEY path %s: %w", envPath, err)
+				return nil, fmt.Errorf("failed to save identity to %s: %w", envPath, err)
 			}
 			// generated and saved
 		} else {

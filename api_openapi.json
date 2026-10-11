@@ -20,6 +20,92 @@
     }
   ],
   "paths": {
+    "/api/settings": {
+      "get": {
+        "operationId": "getSettings",
+        "tags": ["Node"],
+        "summary": "Get node settings",
+        "description": "Returns the settings saved in <dataDir>/settings.json and the saved settings that wait for a restart. Requires Bearer token.",
+        "responses": {
+          "200": {
+            "description": "Current settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "settings": {
+                      "$ref": "#/components/schemas/Settings"
+                    },
+                    "restart_required": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Saved settings that take effect only after a restart"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateSettings",
+        "tags": ["Node"],
+        "summary": "Change node settings",
+        "description": "Changes only the fields in the body and saves them to <dataDir>/settings.json. Live fields apply at once. The others are listed in restart_required. Unknown fields are rejected. Requires Bearer token.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Settings"
+              },
+              "example": {
+                "explorer_addr": "127.0.0.1:8080",
+                "save_checkpoints": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Settings saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "settings": {
+                      "$ref": "#/components/schemas/Settings"
+                    },
+                    "restart_required": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Saved settings that take effect only after a restart"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "operationId": "getHealth",
@@ -3229,6 +3315,65 @@
       }
     },
     "schemas": {
+      "Settings": {
+        "type": "object",
+        "properties": {
+          "listen": {
+            "type": "string",
+            "description": "P2P listen multiaddr. Applies after restart."
+          },
+          "seed": {
+            "type": "boolean",
+            "description": "Seed mode with a fixed identity. Applies after restart."
+          },
+          "full_sync": {
+            "type": "boolean",
+            "description": "Ignore checkpoints and verify the whole chain. Applies after restart. Always on for testnet."
+          },
+          "save_checkpoints": {
+            "type": "boolean",
+            "description": "Append a checkpoint every 100 finalized blocks. Applies now."
+          },
+          "explorer_addr": {
+            "type": "string",
+            "description": "Explorer HTTP address. Empty turns the explorer off. Applies now."
+          },
+          "wallet_file": {
+            "type": "string",
+            "description": "Default wallet file. Its folder holds every wallet the API loads, creates or imports. Applies now."
+          },
+          "p2p_max_inbound": {
+            "type": "integer",
+            "description": "Max inbound peers, 0 = default. Applies after restart."
+          },
+          "p2p_max_outbound": {
+            "type": "integer",
+            "description": "Max outbound peers, 0 = default. Applies after restart."
+          },
+          "p2p_whitelist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Peer IDs that are never banned. Applies now."
+          },
+          "extra_peers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Extra peer multiaddrs to dial at startup. Applies after restart."
+          },
+          "identity_key_path": {
+            "type": "string",
+            "description": "Path of a fixed P2P identity key. Empty uses the seed default or an ephemeral identity. Applies after restart."
+          },
+          "chain_cache_cap": {
+            "type": "integer",
+            "description": "Blocks kept in memory, 0 = default. Applies after restart."
+          }
+        }
+      },
       "Error": {
         "type": "object",
         "required": ["error"],

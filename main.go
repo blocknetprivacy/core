@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -62,29 +63,20 @@ func loadWhitelistFile(path string) ([]string, error) {
 }
 
 func main() {
-	// Parse command line flags
 	version := flag.Bool("version", false, "Print version and exit")
 	testnet := flag.Bool("testnet", false, "Run on testnet (isolated network, different ports/data)")
-	walletFile := flag.String("wallet", DefaultWalletFilename, "Path to wallet file")
 	dataDir := flag.String("data", DefaultDataDir, "Data directory")
-	listen := flag.String("listen", "/ip4/0.0.0.0/tcp/28080", "P2P listen address")
-	p2pMaxInbound := flag.Int("p2p-max-inbound", 0, "Max inbound P2P peers (0 = default)")
-	p2pMaxOutbound := flag.Int("p2p-max-outbound", 0, "Max outbound P2P peers (0 = default)")
-	seedMode := flag.Bool("seed", false, "Run as seed node (persistent P2P identity)")
-	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
-	noColor := flag.Bool("nocolor", false, "Disable colored output")
-	flag.Bool("no-version-check", false, "Disable remote version check on startup")
-	saveCheckpoints := flag.Bool("save-checkpoints", false, "Append a record to checkpoints.dat every 100 blocks (writes to data dir)")
-	fullSync := flag.Bool("full-sync", false, "Bypass checkpoints (download + verification) and sync naturally from peers")
-	var p2pWhitelistPeers peerIDListFlag
-	flag.Var(&p2pWhitelistPeers, "p2p-whitelist-peer", "Peer ID to exempt from peer bans (repeatable or comma-separated)")
-	p2pWhitelistFile := flag.String("p2p-whitelist", "", "Path to JSON file containing peer IDs to exempt from bans")
+	legacy := registerLegacySettingsFlags(flag.CommandLine)
 	registerRemovedCLIFlags(flag.CommandLine)
 	flag.Parse()
 
 	if name, replacement, ok := removedCLIFlagUse(flag.CommandLine); ok {
 		printRemovedCLIFlag(os.Stderr, name, replacement)
+		os.Exit(1)
+	}
+	if flag.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "Error: unexpected arguments: %s\nAdd peers with extra_peers in PATCH /api/settings.\n", strings.Join(flag.Args(), " "))
 		os.Exit(1)
 	}
 
@@ -98,53 +90,38 @@ func main() {
 		if *dataDir == DefaultDataDir {
 			*dataDir = TestnetDataDir
 		}
-		if *walletFile == DefaultWalletFilename {
-			*walletFile = TestnetWalletFilename
-		}
-		if *listen == "/ip4/0.0.0.0/tcp/28080" {
-			*listen = "/ip4/0.0.0.0/tcp/38080"
-		}
-		if !*fullSync {
-			*fullSync = true
-		}
-		// Clear any mainnet P2P key from the environment so testnet
-		// generates its own identity in the testnet data dir.
-		_ = os.Unsetenv("BLOCKNET_P2P_KEY")
 	}
 
-	if *p2pMaxInbound < 0 {
-		fmt.Fprintln(os.Stderr, "Error: --p2p-max-inbound must be >= 0")
+	settings, exists, err := loadSettings(*dataDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
-	if *p2pMaxOutbound < 0 {
-		fmt.Fprintln(os.Stderr, "Error: --p2p-max-outbound must be >= 0")
-		os.Exit(1)
-	}
-
-	// Seed mode: ensure P2P identity is persistent (and stable across restarts).
-	// Store in XDG config with network separation so mainnet/testnet don't clobber.
-	if *seedMode && strings.TrimSpace(os.Getenv("BLOCKNET_P2P_KEY")) == "" {
-		configDir, err := os.UserConfigDir()
+	switch {
+	case legacySettingsFlagsUsed(flag.CommandLine):
+		if settings, err = legacy.apply(settings); err == nil {
+			err = settings.validate()
+		}
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to get config dir for seed identity: %v\n", err)
-		} else {
-			network := "mainnet"
-			if *testnet {
-				network = "testnet"
-			}
-			keyPath := filepath.Join(configDir, "blocknet", network, "identity.key")
-			if err := os.Setenv("BLOCKNET_P2P_KEY", keyPath); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to set BLOCKNET_P2P_KEY: %v\n", err)
-			}
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := saveSettings(*dataDir, settings); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save settings: %v\n", err)
+		}
+		fmt.Fprintln(os.Stderr, "Warning: startup flags other than --data, --testnet and --api are deprecated. Their values were saved to settings.json. Use GET and PATCH /api/settings.")
+	case !exists:
+		ids, err := configDirWhitelist()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		settings.P2PWhitelist = ids
+		if err := saveSettings(*dataDir, settings); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to save settings: %v\n", err)
 		}
 	}
-	// Seed bootstrap assist: if we fail to start due to missing seed reachability,
-	// still export our peer addresses so operators can bake updated seed IDs.
-	if *seedMode && strings.TrimSpace(os.Getenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL")) == "" {
-		_ = os.Setenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL", "1")
-	}
 
-	// Resolve seed nodes: try dynamic peer ID fetch, fall back to hardcoded.
 	p2pPort := MainnetP2PPort
 	peerIDPort := MainnetPeerIDPort
 	fallbackSeeds := DefaultSeedNodes
@@ -157,50 +134,13 @@ func main() {
 	if len(seedNodes) == 0 {
 		seedNodes = fallbackSeeds
 	}
-	if len(flag.Args()) > 0 {
-		seedNodes = append(seedNodes, flag.Args()...)
-	}
 
-	whitelistPeers := []string(p2pWhitelistPeers)
-	whitelistPath := *p2pWhitelistFile
-	if whitelistPath == "" {
-		if configDir, err := os.UserConfigDir(); err == nil {
-			network := "mainnet"
-			if *testnet {
-				network = "testnet"
-			}
-			candidate := filepath.Join(configDir, "blocknet", network, "whitelist.json")
-			if _, err := os.Stat(candidate); err == nil {
-				whitelistPath = candidate
-			}
-		}
-	}
-	if whitelistPath != "" {
-		filePeers, err := loadWhitelistFile(whitelistPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error loading whitelist file %s: %v\n", whitelistPath, err)
-			os.Exit(1)
-		}
-		whitelistPeers = append(whitelistPeers, filePeers...)
-	}
-
-	cfg := CLIConfig{
-		WalletFile:        *walletFile,
-		DataDir:           *dataDir,
-		ListenAddrs:       []string{*listen},
-		SeedNodes:         seedNodes,
-		P2PWhitelistPeers: whitelistPeers,
-		P2PMaxInbound:     *p2pMaxInbound,
-		P2PMaxOutbound:    *p2pMaxOutbound,
-		ExplorerAddr:      *explorerAddr,
-		APIAddr:           *apiAddr,
-		NoColor:           *noColor,
-		SaveCheckpoints:   *saveCheckpoints,
-		FullSync:          *fullSync,
-		SeedMode:          *seedMode,
-	}
-
-	cli, err := NewCLI(cfg)
+	cli, err := NewCLI(CLIConfig{
+		DataDir:   *dataDir,
+		APIAddr:   *apiAddr,
+		SeedNodes: seedNodes,
+		Settings:  settings,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -210,6 +150,105 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+var legacySettingsFlagNames = []string{
+	"wallet", "listen", "p2p-max-inbound", "p2p-max-outbound", "seed", "explorer",
+	"save-checkpoints", "full-sync", "p2p-whitelist-peer", "p2p-whitelist", "nocolor", "no-version-check",
+}
+
+type legacySettingsFlags struct {
+	walletFile      *string
+	listen          *string
+	explorer        *string
+	whitelistFile   *string
+	maxInbound      *int
+	maxOutbound     *int
+	seed            *bool
+	saveCheckpoints *bool
+	fullSync        *bool
+	whitelistPeers  peerIDListFlag
+}
+
+func registerLegacySettingsFlags(fs *flag.FlagSet) *legacySettingsFlags {
+	l := &legacySettingsFlags{}
+	l.walletFile = fs.String("wallet", "", "Deprecated: use wallet_file in /api/settings")
+	l.listen = fs.String("listen", "", "Deprecated: use listen in /api/settings")
+	l.maxInbound = fs.Int("p2p-max-inbound", 0, "Deprecated: use p2p_max_inbound in /api/settings")
+	l.maxOutbound = fs.Int("p2p-max-outbound", 0, "Deprecated: use p2p_max_outbound in /api/settings")
+	l.seed = fs.Bool("seed", false, "Deprecated: use seed in /api/settings")
+	l.explorer = fs.String("explorer", "", "Deprecated: use explorer_addr in /api/settings")
+	l.saveCheckpoints = fs.Bool("save-checkpoints", false, "Deprecated: use save_checkpoints in /api/settings")
+	l.fullSync = fs.Bool("full-sync", false, "Deprecated: use full_sync in /api/settings")
+	fs.Var(&l.whitelistPeers, "p2p-whitelist-peer", "Deprecated: use p2p_whitelist in /api/settings")
+	l.whitelistFile = fs.String("p2p-whitelist", "", "Deprecated: use p2p_whitelist in /api/settings")
+	fs.Bool("nocolor", false, "Deprecated: does nothing")
+	fs.Bool("no-version-check", false, "Deprecated: does nothing")
+	return l
+}
+
+func legacySettingsFlagsUsed(fs *flag.FlagSet) bool {
+	used := false
+	fs.Visit(func(f *flag.Flag) {
+		if slices.Contains(legacySettingsFlagNames, f.Name) {
+			used = true
+		}
+	})
+	return used
+}
+
+func (l *legacySettingsFlags) apply(base Settings) (Settings, error) {
+	s := defaultSettings()
+	s.ExtraPeers = base.ExtraPeers
+	s.IdentityKeyPath = base.IdentityKeyPath
+	s.ChainCacheCap = base.ChainCacheCap
+	if *l.walletFile != "" {
+		s.WalletFile = *l.walletFile
+	}
+	if *l.listen != "" {
+		s.Listen = *l.listen
+	}
+	s.P2PMaxInbound = *l.maxInbound
+	s.P2PMaxOutbound = *l.maxOutbound
+	s.Seed = *l.seed
+	s.ExplorerAddr = *l.explorer
+	s.SaveCheckpoints = *l.saveCheckpoints
+	s.FullSync = s.FullSync || *l.fullSync
+	s.P2PWhitelist = append([]string{}, l.whitelistPeers...)
+	if *l.whitelistFile != "" {
+		ids, err := loadWhitelistFile(*l.whitelistFile)
+		if err != nil {
+			return s, fmt.Errorf("whitelist file %s: %w", *l.whitelistFile, err)
+		}
+		s.P2PWhitelist = append(s.P2PWhitelist, ids...)
+	} else {
+		ids, err := configDirWhitelist()
+		if err != nil {
+			return s, err
+		}
+		s.P2PWhitelist = append(s.P2PWhitelist, ids...)
+	}
+	return s, nil
+}
+
+func configDirWhitelist() ([]string, error) {
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return []string{}, nil
+	}
+	network := "mainnet"
+	if params.IsTestnet {
+		network = "testnet"
+	}
+	path := filepath.Join(configDir, "blocknet", network, "whitelist.json")
+	if _, err := os.Stat(path); err != nil {
+		return []string{}, nil
+	}
+	ids, err := loadWhitelistFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("whitelist file %s: %w", path, err)
+	}
+	return ids, nil
 }
 
 var removedCLIFlags = []struct{ name, replacement string }{

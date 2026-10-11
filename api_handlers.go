@@ -1765,14 +1765,14 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	walletPath := s.cli.walletFile
+	walletPath := s.cli.walletFilePath()
 	if req.Filepath != "" {
 		base := filepath.Base(req.Filepath)
 		if base == "." || base == "/" {
 			writeError(w, http.StatusBadRequest, "invalid filepath")
 			return
 		}
-		walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+		walletPath = filepath.Join(filepath.Dir(s.cli.walletFilePath()), base)
 	}
 
 	password := []byte(req.Password)
@@ -1886,14 +1886,14 @@ func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	walletPath := s.cli.walletFile
+	walletPath := s.cli.walletFilePath()
 	if req.Filename != "" {
 		base := filepath.Base(req.Filename)
 		if base == "." || base == "/" {
 			writeError(w, http.StatusBadRequest, "invalid filename")
 			return
 		}
-		walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+		walletPath = filepath.Join(filepath.Dir(s.cli.walletFilePath()), base)
 	}
 
 	if _, err := os.Stat(walletPath); err == nil {
@@ -2005,14 +2005,14 @@ func (s *APIServer) handleImportWallet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Resolve wallet path: basename only, same directory as configured --wallet path
-	walletPath := s.cli.walletFile
+	walletPath := s.cli.walletFilePath()
 	if req.Filename != "" {
 		base := filepath.Base(req.Filename)
 		if base == "." || base == "/" {
 			writeError(w, http.StatusBadRequest, "invalid filename")
 			return
 		}
-		walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+		walletPath = filepath.Join(filepath.Dir(s.cli.walletFilePath()), base)
 	}
 
 	// Don't overwrite an existing file
@@ -2483,7 +2483,7 @@ func (s *APIServer) handleViewKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		walletPath := deriveViewWalletFilename(s.cli.walletFile)
+		walletPath := deriveViewWalletFilename(s.cli.walletFilePath())
 		if req.Filename != "" {
 			base := filepath.Base(req.Filename)
 			if base == "." || base == "/" {
@@ -2493,7 +2493,7 @@ func (s *APIServer) handleViewKeys(w http.ResponseWriter, r *http.Request) {
 			if !strings.HasSuffix(base, ".wallet.dat") {
 				base += ".wallet.dat"
 			}
-			walletPath = filepath.Join(filepath.Dir(s.cli.walletFile), base)
+			walletPath = filepath.Join(filepath.Dir(s.cli.walletFilePath()), base)
 		}
 
 		if _, err := os.Stat(walletPath); err == nil {
@@ -2907,10 +2907,16 @@ func (s *APIServer) handlePurgeData(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	settingsData, settingsErr := os.ReadFile(settingsPath(s.dataDir))
 	// Remove data directory
 	if err := os.RemoveAll(s.dataDir); err != nil {
 		writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 		return
+	}
+	if settingsErr == nil {
+		if err := os.MkdirAll(s.dataDir, 0o700); err == nil {
+			_ = os.WriteFile(settingsPath(s.dataDir), settingsData, 0o600)
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{

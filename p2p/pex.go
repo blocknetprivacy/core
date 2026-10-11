@@ -943,6 +943,17 @@ func (pex *PeerExchange) UnbanPeer(pid peer.ID) {
 	delete(pex.bannedPeers, pid)
 }
 
+func (pex *PeerExchange) SetBanWhitelist(ids []string) error {
+	set, err := newPeerIDSet(ids)
+	if err != nil {
+		return err
+	}
+	pex.mu.Lock()
+	pex.banWhitelist = set
+	pex.mu.Unlock()
+	return nil
+}
+
 // GetBannedPeers returns list of currently banned peers
 func (pex *PeerExchange) GetBannedPeers() []*BanRecord {
 	pex.mu.RLock()

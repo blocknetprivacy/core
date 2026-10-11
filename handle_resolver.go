@@ -6,16 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	defaultHandleResolverBaseURL = "https://blocknet.id"
-	handleResolverTimeout        = 3 * time.Second
-	signingPubkeyCacheTTL        = 10 * time.Minute
+	handleResolverTimeout = 3 * time.Second
+	signingPubkeyCacheTTL = 10 * time.Minute
 )
 
 type resolvedHandle struct {
@@ -59,10 +57,7 @@ func resolveRecipientAddress(recipient string) (resolvedAddress string, info *re
 		return "", nil, err
 	}
 
-	baseURL := strings.TrimRight(strings.TrimSpace(os.Getenv("BLOCKNET_ID_BASE_URL")), "/")
-	if baseURL == "" {
-		baseURL = defaultHandleResolverBaseURL
-	}
+	baseURL := handleResolverBaseURL
 
 	client := &http.Client{Timeout: handleResolverTimeout}
 	resolveURL := fmt.Sprintf("%s/api/v1/resolve/%s", baseURL, handle)
@@ -105,14 +100,6 @@ func resolveRecipientAddress(recipient string) (resolvedAddress string, info *re
 }
 
 func getHandleResolverPublicKey(baseURL string, client *http.Client) (ed25519.PublicKey, error) {
-	if envPub := strings.TrimSpace(os.Getenv("BLOCKNET_ID_PUBKEY")); envPub != "" {
-		decoded, err := base64.StdEncoding.DecodeString(envPub)
-		if err != nil || len(decoded) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("invalid BLOCKNET_ID_PUBKEY")
-		}
-		return ed25519.PublicKey(decoded), nil
-	}
-
 	handleResolverPubkeyCache.mu.RLock()
 	if len(handleResolverPubkeyCache.pub) == ed25519.PublicKeySize &&
 		time.Since(handleResolverPubkeyCache.fetchedAt) < signingPubkeyCacheTTL {
@@ -206,3 +193,5 @@ func normalizeHandleRecipient(s string) (string, error) {
 	}
 	return h, nil
 }
+
+var handleResolverBaseURL = "https://blocknet.id"

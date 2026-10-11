@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,29 +23,23 @@ type CLI struct {
 	cancel          context.CancelFunc
 	passwordHash    [32]byte
 	passwordHashSet bool
-	noColor         bool
 	api             *APIServer
 	apiAddr         string
 	dataDir         string
 	walletFile      string
 	mu              sync.RWMutex // protects wallet/scanner/passwordHash during hot-load
+	walletFileMu    sync.RWMutex
+	settingsMu      sync.Mutex
+	settings        Settings
+	runningSettings Settings
 }
 
 // CLIConfig holds CLI configuration
 type CLIConfig struct {
-	WalletFile        string
-	DataDir           string
-	ListenAddrs       []string
-	SeedNodes         []string
-	P2PWhitelistPeers []string
-	P2PMaxInbound     int // If >0, override default max inbound peers
-	P2PMaxOutbound    int // If >0, override default max outbound peers
-	SeedMode          bool
-	ExplorerAddr      string // HTTP address for block explorer (empty = disabled)
-	APIAddr           string // API listen address (empty = disabled)
-	NoColor           bool   // If true, disable colored output
-	SaveCheckpoints   bool   // If true, append checkpoints every 100 blocks
-	FullSync          bool   // If true, bypass checkpoints and verify chain naturally
+	DataDir   string
+	APIAddr   string
+	SeedNodes []string
+	Settings  Settings
 }
 
 // defaultWalletConfig returns the wallet config with crypto callbacks.
@@ -104,26 +99,29 @@ func defaultScannerConfig() wallet.ScannerConfig {
 func NewCLI(cfg CLIConfig) (*CLI, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	st := cfg.Settings
 	cli := &CLI{
-		ctx:        ctx,
-		cancel:     cancel,
-		noColor:    cfg.NoColor,
-		dataDir:    cfg.DataDir,
-		walletFile: cfg.WalletFile,
+		ctx:             ctx,
+		cancel:          cancel,
+		dataDir:         cfg.DataDir,
+		walletFile:      st.WalletFile,
+		settings:        st,
+		runningSettings: st,
 	}
 
-	// Create daemon config (shared by both modes)
 	daemonCfg := DaemonConfig{
 		DataDir:           cfg.DataDir,
-		ListenAddrs:       cfg.ListenAddrs,
-		SeedNodes:         cfg.SeedNodes,
-		P2PWhitelistPeers: cfg.P2PWhitelistPeers,
-		P2PMaxInbound:     cfg.P2PMaxInbound,
-		P2PMaxOutbound:    cfg.P2PMaxOutbound,
-		SeedMode:          cfg.SeedMode,
-		ExplorerAddr:      cfg.ExplorerAddr,
-		SaveCheckpoints:   cfg.SaveCheckpoints,
-		FullSync:          cfg.FullSync,
+		ListenAddrs:       []string{st.Listen},
+		SeedNodes:         append(append([]string{}, cfg.SeedNodes...), st.ExtraPeers...),
+		P2PWhitelistPeers: st.P2PWhitelist,
+		P2PMaxInbound:     st.P2PMaxInbound,
+		P2PMaxOutbound:    st.P2PMaxOutbound,
+		SeedMode:          st.Seed,
+		ExplorerAddr:      st.ExplorerAddr,
+		SaveCheckpoints:   st.SaveCheckpoints,
+		FullSync:          st.FullSync || params.IsTestnet,
+		IdentityKeyPath:   seedIdentityKeyPath(st),
+		ChainCacheCap:     st.ChainCacheCap,
 	}
 
 	daemon, err := NewDaemon(daemonCfg, nil)
@@ -255,10 +253,6 @@ func (c *CLI) printLogo() {
 		green = "\033[38;2;255;0;170m"
 	}
 	reset := "\033[0m"
-	if c.noColor {
-		green = ""
-		reset = ""
-	}
 
 	logo := []string{
 		`        ▄███████▄`,
@@ -306,16 +300,10 @@ func (c *CLI) shutdown() error {
 }
 
 func (c *CLI) sectionHead(label string) string {
-	if c.noColor {
-		return "# " + label
-	}
 	return "\033[38;2;170;255;0m#\033[0m " + label
 }
 
 func (c *CLI) errorHead(label string) string {
-	if c.noColor {
-		return "# " + label
-	}
 	return "\033[38;2;255;0;170m#\033[0m " + label
 }
 
@@ -527,4 +515,31 @@ func deriveViewWalletFilename(walletFile string) string {
 		name = name[:dot]
 	}
 	return name + ".view" + ext
+}
+
+func (c *CLI) walletFilePath() string {
+	c.walletFileMu.RLock()
+	defer c.walletFileMu.RUnlock()
+	return c.walletFile
+}
+
+func (c *CLI) setWalletFile(path string) {
+	c.walletFileMu.Lock()
+	c.walletFile = path
+	c.walletFileMu.Unlock()
+}
+
+func seedIdentityKeyPath(st Settings) string {
+	if st.IdentityKeyPath != "" || !st.Seed {
+		return st.IdentityKeyPath
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return ""
+	}
+	network := "mainnet"
+	if params.IsTestnet {
+		network = "testnet"
+	}
+	return filepath.Join(configDir, "blocknet", network, "identity.key")
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -57,9 +58,12 @@ type Daemon struct {
 
 	// Explorer
 	explorerAddr string
+	explorerMu   sync.Mutex
+	explorer     *Explorer
+	explorerSrv  *http.Server
 
 	// Checkpoints
-	saveCheckpoints       bool
+	saveCheckpoints       atomic.Bool
 	checkpointsFile       string
 	lastCheckpointWritten uint64
 
@@ -197,8 +201,8 @@ func (c *gossipAttemptLRU) Set(pid peer.ID, t time.Time) {
 // DaemonConfig configures the daemon
 type DaemonConfig struct {
 	// P2P settings
-	ListenAddrs []string
-	SeedNodes   []string
+	ListenAddrs       []string
+	SeedNodes         []string
 	P2PWhitelistPeers []string
 	// Optional P2P peer limits (0 uses p2p defaults)
 	P2PMaxInbound  int
@@ -217,6 +221,9 @@ type DaemonConfig struct {
 	// Checkpoints
 	SaveCheckpoints bool
 	FullSync        bool
+
+	IdentityKeyPath string
+	ChainCacheCap   int
 }
 
 // DefaultSeedNodes are the hardcoded bootstrap nodes
@@ -267,7 +274,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	}
 
 	// Create chain with persistent storage
-	chain, err := NewChain(cfg.DataDir)
+	chain, err := NewChainWithCacheCap(cfg.DataDir, cfg.ChainCacheCap)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create chain: %w", err)
@@ -382,6 +389,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		nodeCfg.MaxOutbound = cfg.P2PMaxOutbound
 	}
 	nodeCfg.SeedMode = cfg.SeedMode
+	nodeCfg.Identity.KeyPath = cfg.IdentityKeyPath
 
 	node, err := p2p.NewNode(nodeCfg)
 	if err != nil {
@@ -398,7 +406,6 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		miner:                  miner,
 		node:                   node,
 		stealthKeys:            stealthKeys,
-		saveCheckpoints:        cfg.SaveCheckpoints,
 		checkpointsFile:        checkpointsPath(cfg.DataDir),
 		repairTruncatedTo:      repairTruncatedTo,
 		repairViolations:       repairViolations,
@@ -469,12 +476,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	// Store explorer config
 	d.explorerAddr = cfg.ExplorerAddr
 
-	// Initialize checkpoint writer state (best-effort).
-	if d.saveCheckpoints {
-		if _, _, maxH, err := loadCheckpointsFile(d.checkpointsFile); err == nil && maxH > 0 {
-			d.lastCheckpointWritten = maxH
-		}
-	}
+	d.SetSaveCheckpoints(cfg.SaveCheckpoints)
 
 	return d, nil
 }
@@ -557,7 +559,7 @@ func (d *Daemon) Start() error {
 	if err := d.node.Start(); err != nil {
 		// Bootstrap assist: if enabled, write peer.txt even when we couldn't connect to seeds.
 		// This lets operators capture the peer ID for seed lists.
-		if strings.TrimSpace(os.Getenv("BLOCKNET_EXPORT_PEER_ON_START_FAIL")) != "" {
+		if d.seedMode {
 			if werr := d.node.WritePeerFile("peer.txt"); werr != nil {
 				log.Printf("Warning: failed to write peer.txt on start failure: %v", werr)
 			}
@@ -575,14 +577,8 @@ func (d *Daemon) Start() error {
 	// Start sync manager
 	d.syncMgr.Start(d.ctx)
 
-	// Start explorer if configured
-	if d.explorerAddr != "" {
-		explorer := NewExplorer(d)
-		go func() {
-			if err := explorer.Start(d.explorerAddr); err != nil {
-				log.Printf("Explorer error: %v", err)
-			}
-		}()
+	if err := d.SetExplorerAddr(d.explorerAddr); err != nil {
+		log.Printf("Explorer error: %v", err)
 	}
 
 	return nil
@@ -591,6 +587,8 @@ func (d *Daemon) Start() error {
 // Stop gracefully shuts down the daemon
 func (d *Daemon) Stop() error {
 	d.cancel()
+
+	_ = d.SetExplorerAddr("")
 
 	if d.peerIDServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -897,6 +895,53 @@ func (d *Daemon) processBlockData(data []byte) error {
 	return nil
 }
 
+func (d *Daemon) SetSaveCheckpoints(enabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if enabled && !d.saveCheckpoints.Load() {
+		if _, _, maxH, err := loadCheckpointsFile(d.checkpointsFile); err == nil && maxH > d.lastCheckpointWritten {
+			d.lastCheckpointWritten = maxH
+		}
+	}
+	d.saveCheckpoints.Store(enabled)
+}
+
+func (d *Daemon) SetExplorerAddr(addr string) error {
+	d.explorerMu.Lock()
+	defer d.explorerMu.Unlock()
+	if d.explorerSrv != nil && addr == d.explorerAddr {
+		return nil
+	}
+	var ln net.Listener
+	if addr != "" {
+		var err error
+		if ln, err = net.Listen("tcp", addr); err != nil {
+			return fmt.Errorf("explorer listen %s: %w", addr, err)
+		}
+	}
+	if d.explorerSrv != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		_ = d.explorerSrv.Shutdown(ctx)
+		cancel()
+		d.explorerSrv = nil
+	}
+	d.explorerAddr = addr
+	if addr == "" {
+		return nil
+	}
+	if d.explorer == nil {
+		d.explorer = NewExplorer(d)
+	}
+	srv := d.explorer.httpServer(addr)
+	d.explorerSrv = srv
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("Explorer error: %v", err)
+		}
+	}()
+	return nil
+}
+
 type checkpointEntry struct {
 	height uint64
 	line   string
@@ -907,7 +952,7 @@ type checkpointEntry struct {
 // returns the entry to write. Caller must hold d.mu. The actual file I/O
 // should happen after releasing d.mu via writeCheckpoint.
 func (d *Daemon) prepareCheckpointLocked(block *Block) *checkpointEntry {
-	if !d.saveCheckpoints || block == nil || d.checkpointsFile == "" {
+	if !d.saveCheckpoints.Load() || block == nil || d.checkpointsFile == "" {
 		return nil
 	}
 	h := finalizedCheckpointHeight(block.Header.Height)

@@ -10,10 +10,8 @@ import (
 	"log"
 	"math"
 	"math/big"
-	"os"
 	"runtime"
 	"slices"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,9 +21,6 @@ import (
 )
 
 const (
-	// BLOCKNET_CHAIN_CACHE_CAP caps the number of blocks/work entries kept in RAM.
-	// Nodes can lower this to reduce memory or raise it to trade memory for speed.
-	chainCacheCapEnv      = "BLOCKNET_CHAIN_CACHE_CAP"
 	defaultChainCacheCap  = 512
 	chainCacheCapMinSlack = 64
 	chainCacheCapHardMax  = 100_000
@@ -1087,12 +1082,10 @@ func chainProtectedBack() uint64 {
 	return max(uint64(MaxReorgDepth), uint64(LWMAWindow+10))
 }
 
-func chainCacheCapFromEnv() int {
+func clampChainCacheCap(requested int) int {
 	cap := defaultChainCacheCap
-	if v := os.Getenv(chainCacheCapEnv); v != "" {
-		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
-			cap = parsed
-		}
+	if requested > 0 {
+		cap = requested
 	}
 	// Clamp to a reasonable hard max to avoid accidental runaway allocations.
 	if cap > chainCacheCapHardMax {
@@ -1209,12 +1202,16 @@ func (c *Chain) cumulativeWorkAtLocked(hash [32]byte) (uint64, error) {
 
 // NewChain creates a new chain, loading state from storage
 func NewChain(dataDir string) (*Chain, error) {
+	return NewChainWithCacheCap(dataDir, 0)
+}
+
+func NewChainWithCacheCap(dataDir string, cacheCapSetting int) (*Chain, error) {
 	storage, err := NewStorage(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open storage: %w", err)
 	}
 
-	cacheCap := chainCacheCapFromEnv()
+	cacheCap := clampChainCacheCap(cacheCapSetting)
 	c := &Chain{
 		storage:                 storage,
 		blocks:                  make(map[[32]byte]*Block),
