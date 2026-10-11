@@ -1,25 +1,20 @@
 package main
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"blocknet/p2p"
 	"blocknet/protocol/params"
-	"blocknet/wallet"
 )
 
-const Version = "0.20.1"
+const Version = "0.21.0"
 
 type peerIDListFlag []string
 
@@ -76,28 +71,21 @@ func main() {
 	p2pMaxInbound := flag.Int("p2p-max-inbound", 0, "Max inbound P2P peers (0 = default)")
 	p2pMaxOutbound := flag.Int("p2p-max-outbound", 0, "Max outbound P2P peers (0 = default)")
 	seedMode := flag.Bool("seed", false, "Run as seed node (persistent P2P identity)")
-	recover := flag.Bool("recover", false, "Recover wallet from mnemonic seed")
-	daemonMode := flag.Bool("daemon", true, "Run headless (no interactive shell)")
-	cliMode := flag.Bool("cli", false, "Run with interactive shell")
 	explorerAddr := flag.String("explorer", "", "HTTP address for block explorer (e.g. :8080)")
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
 	noColor := flag.Bool("nocolor", false, "Disable colored output")
-	noVersionCheck := flag.Bool("no-version-check", false, "Disable remote version check on startup")
+	flag.Bool("no-version-check", false, "Disable remote version check on startup")
 	saveCheckpoints := flag.Bool("save-checkpoints", false, "Append a record to checkpoints.dat every 100 blocks (writes to data dir)")
 	fullSync := flag.Bool("full-sync", false, "Bypass checkpoints (download + verification) and sync naturally from peers")
-	outputPeerAddr := flag.Bool("output-peer-address", false, "Load identity key, resolve public IP, write peer.txt and exit")
 	var p2pWhitelistPeers peerIDListFlag
 	flag.Var(&p2pWhitelistPeers, "p2p-whitelist-peer", "Peer ID to exempt from peer bans (repeatable or comma-separated)")
 	p2pWhitelistFile := flag.String("p2p-whitelist", "", "Path to JSON file containing peer IDs to exempt from bans")
-	viewOnly := flag.Bool("viewonly", false, "Create a view-only wallet")
-	spendPub := flag.String("spend-pub", "", "Spend public key (hex) for view-only wallet")
-	// Deprecated: secrets on argv are visible via process inspection (ps, /proc).
-	viewPrivDeprecated := flag.String("view-priv", "", "DEPRECATED (insecure): do not pass view private key via CLI; use --view-priv-env/BLOCKNET_VIEW_PRIV")
-	viewPrivEnv := flag.String("view-priv-env", "BLOCKNET_VIEW_PRIV", "Environment variable name containing view private key (hex) for view-only wallet")
+	registerRemovedCLIFlags(flag.CommandLine)
 	flag.Parse()
 
-	if *cliMode {
-		*daemonMode = false
+	if name, replacement, ok := removedCLIFlagUse(flag.CommandLine); ok {
+		printRemovedCLIFlag(os.Stderr, name, replacement)
+		os.Exit(1)
 	}
 
 	if *version {
@@ -131,51 +119,6 @@ func main() {
 	if *p2pMaxOutbound < 0 {
 		fmt.Fprintln(os.Stderr, "Error: --p2p-max-outbound must be >= 0")
 		os.Exit(1)
-	}
-
-	if *outputPeerAddr {
-		if err := outputPeerAddress(*dataDir, *listen); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	// View-only wallet creation mode
-	if *viewOnly {
-		if *viewPrivDeprecated != "" {
-			fmt.Fprintln(os.Stderr, "Error: --view-priv no longer accepts a private key on the command line.")
-			fmt.Fprintln(os.Stderr, "Set the key in an environment variable and use --view-priv-env to pick the name (default: BLOCKNET_VIEW_PRIV).")
-			fmt.Fprintln(os.Stderr, "Example: BLOCKNET_VIEW_PRIV=<hex> blocknet --viewonly --spend-pub <hex>")
-			os.Exit(1)
-		}
-
-		if *spendPub == "" {
-			fmt.Fprintln(os.Stderr, "Error: --viewonly requires --spend-pub")
-			fmt.Fprintln(os.Stderr, "Usage: BLOCKNET_VIEW_PRIV=<hex> blocknet --viewonly --spend-pub <hex>")
-			os.Exit(1)
-		}
-
-		envName := strings.TrimSpace(*viewPrivEnv)
-		if envName == "" {
-			fmt.Fprintln(os.Stderr, "Error: --view-priv-env must not be empty")
-			os.Exit(1)
-		}
-		viewPrivHex := strings.TrimSpace(os.Getenv(envName))
-		if viewPrivHex == "" {
-			fmt.Fprintf(os.Stderr, "Error: environment variable %s is not set (expected 64 hex chars)\n", envName)
-			fmt.Fprintln(os.Stderr, "Usage: BLOCKNET_VIEW_PRIV=<hex> blocknet --viewonly --spend-pub <hex>")
-			os.Exit(1)
-		}
-
-		// Reduce lifetime in-process (does not remove from parent shell env).
-		_ = os.Unsetenv(envName)
-
-		if err := createViewOnlyWallet(*walletFile, *spendPub, viewPrivHex); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-			os.Exit(1)
-		}
-		return
 	}
 
 	// Seed mode: ensure P2P identity is persistent (and stable across restarts).
@@ -249,12 +192,9 @@ func main() {
 		P2PWhitelistPeers: whitelistPeers,
 		P2PMaxInbound:     *p2pMaxInbound,
 		P2PMaxOutbound:    *p2pMaxOutbound,
-		RecoverMode:       *recover,
-		DaemonMode:        *daemonMode,
 		ExplorerAddr:      *explorerAddr,
 		APIAddr:           *apiAddr,
 		NoColor:           *noColor,
-		NoVersionCheck:    *noVersionCheck,
 		SaveCheckpoints:   *saveCheckpoints,
 		FullSync:          *fullSync,
 		SeedMode:          *seedMode,
@@ -272,126 +212,45 @@ func main() {
 	}
 }
 
-func createViewOnlyWallet(filename, spendPubHex, viewPrivHex string) error {
-	// Parse hex keys
-	spendPubBytes, err := hex.DecodeString(spendPubHex)
-	if err != nil || len(spendPubBytes) != 32 {
-		return fmt.Errorf("invalid spend public key (expected 64 hex chars)")
-	}
-
-	viewPrivBytes, err := hex.DecodeString(viewPrivHex)
-	if err != nil || len(viewPrivBytes) != 32 {
-		return fmt.Errorf("invalid view private key (expected 64 hex chars)")
-	}
-
-	var keys wallet.ViewOnlyKeys
-	copy(keys.SpendPubKey[:], spendPubBytes)
-	copy(keys.ViewPrivKey[:], viewPrivBytes)
-
-	// Derive view public key from view private key
-	kp, err := GenerateRistrettoKeypairFromSeed(keys.ViewPrivKey)
-	if err != nil {
-		return fmt.Errorf("failed to derive view public key: %w", err)
-	}
-	keys.ViewPubKey = kp.PublicKey
-
-	// Prompt for password
-	fmt.Print("Enter password for new view-only wallet: ")
-	var password string
-	if _, err := fmt.Scanln(&password); err != nil {
-		return fmt.Errorf("failed to read password: %w", err)
-	}
-	if len(password) < 3 {
-		return fmt.Errorf("password must be at least 3 characters")
-	}
-
-	// Create wallet config (CheckStealthOutput needs parameter reordering to match
-	// WalletConfig callback signature: func(txPub, outputPub, viewPriv, spendPub) bool)
-	cfg := wallet.WalletConfig{
-		CheckStealthOutput: func(txPub, outputPub, viewPriv, spendPub [32]byte) bool {
-			return CheckStealthOutput(spendPub, viewPriv, txPub, outputPub)
-		},
-		DeriveOutputSecret: DeriveStealthSecret,
-		DeriveOutputSecretIndexed: func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error) {
-			return DeriveStealthSecretIndexed(txPub, viewPriv, outputIndex)
-		},
-	}
-
-	// Create view-only wallet
-	w, err := wallet.NewViewOnlyWallet(filename, []byte(password), keys, cfg)
-	if err != nil {
-		return fmt.Errorf("failed to create view-only wallet: %w", err)
-	}
-
-	fmt.Printf("View-only wallet created: %s\n", filename)
-	fmt.Printf("Address: %s\n", w.Address())
-	fmt.Println("\nThis wallet can monitor incoming funds but cannot spend.")
-
-	return nil
+var removedCLIFlags = []struct{ name, replacement string }{
+	{"cli", "blocknet attach"},
+	{"daemon", "blocknet attach"},
+	{"recover", "blocknet attach, then: import (option 1, recovery seed)"},
+	{"viewonly", "blocknet attach, then: import (option 3, view-only)"},
+	{"spend-pub", "blocknet attach, then: import (option 3, view-only)"},
+	{"view-priv", "blocknet attach, then: import (option 3, view-only)"},
+	{"view-priv-env", "blocknet attach, then: import (option 3, view-only)"},
+	{"output-peer-address", "blocknet attach, then: export-peer"},
 }
 
-func outputPeerAddress(dataDir, listenAddr string) error {
-	keyPath := filepath.Join(dataDir, "identity.key")
-	if envKey := strings.TrimSpace(os.Getenv("BLOCKNET_P2P_KEY")); envKey != "" {
-		keyPath = envKey
-	}
-	if err := os.Setenv("BLOCKNET_P2P_KEY", keyPath); err != nil {
-		return fmt.Errorf("failed to set BLOCKNET_P2P_KEY: %w", err)
-	}
-
-	mgr, err := p2p.NewIdentityManager(p2p.DefaultIdentityConfig())
-	if err != nil {
-		return fmt.Errorf("failed to load identity: %w", err)
-	}
-	_, peerID := mgr.CurrentIdentity()
-
-	port := "28080"
-	if parts := strings.Split(listenAddr, "/"); len(parts) >= 5 {
-		port = parts[len(parts)-1]
-	}
-
-	publicIP, err := detectPublicIP()
-	if err != nil {
-		return fmt.Errorf("failed to detect public IP: %w", err)
-	}
-
-	multiaddr := fmt.Sprintf("/ip4/%s/tcp/%s/p2p/%s", publicIP, port, peerID.String())
-
-	if err := os.WriteFile("peer.txt", []byte(multiaddr+"\n"), 0644); err != nil {
-		return fmt.Errorf("failed to write peer.txt: %w", err)
-	}
-
-	fmt.Println(multiaddr)
-	return nil
+func registerRemovedCLIFlags(fs *flag.FlagSet) {
+	fs.Bool("cli", false, "Removed: use the Blocknet CLI (mantle)")
+	fs.Bool("daemon", true, "Always on: the core runs headless")
+	fs.Bool("recover", false, "Removed: use the Blocknet CLI (mantle)")
+	fs.Bool("viewonly", false, "Removed: use the Blocknet CLI (mantle)")
+	fs.String("spend-pub", "", "Removed: use the Blocknet CLI (mantle)")
+	fs.String("view-priv", "", "Removed: use the Blocknet CLI (mantle)")
+	fs.String("view-priv-env", "", "Removed: use the Blocknet CLI (mantle)")
+	fs.Bool("output-peer-address", false, "Removed: use the Blocknet CLI (mantle)")
 }
 
-// publicIPServices are third parties, so the reply is read under a cap. An
-// address is a few dozen bytes; without the cap a hostile or broken service
-// could stream until the node runs out of memory. Mirrors seed_resolve.go.
-var publicIPServices = []string{
-	"https://api.ipify.org",
-	"https://ifconfig.me/ip",
-	"https://icanhazip.com",
-}
-
-const publicIPMaxResponseBytes = 256
-
-func detectPublicIP() (string, error) {
-	client := &http.Client{Timeout: 5 * time.Second}
-	for _, svc := range publicIPServices {
-		resp, err := client.Get(svc)
-		if err != nil {
+func removedCLIFlagUse(fs *flag.FlagSet) (name, replacement string, ok bool) {
+	set := map[string]*flag.Flag{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = f })
+	for _, r := range removedCLIFlags {
+		f, used := set[r.name]
+		if !used || (r.name == "daemon" && f.Value.String() == "true") {
 			continue
 		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, publicIPMaxResponseBytes))
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		ip := strings.TrimSpace(string(body))
-		if ip != "" {
-			return ip, nil
-		}
+		return r.name, r.replacement, true
 	}
-	return "", fmt.Errorf("all IP detection services failed")
+	return "", "", false
+}
+
+func printRemovedCLIFlag(w io.Writer, name, replacement string) {
+	fmt.Fprintln(w, "The Blocknet core command-line interface has been removed.")
+	fmt.Fprintln(w, "Use the Blocknet CLI (mantle) instead:")
+	fmt.Fprintln(w, "  https://github.com/blocknetprivacy/blocknet/releases/latest")
+	fmt.Fprintln(w, "Source and docs: https://github.com/blocknetprivacy/blocknet")
+	fmt.Fprintf(w, "Replacement for --%s: %s\n", name, replacement)
 }

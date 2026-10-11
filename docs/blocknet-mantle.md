@@ -301,7 +301,7 @@ These commands are available inside `blocknet attach`. Each is routed to the tar
 
 The core is the current `blocknet` binary with the following changes:
 
-- `--daemon` now defaults to `true`. A `--cli` flag (default `false`) is available to get the interactive shell during the transition period. Once mantle has ported all CLI commands, `cli.go` and `--cli` are removed from core entirely.
+- The core always runs headless. As of 0.21.0 the interactive shell is removed. `--cli`, `--daemon=false`, `--recover`, `--viewonly`, `--spend-pub`, `--view-priv`, `--view-priv-env` and `--output-peer-address` print the mantle replacement and exit 1.
 - Mantle always passes `--no-version-check` when spawning a core. Mantle owns version management; the core should not check on its own.
 - Periodic version check and upgrade notification are removed (mantle handles this).
 
