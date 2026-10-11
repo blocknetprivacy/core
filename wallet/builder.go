@@ -29,13 +29,14 @@ type Recipient struct {
 
 // TransferResult contains the result of building a transaction
 type TransferResult struct {
-	TxData       []byte         // Serialized transaction
-	TxID         [32]byte       // Transaction ID
-	TxPrivKey    [32]byte       // Transaction private key (for sender-side shared secret derivation)
-	SpentOutputs []*OwnedOutput // Outputs that were spent
-	InputLease   uint64         // Lease id holding reserved inputs (cleared on MarkSpent / TTL / ReleaseInputLease)
-	Fee          uint64         // Fee paid
-	Change       uint64         // Change returned
+	TxData        []byte         // Serialized transaction
+	TxID          [32]byte       // Transaction ID
+	TxPrivKey     [32]byte       // Transaction private key (for sender-side shared secret derivation)
+	SpentOutputs  []*OwnedOutput // Outputs that were spent
+	InputLease    uint64         // Lease id holding reserved inputs (cleared on MarkSpent / TTL / ReleaseInputLease)
+	Fee           uint64         // Fee paid
+	Change        uint64         // Change returned
+	ChangeOutputs int
 }
 
 // TransferConfig holds dependencies for transaction building
@@ -331,6 +332,7 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 		allBlindings = append(allBlindings, blinding)
 	}
 
+	changeOutputs := 0
 	if change > 0 {
 		keys := b.wallet.Keys()
 		n := changeSplit
@@ -339,6 +341,7 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 		}
 		perOutput := change / uint64(n)
 		remainder := change % uint64(n)
+		changeOutputs = n
 
 		for c := 0; c < n; c++ {
 			outputIndex := len(outputs)
@@ -437,13 +440,14 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 	}
 
 	return &TransferResult{
-		TxData:       txData,
-		TxID:         txID,
-		TxPrivKey:    txPrivKey,
-		SpentOutputs: inputs,
-		InputLease:   lease,
-		Fee:          fee,
-		Change:       change,
+		TxData:        txData,
+		TxID:          txID,
+		TxPrivKey:     txPrivKey,
+		SpentOutputs:  inputs,
+		InputLease:    lease,
+		Fee:           fee,
+		Change:        change,
+		ChangeOutputs: changeOutputs,
 	}, nil
 }
 

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Blocknet Daemon API",
-    "description": "JSON API for the Blocknet privacy blockchain daemon. The API starts when the core runs with `--api <addr>`. Private endpoints require Bearer token authentication with the token in `<dataDir>/api.cookie`, written on startup. Public blockchain routes (`GET /api/health`, `/api/status`, `/api/block/{id}`, `/api/tx/{hash}`, `/api/mempool`, `/api/mempool/txs`, `/api/peers`, `/api/peers/banned`, `/api/stats`, and `POST /api/verify`, `/api/verify-proof`) need no token. Node settings are read and changed with `GET` and `PATCH /api/settings`.",
+    "description": "Network upgrade notice: Blocknet plans a network upgrade around 2027-02-16. After it, you will have 1 year to move your coins to the new format, until about 2028-02-16. Coins not moved by then cannot be spent. The wallet will guide you. JSON API for the Blocknet privacy blockchain daemon. The API starts when the core runs with `--api <addr>`. Private endpoints require Bearer token authentication with the token in `<dataDir>/api.cookie`, written on startup. Public blockchain routes (`GET /api/health`, `/api/status`, `/api/block/{id}`, `/api/tx/{hash}`, `/api/mempool`, `/api/mempool/txs`, `/api/peers`, `/api/peers/banned`, `/api/stats`, and `POST /api/verify`, `/api/verify-proof`) need no token. Node settings are read and changed with `GET` and `PATCH /api/settings`.",
     "version": "0.21.0",
     "license": {
       "name": "MIT"
@@ -193,6 +193,24 @@
                           "items": { "type": "string" },
                           "description": "This node's own non-loopback multiaddrs, each ending in /p2p/<peer_id>. Other nodes can connect with these."
                         },
+                        "network_upgrade": {
+                          "type": "object",
+                          "description": "Planned network upgrade. Clients should show the notice to users.",
+                          "required": ["date", "migration_deadline", "notice"],
+                          "properties": {
+                            "date": {
+                              "type": "string",
+                              "format": "date",
+                              "description": "Planned upgrade date (approximate)"
+                            },
+                            "migration_deadline": {
+                              "type": "string",
+                              "format": "date",
+                              "description": "About 1 year after the upgrade. Coins not moved to the new format by then cannot be spent."
+                            },
+                            "notice": { "type": "string", "description": "Short notice text for users" }
+                          }
+                        },
                         "wallet": { "$ref": "#/components/schemas/WalletDiagnostics" }
                       }
                     }
@@ -224,7 +242,12 @@
                     "file_size_bytes": 2048,
                     "synced_height": 14200
                   },
-                  "mempool_generation": 17
+                  "mempool_generation": 17,
+                  "network_upgrade": {
+                    "date": "2027-02-16",
+                    "migration_deadline": "2028-02-16",
+                    "notice": "Blocknet plans a network upgrade around 2027-02-16. After it, you will have 1 year to move your coins to the new format, until about 2028-02-16. Coins not moved by then cannot be spent. The wallet will guide you."
+                  }
                 }
               }
             }
@@ -1662,7 +1685,7 @@
             "in": "header",
             "required": false,
             "schema": { "type": "string", "maxLength": 128 },
-            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. A key whose request was still running when the node stopped stays in progress and returns 409 for that key."
+            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. If the node stopped while the request was running, its outcome is unknown: the key shows state `accepted` in the status route and returns 409 with an interrupted message until it expires."
           }
         ],
         "requestBody": {
@@ -1772,6 +1795,12 @@
                   "double_spend": {
                     "summary": "Input already spent in the mempool or chain",
                     "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...)" }
+                  },
+                  "interrupted": {
+                    "summary": "Node restarted while the request was running",
+                    "value": {
+                      "error": "request was interrupted by a node restart and its outcome is unknown; check GET /api/wallet/sends before sending again with a new idempotency key"
+                    }
                   }
                 }
               }
@@ -1868,7 +1897,7 @@
             "in": "header",
             "required": false,
             "schema": { "type": "string", "maxLength": 128 },
-            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. A key whose request was still running when the node stopped stays in progress and returns 409 for that key."
+            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. If the node stopped while the request was running, its outcome is unknown: the key shows state `accepted` in the status route and returns 409 with an interrupted message until it expires."
           }
         ],
         "requestBody": {
@@ -2064,6 +2093,12 @@
                   "double_spend": {
                     "summary": "Input already spent in the mempool or chain",
                     "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...)" }
+                  },
+                  "interrupted": {
+                    "summary": "Node restarted while the request was running",
+                    "value": {
+                      "error": "request was interrupted by a node restart and its outcome is unknown; check GET /api/wallet/sends before sending again with a new idempotency key"
+                    }
                   }
                 }
               }
@@ -2781,7 +2816,7 @@
                   },
                   "file_password": {
                     "type": "string",
-                    "description": "Password for the new view-only wallet file (min 3 characters, required when create_file is true). Use a different password from the main wallet; the core does not check this."
+                    "description": "Password for the new view-only wallet file (min 3 characters, required when create_file is true). It must differ from the main wallet password."
                   },
                   "filename": {
                     "type": "string",
@@ -2858,6 +2893,10 @@
                   "bad_filename": {
                     "summary": "Invalid filename",
                     "value": { "error": "invalid filename" }
+                  },
+                  "same_password": {
+                    "summary": "file_password equals the wallet password",
+                    "value": { "error": "file_password must differ from the wallet password" }
                   }
                 }
               }
@@ -4704,7 +4743,7 @@
           },
           "change_split": {
             "type": "integer",
-            "description": "The change split that was requested (1 if not given). The actual number of change outputs can be lower: min(change_split, change), or 0 when change is 0."
+            "description": "Number of change outputs: min(change_split, change), and 0 when there is no change. For a dry run, the number that would be created."
           },
           "input_total": {
             "type": "integer",

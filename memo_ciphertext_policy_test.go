@@ -23,13 +23,14 @@ func assertAllOutputsHaveNonZeroEncryptedMemo(t *testing.T, tx *Transaction) {
 	}
 }
 
-func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testing.T) {
+func fundedTestBuilder(t *testing.T) (*wallet.Builder, *wallet.Wallet, *Chain, *wallet.OwnedOutput) {
+	t.Helper()
 	chain, storage, cleanup := mustCreateTestChain(t)
-	defer cleanup()
+	t.Cleanup(cleanup)
 	mustAddGenesisBlock(t, chain)
 
 	daemon, stopDaemon := mustStartTestDaemon(t, chain)
-	defer stopDaemon()
+	t.Cleanup(stopDaemon)
 
 	genesis := chain.GetBlockByHeight(0)
 	if genesis == nil {
@@ -115,7 +116,7 @@ func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testi
 	if err != nil {
 		t.Fatalf("failed to create input commitment: %v", err)
 	}
-	w.AddOutput(&wallet.OwnedOutput{
+	funding := &wallet.OwnedOutput{
 		TxID:           [32]byte{0xAA},
 		OutputIndex:    0,
 		Amount:         1_000_000_000,
@@ -126,11 +127,15 @@ func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testi
 		BlockHeight:    0,
 		IsCoinbase:     false,
 		Spent:          false,
-	})
+	}
+	w.AddOutput(funding)
 
-	// Build a tx using the real production wiring from API server.
 	s := &APIServer{daemon: daemon, wallet: w}
-	builder := s.createTxBuilder()
+	return s.createTxBuilder(), w, chain, funding
+}
+
+func TestMemoCiphertextPolicy_WalletBuilderTransferProducesNonZeroMemos(t *testing.T) {
+	builder, w, chain, _ := fundedTestBuilder(t)
 
 	keys := w.Keys()
 	res, err := builder.Transfer([]wallet.Recipient{
@@ -223,3 +228,20 @@ func TestMemoCiphertextPolicy_CoinbaseConstructorProducesNonZeroMemo(t *testing.
 	assertAllOutputsHaveNonZeroEncryptedMemo(t, cb.Tx)
 }
 
+func TestTransferWithInputsReportsActualChangeOutputs(t *testing.T) {
+	builder, w, chain, funding := fundedTestBuilder(t)
+	keys := w.Keys()
+	recipients := []wallet.Recipient{{SpendPubKey: keys.SpendPubKey, ViewPubKey: keys.ViewPubKey, Amount: 1}}
+
+	res, err := builder.TransferWithInputs([]*wallet.OwnedOutput{funding}, 0, recipients, 1000, 3, chain.Height())
+	if err != nil {
+		t.Fatalf("transfer: %v", err)
+	}
+	tx, err := DeserializeTx(res.TxData)
+	if err != nil {
+		t.Fatalf("deserialize: %v", err)
+	}
+	if res.ChangeOutputs != 3 || len(tx.Outputs) != 1+3 {
+		t.Fatalf("change outputs = %d, tx outputs = %d, want 3 and 4", res.ChangeOutputs, len(tx.Outputs))
+	}
+}

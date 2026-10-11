@@ -19,6 +19,8 @@ type idempotencyResult struct {
 
 type idempotencyState string
 
+const idempotencyInterruptedMessage = "request was interrupted by a node restart and its outcome is unknown; check GET /api/wallet/sends before sending again with a new idempotency key"
+
 const (
 	idempotencyStateAccepted   idempotencyState = "accepted"
 	idempotencyStateInProgress idempotencyState = "in_progress"
@@ -80,6 +82,10 @@ func (c *idempotencyCache) getOrStart(now time.Time, key string, reqHash [32]byt
 		if e.reqHash != reqHash {
 			c.mu.Unlock()
 			return "mismatch", idempotencyResult{}
+		}
+		if e.state == idempotencyStateAccepted {
+			c.mu.Unlock()
+			return "interrupted", idempotencyResult{}
 		}
 		if !e.isTerminal() {
 			c.mu.Unlock()
@@ -157,7 +163,7 @@ func (c *idempotencyCache) pruneLocked(now time.Time) {
 	}
 	for k, e := range c.entries {
 		// Never expire unresolved entries; dropping them re-allows duplicate processing.
-		if !e.isTerminal() {
+		if !e.expirable() {
 			continue
 		}
 		if now.Sub(e.updatedAt) > c.ttl {
@@ -178,7 +184,7 @@ func (c *idempotencyCache) enforceCapLocked() {
 		var oldestTime time.Time
 		first := true
 		for k, e := range c.entries {
-			if !e.isTerminal() {
+			if !e.expirable() {
 				continue
 			}
 			if first || e.updatedAt.Before(oldestTime) {
@@ -331,6 +337,10 @@ func writePersistData(data []byte, path string) error {
 
 func (e *idempotencyEntry) isTerminal() bool {
 	return e != nil && (e.state == idempotencyStateCompleted || e.state == idempotencyStateFailed)
+}
+
+func (e *idempotencyEntry) expirable() bool {
+	return e.isTerminal() || (e != nil && e.state == idempotencyStateAccepted)
 }
 
 func parsePersistedIdempotencyState(value string) idempotencyState {

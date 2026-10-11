@@ -190,6 +190,7 @@ func (c *CLI) Run() error {
 	go c.watchMinedBlocks()
 
 	c.printLogo()
+	fmt.Printf("  %s\n  %s\n\n", c.errorHead("Network upgrade notice"), networkUpgradeNotice)
 	height := c.daemon.Chain().Height()
 
 	c.mu.RLock()

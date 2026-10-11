@@ -183,3 +183,29 @@ func TestFinalizedCheckpointHeightNeverWithinReorgDepth(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleViewKeys_CreateRejectsMainWalletPassword(t *testing.T) {
+	dir := t.TempDir()
+	walletFile := filepath.Join(dir, "main.wallet.dat")
+	w, err := wallet.NewWallet(walletFile, []byte("main-pass"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("new wallet: %v", err)
+	}
+	s := NewAPIServer(nil, w, nil, dir, []byte("main-pass"))
+	s.cli = &CLI{walletFile: walletFile}
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.RemoteAddr = "203.0.113.7:1234"
+		s.handleViewKeys(w, r)
+	})
+
+	body := []byte(`{"password":"main-pass","create_file":true,"file_password":"main-pass"}`)
+	rr := mustMakeHTTPJSONRequest(t, handler, http.MethodPost, "/api/wallet/viewkeys", body,
+		map[string]string{"Content-Type": "application/json"})
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "must differ") {
+		t.Fatalf("expected 400 for a file_password equal to the wallet password, got %d: %s", rr.Code, rr.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "main.view.wallet.dat")); err == nil {
+		t.Fatal("view wallet file should not exist after a rejected create")
+	}
+}

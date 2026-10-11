@@ -180,6 +180,7 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
+` + explorerUpgradeBanner + `
 <div class="header"><h1><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:16px;font-size:13px"><a href="/stats">network stats</a></div></div>
 
 <form class="search" action="/search" method="get">
@@ -277,6 +278,7 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
+` + explorerUpgradeBanner + `
 <div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
 <div class="topnav"><a href="/">blocks</a> <a href="/stats">stats</a></div>
 
@@ -342,6 +344,7 @@ const explorerTxTmpl = `<!DOCTYPE html>
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
+` + explorerUpgradeBanner + `
 <div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
 <div class="topnav"><a href="/">blocks</a> <a href="/stats">stats</a></div>
 
@@ -512,6 +515,7 @@ footer{margin-top:48px;padding-top:24px;border-top:1px dashed #333;color:#444;fo
 {{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
 </head>
 <body>
+` + explorerUpgradeBanner + `
 <div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
 <div class="topnav"><a href="/">← blocks</a></div>
 

@@ -115,7 +115,27 @@ func TestIdempotencyCachePersistsAcceptedEntriesAcrossRestart(t *testing.T) {
 	}
 
 	state, _ = reloaded.getOrStart(now.Add(2*time.Second), "k", h)
-	if state != "inflight" {
-		t.Fatalf("expected inflight after reload, got %q", state)
+	if state != "interrupted" {
+		t.Fatalf("expected interrupted after reload, got %q", state)
+	}
+}
+
+func TestIdempotencyCacheExpiresInterruptedEntriesAfterTTL(t *testing.T) {
+	now := time.Now()
+	path := t.TempDir() + "/send-idempotency.json"
+	c := newIdempotencyCache(time.Hour, 100, path)
+
+	var h [32]byte
+	h[0] = 9
+	if state, _ := c.getOrStart(now, "k", h); state != "start" {
+		t.Fatalf("expected start, got %q", state)
+	}
+
+	reloaded := newIdempotencyCache(time.Hour, 100, path)
+	if state, _ := reloaded.getOrStart(now.Add(30*time.Minute), "k", h); state != "interrupted" {
+		t.Fatalf("expected interrupted inside the TTL, got %q", state)
+	}
+	if state, _ := reloaded.getOrStart(now.Add(2*time.Hour), "k", h); state != "start" {
+		t.Fatalf("expected the interrupted key to expire after the TTL, got %q", state)
 	}
 }

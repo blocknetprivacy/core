@@ -41,11 +41,13 @@ const (
 func (s *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := struct {
 		DaemonStats
-		PeerAddrs []string                  `json:"peer_addrs"`
-		Wallet    *wallet.WalletDiagnostics `json:"wallet,omitempty"`
+		PeerAddrs      []string                  `json:"peer_addrs"`
+		NetworkUpgrade networkUpgradeInfo        `json:"network_upgrade"`
+		Wallet         *wallet.WalletDiagnostics `json:"wallet,omitempty"`
 	}{
-		DaemonStats: s.daemon.Stats(),
-		PeerAddrs:   []string{},
+		DaemonStats:    s.daemon.Stats(),
+		PeerAddrs:      []string{},
+		NetworkUpgrade: currentNetworkUpgrade(),
 	}
 	if node := s.daemon.Node(); node != nil {
 		resp.PeerAddrs = node.FullMultiaddrs()
@@ -1200,6 +1202,9 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		case "inflight":
 			writeError(w, http.StatusConflict, "idempotency key in progress")
 			return
+		case "interrupted":
+			writeError(w, http.StatusConflict, idempotencyInterruptedMessage)
+			return
 		case "start":
 			// proceed (complete on return)
 		default:
@@ -1405,6 +1410,9 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 		case "inflight":
 			writeError(w, http.StatusConflict, "idempotency key in progress")
 			return
+		case "interrupted":
+			writeError(w, http.StatusConflict, idempotencyInterruptedMessage)
+			return
 		case "start":
 		default:
 			writeError(w, http.StatusInternalServerError, "idempotency state error")
@@ -1536,7 +1544,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 			"dry_run":      true,
 			"fee":          fee,
 			"change":       change,
-			"change_split": changeSplit,
+			"change_split": int(min(uint64(changeSplit), change)),
 			"input_total":  inputTotal,
 			"input_count":  len(inputs),
 			"recipients":   buildRecipientResults(validated),
@@ -1580,7 +1588,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 		"txid":         fmt.Sprintf("%x", result.TxID),
 		"fee":          result.Fee,
 		"change":       result.Change,
-		"change_split": changeSplit,
+		"change_split": result.ChangeOutputs,
 		"input_total":  inputTotal,
 		"input_count":  len(inputs),
 		"dry_run":      false,
@@ -2480,6 +2488,11 @@ func (s *APIServer) handleViewKeys(w http.ResponseWriter, r *http.Request) {
 	if req.CreateFile {
 		if len(req.FilePassword) < 3 {
 			writeError(w, http.StatusBadRequest, "file_password must be at least 3 characters")
+			return
+		}
+		fileHash := passwordHash([]byte(req.FilePassword))
+		if subtle.ConstantTimeCompare(fileHash[:], expectedHash[:]) == 1 {
+			writeError(w, http.StatusBadRequest, "file_password must differ from the wallet password")
 			return
 		}
 
