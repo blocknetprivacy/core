@@ -3,68 +3,154 @@ package main
 import "html/template"
 
 // Parsed once at init: template.Must fails the process at startup rather than
-// letting a malformed page surface as a 500 on the first request.
+// letting a malformed page surface as a 500 on the first request. Every page
+// shares the head, top bar and footer defined in explorerCommonTmpl.
 var (
-	explorerIndexPage = template.Must(template.New("index").Parse(explorerIndexTmpl))
-	explorerBlockPage = template.Must(template.New("block").Parse(explorerBlockTmpl))
-	explorerTxPage    = template.Must(template.New("tx").Parse(explorerTxTmpl))
-	explorerStatsPage = template.Must(template.New("stats").Parse(explorerStatsTmpl))
+	explorerIndexPage = template.Must(template.New("index").Parse(explorerCommonTmpl + explorerIndexTmpl))
+	explorerBlockPage = template.Must(template.New("block").Parse(explorerCommonTmpl + explorerBlockTmpl))
+	explorerTxPage    = template.Must(template.New("tx").Parse(explorerCommonTmpl + explorerTxTmpl))
+	explorerStatsPage = template.Must(template.New("stats").Parse(explorerCommonTmpl + explorerStatsTmpl))
 )
 
 const explorerCSS = `*{margin:0;padding:0;box-sizing:border-box}
-:root{--ac:#af0;--ac-h:#cf3}
-body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:24px 32px}
-a{color:var(--ac)}
+:root{--ac:#af0;--ac-h:#cf3;--ac-a:rgba(170,255,0,.12);--ln:#161616;--ln2:#262626;--tx:#b0b0b0;--hi:#eee;--mu:#666;--dim:#444;--warn:#fa0;--pn:#060606}
+html{background:#000}
+body{background:#000;color:var(--tx);font:14px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;-webkit-text-size-adjust:100%}
+a{color:var(--ac);text-decoration:none}
 a:hover{color:var(--ac-h)}
-h1,h2{color:#eee;font-weight:normal}
-h1{font-size:24px;margin:0}
-h2{font-size:18px;margin:0 0 16px}
-p{margin:16px 0}
+h1,h2,h3{color:var(--hi);font-weight:normal}
+h2{font-size:15px;margin:0 0 14px;display:flex;align-items:baseline;gap:10px}
+h2 .n{color:var(--dim);font-size:12px}
 .g{color:var(--ac)}
-.d{color:#555}
-.header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:12px;margin-bottom:8px}
-.topnav{font-size:13px;display:flex;gap:16px;margin-bottom:24px}
-.search{display:flex;gap:8px;margin-bottom:32px}
-.search input{flex:1;background:#000;border:1px solid #333;color:#eee;padding:12px 16px;font:inherit;min-width:0}
-.search input:focus{outline:none;border-color:var(--ac)}
-.search button{background:var(--ac);border:0;color:#000;padding:12px 24px;cursor:pointer;font:inherit;white-space:nowrap}
-.search button:hover{background:var(--ac-h)}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:32px}
-.stat{padding:20px;text-align:center}
-.stat-v{font-size:24px;color:#eee}
-.stat-k{font-size:12px;color:#666;text-transform:uppercase;margin-top:4px}
-.panels{display:flex;gap:32px;align-items:flex-start}
-.panels>div{flex:1;min-width:0}
-.nav{display:flex;gap:16px;margin-bottom:24px}
-table{width:100%;border-collapse:collapse;margin:16px 0}
-th,td{text-align:left;padding:10px 12px}
-th{color:#666;font-weight:normal;font-size:13px;text-transform:uppercase}
-tr:hover{background:#0a0a0a}
-.hash{color:#666;font-size:13px}
-.props{padding:20px 0}
-.prop{display:flex;padding:8px 0}
-.prop-k{width:140px;color:#666;flex-shrink:0}
-.prop-v{flex:1;word-break:break-all}
-.prop-v.mono{font-size:13px;color:#888}
-.block-columns{display:flex;gap:32px;align-items:flex-start}
-.block-columns>div{flex:1;min-width:0}
-.tx-columns{display:flex;gap:32px;align-items:flex-start}
-.tx-col-left{flex:1;min-width:0;order:0}
-.tx-col-right{flex:1;min-width:0;order:1}
-.io-card{padding:16px 0;margin-bottom:16px}
-.io-card .prop{padding:6px 0}
-.io-card .prop-k{width:130px}
-.prove-tabs{display:flex;gap:0}
-.prove-tab{background:#000;color:#666;border:0;padding:8px 20px;cursor:pointer;font:13px/1.4 monospace}
-.prove-tab-active{background:var(--ac);color:#000}
-.prove-box{padding:20px 0}
-.prove-box input{background:#000;border:1px solid #333;color:#eee;padding:10px 12px;font:13px/1.4 monospace;width:100%;margin-bottom:8px}
-.prove-box input:focus{outline:none;border-color:var(--ac)}
-.prove-box button{background:var(--ac);border:0;color:#000;padding:10px 24px;cursor:pointer;font:inherit}
-.prove-box button:hover{background:var(--ac-h)}
-footer{margin-top:48px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
-@media(max-width:900px){.panels,.block-columns,.tx-columns{flex-direction:column}body{padding:16px}h1{font-size:20px}.stat-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
-@media(max-width:500px){.stat-grid{grid-template-columns:1fr 1fr}.stat-v{font-size:18px}.search{flex-direction:column}.search button{padding:12px}.prop{flex-direction:column;gap:2px}.prop-k{width:auto}.io-card .prop-k{width:auto}}`
+.d{color:var(--dim)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+.top{position:sticky;top:0;z-index:20;background:rgba(0,0,0,.82);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);border-bottom:1px solid var(--ln)}
+.top .wrap{display:flex;align-items:center;gap:22px;height:56px}
+.brand{color:var(--hi);font-size:17px;white-space:nowrap;letter-spacing:-.2px}
+.brand:hover{color:var(--hi)}
+.brand .cur{color:var(--ac);animation:blink 1.1s steps(1) infinite;-webkit-user-select:none;user-select:none;cursor:pointer}
+.brand .sub{color:var(--dim);margin-left:6px}
+@keyframes blink{50%{opacity:0}}
+.nav{display:flex;gap:18px;font-size:13px}
+.nav a{color:var(--mu)}
+.nav a:hover,.nav a.on{color:var(--ac)}
+.qs{margin-left:auto;display:flex;flex:0 1 340px;min-width:0}
+.qs input{width:100%;background:#050505;border:1px solid var(--ln2);color:var(--hi);padding:7px 12px;font-size:12px;border-radius:6px}
+.qs input:focus{outline:none;border-color:var(--ac)}
+.notice{border-bottom:1px solid #2a1d00;background:#0d0800;color:#c80;font-size:12px;line-height:1.5}
+.notice .wrap{padding-top:8px;padding-bottom:8px;display:flex;gap:10px;align-items:baseline}
+.notice b{color:var(--warn);font-weight:normal;white-space:nowrap}
+.notice a{color:var(--warn);white-space:nowrap}
+.notice .ns{display:none}
+main.wrap{padding-top:28px}
+.card{background:var(--pn);border:1px solid var(--ln);border-radius:10px;padding:18px 20px}
+.k{font-size:11px;color:var(--mu);text-transform:uppercase;letter-spacing:.6px}
+.v{font-size:22px;color:var(--hi);margin-top:4px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.v small{font-size:13px;color:var(--mu)}
+.s{font-size:12px;color:var(--dim);margin-top:2px}
+.grid{display:grid;gap:14px}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+.g21{grid-template-columns:minmax(0,2fr) minmax(0,1fr)}
+.sec{margin-top:36px}
+.pbar{height:4px;background:#111;border-radius:2px;overflow:hidden;margin-top:10px}
+.pbar i{display:block;height:100%;background:var(--ac);border-radius:2px;box-shadow:0 0 10px var(--ac)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--ac);box-shadow:0 0 0 0 var(--ac);animation:pulse 2s infinite;vertical-align:1px}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(170,255,0,.6)}70%{box-shadow:0 0 0 8px rgba(170,255,0,0)}100%{box-shadow:0 0 0 0 rgba(170,255,0,0)}}
+.badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid var(--ln2);color:var(--tx);padding:2px 10px;border-radius:999px;white-space:nowrap}
+.badge.ok{border-color:rgba(170,255,0,.35);color:var(--ac);background:var(--ac-a)}
+.badge.wait{border-color:#3a2a00;color:var(--warn);background:#0d0800}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 12px;white-space:nowrap}
+th{color:var(--mu);font-weight:normal;font-size:11px;text-transform:uppercase;letter-spacing:.6px;border-bottom:1px solid var(--ln)}
+td{border-bottom:1px solid #0d0d0d;font-variant-numeric:tabular-nums}
+tr:last-child td{border-bottom:0}
+tbody tr:hover{background:#0a0a0a}
+td.r,th.r{text-align:right}
+.hash{color:var(--mu)}
+.hash a{color:var(--tx)}
+.hash a:hover{color:var(--ac)}
+.tbl{padding:6px 8px;overflow-x:auto}
+tr.new td{animation:rowin 2.4s ease-out}
+@keyframes rowin{0%{background:rgba(170,255,0,.16)}100%{background:transparent}}
+.kv{display:grid;grid-template-columns:150px minmax(0,1fr);gap:0}
+.kv>div{padding:11px 0;border-bottom:1px solid #0e0e0e}
+.kv>div:nth-last-child(-n+2){border-bottom:0}
+.kv .kk{color:var(--mu);font-size:12px;text-transform:uppercase;letter-spacing:.5px;padding-top:13px}
+.kv .vv{color:var(--hi);word-break:break-all;display:flex;gap:10px;align-items:flex-start}
+.kv .vv.m{font-size:13px;color:#999}
+.kv .vv>span{min-width:0}
+.cp{flex-shrink:0;background:transparent;border:1px solid var(--ln2);color:var(--mu);font-size:11px;line-height:1;padding:4px 7px;border-radius:5px;cursor:pointer}
+.cp:hover{color:var(--ac);border-color:var(--ac)}
+.cp.done{color:#000;background:var(--ac);border-color:var(--ac)}
+.btn{display:inline-flex;align-items:center;gap:8px;background:#0a0a0a;border:1px solid var(--ln2);color:var(--tx);padding:7px 14px;border-radius:7px;font-size:13px}
+.btn:hover{border-color:var(--ac);color:var(--ac)}
+.btn.off{opacity:.3;pointer-events:none}
+.pager{display:flex;gap:10px;align-items:center}
+.pager .hint{color:var(--dim);font-size:11px;margin-left:6px}
+.ph{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px}
+.ph h1{font-size:26px;letter-spacing:-.4px}
+.ph h1 .d{font-size:14px;letter-spacing:0}
+.crumb{font-size:12px;color:var(--dim);margin-bottom:6px}
+.crumb a{color:var(--mu)}
+.chip{display:inline-block;font-size:11px;padding:1px 8px;border-radius:4px;border:1px solid var(--ln2);color:var(--mu)}
+.chip.cb{color:var(--ac);border-color:rgba(170,255,0,.3)}
+.note{font-size:12px;color:var(--mu);margin:-6px 0 14px}
+footer{margin-top:64px;border-top:1px solid var(--ln);color:var(--dim);font-size:12px}
+footer .wrap{display:flex;gap:18px;flex-wrap:wrap;padding-top:22px;padding-bottom:32px}
+footer a{color:var(--mu)}
+footer a:hover{color:var(--ac)}
+input,button{font-family:inherit}
+@media(max-width:980px){.g4{grid-template-columns:repeat(2,minmax(0,1fr))}.g2,.g21{grid-template-columns:1fr}}
+@media(max-width:700px){.wrap{padding:0 16px}.qs{display:none}.nav{gap:14px}.brand .sub{display:none}.kv{grid-template-columns:1fr}.kv .kk{padding:10px 0 0;border-bottom:0!important}.kv>div.vv{padding-top:2px}.ph h1{font-size:22px}.v{font-size:18px}.hide-s{display:none}.pager .hint{display:none}.notice .nl{display:none}.notice .ns{display:inline}}
+@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}`
+
+// explorerCommonTmpl holds the parts every page shares. Pages call
+// {{template "head" .}} inside <head>, then "top" and "foot" in <body>.
+const explorerCommonTmpl = `{{define "head"}}<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+<meta property="og:image" content="https://blocknetcrypto.com/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:type" content="website">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://blocknetcrypto.com/og.png">
+<link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
+<link rel="apple-touch-icon" href="https://blocknetcrypto.com/apple-touch-icon.png">
+<style>` + explorerCSS + `</style>
+{{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c;--ac-a:rgba(255,0,170,.12)}</style>{{end}}{{end}}
+{{define "top"}}<header class="top"><div class="wrap">
+<a class="brand" href="/">blocknet<span class="cur" id="egg">_</span><span class="sub">explorer</span></a>
+<nav class="nav"><a href="/" data-nav="/">blocks</a><a href="/stats" data-nav="/stats">stats</a><a href="https://blocknetcrypto.com/#faraday" class="hide-s">faraday</a></nav>
+<form class="qs" action="/search" method="get"><input type="text" name="q" placeholder="search height, block or tx hash   /" aria-label="Search" spellcheck="false" autocomplete="off"></form>
+</div></header>
+` + explorerUpgradeBanner + `
+{{end}}
+{{define "foot"}}<footer><div class="wrap">
+<a href="https://blocknetcrypto.com">blocknetcrypto.com</a>
+<a href="https://blocknetcrypto.com/#faraday">faraday upgrade</a>
+<a href="https://blocknetcrypto.com/api.html">api</a>
+<a href="https://github.com/blocknetprivacy/blocknet">github</a>
+{{if .IsTestnet}}<span class="g">testnet</span>{{end}}
+</div></footer>
+` + explorerCommonScript + explorerEggScript + explorerLiveScript + `{{end}}`
+
+// explorerCommonScript runs on every page: live "ago" labels, copy buttons,
+// the "/" search shortcut and the active nav link.
+const explorerCommonScript = `<script>
+(function(){
+function ago(s){if(s<0)s=0;if(s<60)return s+'s ago';if(s<3600)return Math.floor(s/60)+'m '+(s%60)+'s ago';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor(s%3600/60)+'m ago';return Math.floor(s/86400)+'d ago';}
+window.bnAgo=ago;
+function tick(){var now=Date.now()/1000,els=document.querySelectorAll('[data-ts]');for(var i=0;i<els.length;i++){var t=+els[i].getAttribute('data-ts');if(t)els[i].textContent=ago(Math.floor(now-t));}}
+window.bnTick=tick;tick();setInterval(tick,1000);
+document.addEventListener('click',function(e){var b=e.target.closest&&e.target.closest('.cp');if(!b)return;
+var v=b.getAttribute('data-cp');function ok(){b.textContent='copied';b.classList.add('done');setTimeout(function(){b.textContent='copy';b.classList.remove('done');},1200);}
+if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(v).then(ok,function(){});}else{var t=document.createElement('textarea');t.value=v;document.body.appendChild(t);t.select();try{document.execCommand('copy');ok();}catch(x){}t.remove();}});
+document.addEventListener('keydown',function(e){if(e.key!=='/'||e.metaKey||e.ctrlKey)return;var a=document.activeElement;if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'))return;
+var q=document.querySelector('.hero input[name=q]')||document.querySelector('.qs input');if(q&&q.offsetParent){e.preventDefault();q.focus();}});
+var p=location.pathname,n=document.querySelectorAll('[data-nav]');for(var i=0;i<n.length;i++){var h=n[i].getAttribute('data-nav');if(h===p||(h==='/'&&(p.indexOf('/block')===0||p.indexOf('/tx')===0)))n[i].classList.add('on');}
+})();
+</script>`
 
 const explorerProxyFixScript = `<script>
 (function(){
@@ -74,45 +160,47 @@ if(t==='mainnet'||t==='testnet'||t==='TESTNET'){aa[i].remove();}}
 })();
 </script>`
 
+// explorerLiveScript applies the /events stream to whatever page is open: tip
+// height, next difficulty, the block list, the chain strip and confirmations.
 const explorerLiveScript = `<script>
 (function(){
 if(!window.EventSource)return;
 var es=new EventSource('/events');
 function txt(id,v){var el=document.getElementById(id);if(el)el.textContent=v;}
-function shorten(h){return h.slice(0,16)+'...';}
-function prependBlock(d){
-var tbl=document.querySelector('table.recent-blocks');if(!tbl)return;
-var head=tbl.rows[0];if(!head)return;
-for(var i=1;i<tbl.rows.length;i++){
-var first=tbl.rows[i].cells[0];
-if(first&&first.textContent.trim()===String(d.height))return;
+function short(h){return h.slice(0,12)+'…'+h.slice(-6);}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function addRow(d){
+var tb=document.querySelector('table.recent-blocks tbody');if(!tb)return;
+for(var i=0;i<tb.rows.length;i++){if(tb.rows[i].getAttribute('data-h')===String(d.height))return;}
+var r=tb.insertRow(0);r.className='new';r.setAttribute('data-h',d.height);
+r.innerHTML='<td><a href="/block/'+d.height+'">'+d.height+'</a></td><td class="hash"><a href="/block/'+esc(d.hash)+'">'+short(esc(d.hash))+'</a></td><td class="r"><span data-ts="'+d.timestamp+'"></span></td><td class="r">'+d.tx_count+'</td>';
+while(tb.rows.length>20)tb.deleteRow(tb.rows.length-1);
 }
-var row=tbl.insertRow(1);
-row.insertCell(0).innerHTML='<a href="/block/'+d.height+'">'+d.height+'</a>';
-var hc=row.insertCell(1);hc.className='hash';
-hc.innerHTML='<a href="/block/'+d.hash+'">'+shorten(d.hash)+'</a>';
-row.insertCell(2).textContent='0s ago';
-row.insertCell(3).textContent=d.tx_count;
-while(tbl.rows.length>21)tbl.deleteRow(tbl.rows.length-1);
+function addTile(d){
+var s=document.getElementById('strip');if(!s)return;
+if(s.querySelector('[data-h="'+d.height+'"]'))return;
+var a=document.createElement('a');a.className='blk new';a.href='/block/'+d.height;a.setAttribute('data-h',d.height);
+a.innerHTML='<b>'+d.height+'</b><span>'+d.tx_count+' tx</span><span data-ts="'+d.timestamp+'"></span>';
+s.insertBefore(a,s.firstChild);
+while(s.children.length>14)s.removeChild(s.lastChild);
 }
-function bumpConfirmations(d){
-var el=document.getElementById('tx-confirmations');if(!el)return;
-var at=parseInt(el.getAttribute('data-height'),10);
-if(isNaN(at))return;
-el.textContent=(d.height-at+1);
+function confs(d){
+var els=document.querySelectorAll('[data-conf-height]');
+for(var i=0;i<els.length;i++){var at=parseInt(els[i].getAttribute('data-conf-height'),10);if(!isNaN(at))els[i].textContent=(d.height-at+1);}
+var nx=document.getElementById('next-link');if(nx&&nx.classList.contains('off')&&d.height>=+nx.getAttribute('data-next')){nx.classList.remove('off');}
 }
 es.addEventListener('connected',function(ev){
 var d;try{d=JSON.parse(ev.data);}catch(e){return;}
-txt('stat-height',d.height);
-txt('stat-difficulty',d.next_difficulty);
-bumpConfirmations(d);
+txt('stat-height',d.height);txt('stat-difficulty',d.next_difficulty);confs(d);
 });
 es.addEventListener('new_block',function(ev){
 var d;try{d=JSON.parse(ev.data);}catch(e){return;}
-txt('stat-height',d.height);
-txt('stat-difficulty',d.next_difficulty);
-prependBlock(d);
-bumpConfirmations(d);
+txt('stat-height',d.height);txt('stat-difficulty',d.next_difficulty);
+var tip=document.getElementById('tip-ago');if(tip)tip.setAttribute('data-ts',d.timestamp);
+window.bnTipTs=d.timestamp;
+addRow(d);addTile(d);confs(d);
+if(window.bnTick)window.bnTick();
+if(window.bnPulse)window.bnPulse();
 });
 })();
 </script>`
@@ -133,7 +221,7 @@ egg.addEventListener('click',function(ev){
 ev.preventDefault();ev.stopPropagation();
 if(active)return;active=true;
 document.cookie='net='+(tn?'mainnet':'testnet')+';path=/;max-age=31536000';
-var els=document.querySelectorAll('h1,h2,.topnav a,.stat-k,.stat-v,.prop-k,.prop-v,td,th,footer a,button,.nav a');
+var els=document.querySelectorAll('h1,h2,.nav a,.k,.v,.kk,.vv>span,td,th,footer a,button,.btn,.topnav a,.stat-k,.stat-v,.prop-k,.prop-v');
 var saved=[];
 for(var i=0;i<els.length;i++){
 saved.push(els[i].textContent);
@@ -158,101 +246,173 @@ if(t>=1){clearInterval(iv);location.reload();}
 })();
 </script>`
 
+// explorerGyroidScript draws the small graphite gyroid in the index hero. It
+// pauses off screen, lights up green toward the pointer, and flashes when a
+// new block arrives (window.bnPulse, called by the live script).
+const explorerGyroidScript = `<script>
+(function(){
+var c=document.getElementById('gy');if(!c)return;
+var gl=c.getContext('webgl',{antialias:false,alpha:true,premultipliedAlpha:false});if(!gl){c.style.display='none';return;}
+var ac=getComputedStyle(document.documentElement).getPropertyValue('--ac').trim()||'#af0';
+function rgb(h){h=h.replace('#','');if(h.length===3)h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255];}
+var AC=rgb(ac);
+var vs='attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}';
+var fs='precision highp float;uniform vec2 R;uniform float T,P;uniform vec3 M,A;'+
+'mat2 r2(float a){float c=cos(a),s=sin(a);return mat2(c,-s,s,c);}'+
+'vec3 rot(vec3 p){p.xz*=r2(T*.23);p.yz*=r2(.45+sin(T*.11)*.2);return p;}'+
+'float sd(vec3 p){p=rot(p);float k=4.2;float g=sin(p.x*k)*cos(p.y*k)+sin(p.y*k)*cos(p.z*k)+sin(p.z*k)*cos(p.x*k);float sh=abs(g)/k*.62-.035;return max(length(p)-1.,sh);}'+
+'vec3 nr(vec3 p){vec2 e=vec2(.0015,0.);return normalize(vec3(sd(p+e.xyy)-sd(p-e.xyy),sd(p+e.yxy)-sd(p-e.yxy),sd(p+e.yyx)-sd(p-e.yyx)));}'+
+'void main(){vec2 uv=(gl_FragCoord.xy*2.-R)/min(R.x,R.y);vec3 ro=vec3(0.,0.,3.1),rd=normalize(vec3(uv*.82,-2.));'+
+'float b=dot(ro,rd),cc=dot(ro,ro)-1.03,h=b*b-cc;if(h<0.){gl_FragColor=vec4(0.);return;}'+
+'float t=-b-sqrt(h),tm=-b+sqrt(h),d;bool hit=false;for(int i=0;i<64;i++){d=sd(ro+rd*t);if(d<.0012){hit=true;break;}t+=d*.9;if(t>tm)break;}'+
+'if(!hit){gl_FragColor=vec4(0.);return;}'+
+'vec3 p=ro+rd*t,n=nr(p),l=normalize(vec3(-.5,.8,.6));float df=max(dot(n,l),0.),ao=clamp(sd(p+n*.06)/.06,0.,1.);'+
+'float fr=pow(1.-max(dot(n,-rd),0.),3.);vec3 col=vec3(.07,.075,.08)+vec3(.30,.31,.33)*df*(.4+.6*ao)+vec3(.12)*fr;'+
+'col+=vec3(.5)*pow(max(dot(reflect(rd,n),l),0.),24.)*ao;'+
+'vec3 lm=normalize(M-p);float g1=max(dot(n,lm),0.);float near=exp(-2.4*length(p.xy-M.xy));'+
+'col+=A*(pow(g1,6.)*.9*near+fr*.25*near)*(.5+.5*ao);'+
+'float rr=length(rot(p));col+=A*P*smoothstep(.25,0.,abs(rr-(1.-P)*1.1))*1.4;'+
+'col=col/(1.+max(max(col.r,col.g),col.b)*.35);gl_FragColor=vec4(col,1.);}';
+function sh(t,s){var o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);return o;}
+var pr=gl.createProgram();gl.attachShader(pr,sh(gl.VERTEX_SHADER,vs));gl.attachShader(pr,sh(gl.FRAGMENT_SHADER,fs));gl.linkProgram(pr);
+if(!gl.getProgramParameter(pr,gl.LINK_STATUS)){c.style.display='none';return;}
+gl.useProgram(pr);var bf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,bf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,3,-1,-1,3]),gl.STATIC_DRAW);
+var lp=gl.getAttribLocation(pr,'p');gl.enableVertexAttribArray(lp);gl.vertexAttribPointer(lp,2,gl.FLOAT,false,0,0);
+var uR=gl.getUniformLocation(pr,'R'),uT=gl.getUniformLocation(pr,'T'),uP=gl.getUniformLocation(pr,'P'),uM=gl.getUniformLocation(pr,'M'),uA=gl.getUniformLocation(pr,'A');
+gl.uniform3f(uA,AC[0],AC[1],AC[2]);
+var rm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+var mx=.6,my=.5,tx=.6,ty=.5,idle=1,lastMove=0,pulse=0,vis=true,t0=performance.now(),W=0,H=0;
+function size(){var dpr=Math.min(window.devicePixelRatio||1,1.5),w=Math.round(c.clientWidth*dpr),h=Math.round(c.clientHeight*dpr);if(w!==W||h!==H){W=c.width=w;H=c.height=h;gl.viewport(0,0,w,h);}}
+window.addEventListener('pointermove',function(e){var r=c.getBoundingClientRect(),m=Math.min(r.width,r.height);tx=((e.clientX-r.left)*2-r.width)/m;ty=-((e.clientY-r.top)*2-r.height)/m;lastMove=performance.now();});
+window.bnPulse=function(){pulse=1;if(rm)draw(performance.now());};
+if('IntersectionObserver' in window){new IntersectionObserver(function(es){vis=es[0].isIntersecting;if(vis&&!rm)requestAnimationFrame(loop);}).observe(c);}
+function draw(now){size();var t=rm?8:(now-t0)/1000;
+var id=now-lastMove>2500;idle+=((id?1:0)-idle)*.03;
+var ix=Math.cos(t*.5)*.9,iy=Math.sin(t*.37)*.6;
+mx+=((tx*(1-idle)+ix*idle)-mx)*.12;my+=((ty*(1-idle)+iy*idle)-my)*.12;
+gl.uniform2f(uR,W,H);gl.uniform1f(uT,t);gl.uniform1f(uP,pulse);gl.uniform3f(uM,mx,my,1.6);
+gl.drawArrays(gl.TRIANGLES,0,3);pulse=Math.max(0,pulse-.012);}
+function loop(now){if(!vis||document.hidden)return;draw(now);requestAnimationFrame(loop);}
+document.addEventListener('visibilitychange',function(){if(!document.hidden&&vis&&!rm)requestAnimationFrame(loop);});
+if(rm)draw(performance.now());else requestAnimationFrame(loop);
+})();
+</script>`
+
+const explorerIndexCSS = `<style>
+.hero{position:relative;border:1px solid var(--ln);border-radius:14px;background:radial-gradient(120% 140% at 85% 40%,#0b0f05 0%,#030303 55%,#000 100%);overflow:hidden;display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);min-height:330px}
+.hero-l{position:relative;z-index:2;padding:30px 32px;display:flex;flex-direction:column;gap:6px}
+.live{font-size:12px;color:var(--mu);display:flex;gap:8px;align-items:center;text-transform:uppercase;letter-spacing:.8px}
+.tip{font-size:64px;line-height:1.05;color:#fff;letter-spacing:-2px;font-variant-numeric:tabular-nums;margin-top:10px}
+.tip-s{font-size:13px;color:var(--mu)}
+.tip-s b{color:var(--tx);font-weight:normal}
+.nxt{margin-top:14px;max-width:420px}
+.nxt .row{display:flex;justify-content:space-between;font-size:12px;color:var(--mu)}
+.hero form{display:flex;margin-top:auto;padding-top:22px;max-width:560px}
+.hero input{flex:1;min-width:0;background:rgba(0,0,0,.7);border:1px solid var(--ln2);border-right:0;color:var(--hi);padding:13px 16px;font-size:14px;border-radius:8px 0 0 8px}
+.hero input:focus{outline:none;border-color:var(--ac)}
+.hero button{background:var(--ac);border:0;color:#000;padding:0 22px;font-size:14px;border-radius:0 8px 8px 0;cursor:pointer}
+.hero button:hover{background:var(--ac-h)}
+#gy{width:100%;height:100%;min-height:300px;display:block}
+.gy-w{position:relative}
+.strip{display:flex;gap:10px;overflow-x:auto;padding:2px 2px 10px;scrollbar-width:thin;scrollbar-color:#222 transparent}
+.blk{flex:0 0 112px;display:flex;flex-direction:column;gap:1px;padding:12px 12px 10px;border:1px solid var(--ln);border-radius:9px;background:var(--pn);color:var(--mu);font-size:11px;position:relative}
+.blk::before{content:"";position:absolute;left:-11px;top:50%;width:10px;height:1px;background:var(--ln2)}
+.blk:first-child::before{display:none}
+.blk b{color:var(--hi);font-weight:normal;font-size:14px}
+.blk:hover{border-color:var(--ac);color:var(--tx)}
+.blk.new{animation:blkin 2.6s ease-out}
+@keyframes blkin{0%{border-color:var(--ac);box-shadow:0 0 22px rgba(170,255,0,.35);transform:translateY(-4px)}100%{border-color:var(--ln);box-shadow:none;transform:none}}
+.far{display:flex;flex-direction:column;justify-content:space-between;background:linear-gradient(160deg,#0a0d04,#060606 60%);border-color:#1d2410}
+.far .v{color:var(--ac)}
+.far a{font-size:12px}
+@media(max-width:860px){.hero{grid-template-columns:1fr}.gy-w{position:absolute;right:-70px;top:-10px;width:300px;height:300px;opacity:.55;z-index:1}.tip{font-size:46px}.hero-l{padding:24px 20px}}
+@media(max-width:700px){.hero form{flex-direction:column;gap:8px}.hero input{border-right:1px solid var(--ln2);border-radius:8px}.hero button{padding:12px;border-radius:8px}}
+</style>`
+
 const explorerIndexTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>blocknet explorer</title>
-<meta name="description" content="Zero-knowledge money">
+<meta name="description" content="Live blocks, transactions and network stats for blocknet, zero-knowledge money.">
 <meta property="og:title" content="blocknet explorer">
-<meta property="og:description" content="Zero-knowledge money">
-<meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
-<meta property="og:image:width" content="1024">
-<meta property="og:image:height" content="1024">
+<meta property="og:description" content="Live blocks, transactions and network stats for blocknet.">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#000000">
-<meta http-equiv="refresh" content="300">
-<link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
-<style>` + explorerCSS + `</style>
-{{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
+<meta http-equiv="refresh" content="900">
+{{template "head" .}}
+` + explorerIndexCSS + `
 </head>
 <body>
-` + explorerUpgradeBanner + `
-<div class="header"><h1><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></h1><div style="display:flex;gap:16px;font-size:13px"><a href="/stats">network stats</a></div></div>
+{{template "top" .}}
+<main class="wrap">
 
-<form class="search" action="/search" method="get">
-<input type="text" name="q" placeholder="Search by block height, block hash, or transaction hash...">
-<button type="submit">Search</button>
+<section class="hero">
+<div class="hero-l">
+<div class="live"><span class="dot"></span>{{if .IsTestnet}}testnet{{else}}mainnet{{end}} · live</div>
+<div class="tip" id="stat-height">{{.Height}}</div>
+<div class="tip-s">block height · last block <b id="tip-ago" data-ts="{{.TipTs}}"></b></div>
+<div class="nxt">
+<div class="pbar"><i id="nb-bar" style="width:0"></i></div>
+<div class="row" style="margin-top:6px"><span id="nb-txt">next block</span><span>target 5m</span></div>
+</div>
+<form action="/search" method="get">
+<input type="text" name="q" placeholder="block height, block hash or tx hash" aria-label="Search" spellcheck="false" autocomplete="off">
+<button type="submit">search</button>
 </form>
-
-<div class="stat-grid">
-<div class="stat"><div class="stat-v" id="stat-height">{{.Height}}</div><div class="stat-k">Block Height</div></div>
-<div class="stat"><div class="stat-v">{{.Peers}}</div><div class="stat-k">Peers</div></div>
-<div class="stat"><div class="stat-v" id="stat-difficulty">{{.Difficulty}}</div><div class="stat-k">Difficulty</div></div>
-<div class="stat"><div class="stat-v">{{.Hashrate}} H/s</div><div class="stat-k">Network Hashrate</div></div>
 </div>
+<div class="gy-w"><canvas id="gy" aria-hidden="true"></canvas></div>
+</section>
 
-<h2 style="margin-top:40px"><span class="g">#</span> supply</h2>
-<div class="stat-grid">
-<div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
-<div class="stat"><div class="stat-v">{{.Remaining}}</div><div class="stat-k">Remaining (pre-tail)</div></div>
-<div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
-{{if .TailStarted}}<div class="stat"><div class="stat-v" style="color:var(--ac)">Active</div><div class="stat-k">Tail Emission</div></div>{{end}}
-</div>
+<section class="sec grid g4">
+<div class="card"><div class="k">hashrate</div><div class="v">{{.Hashrate}} <small>H/s</small></div><div class="s">recent blocks</div></div>
+<div class="card"><div class="k">next difficulty</div><div class="v" id="stat-difficulty">{{.Difficulty}}</div><div class="s">retargets every block</div></div>
+<div class="card"><div class="k">avg block time</div><div class="v">{{.AvgBlockTime}}<small>s</small></div><div class="s">target 300s</div></div>
+<div class="card"><div class="k">peers</div><div class="v">{{.Peers}}</div><div class="s">connected to this node</div></div>
+</section>
 
-{{if .MempoolTxs}}
-<div class="panels">
-<div>
-<h2><span class="g">#</span> mempool <span class="d">({{.MempoolTotal}})</span></h2>
-<table>
-<tr><th>Hash</th><th>Fee</th><th>Fee/byte</th><th>Size</th><th>Age</th></tr>
-{{range .MempoolTxs}}
-<tr>
-<td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
-<td>{{printf "%.8f" .Fee}}</td>
-<td>{{.FeeRate}}</td>
-<td>{{.Size}} B</td>
-<td>{{.Ago}}</td>
-</tr>
-{{end}}
-</table>
-</div>
+<section class="sec grid g21">
+<div class="card"><div class="k">supply emitted</div><div class="v">{{.Emitted}} <small>BNT</small></div>
+<div class="pbar"><i style="width:{{.PctEmitted}}%"></i></div>
+<div class="s" style="margin-top:8px">{{.PctEmitted}}% of pre-tail supply · {{.Remaining}} BNT left{{if .TailStarted}} · <span class="g">tail emission active</span>{{end}}</div></div>
+<a class="card far" href="https://blocknetcrypto.com/#faraday"><div class="k">faraday upgrade</div><div class="v" id="far-days">~` + networkUpgradeDate + `</div><div class="s"><span id="far-s">planned ` + networkUpgradeDate + `</span> · details ↗</div></a>
+</section>
 
+<section class="sec">
+<h2><span class="g">#</span> chain <span class="n">newest first</span></h2>
+<div class="strip" id="strip">{{range $i, $b := .Blocks}}{{if lt $i 14}}<a class="blk" href="/block/{{$b.Height}}" data-h="{{$b.Height}}"><b>{{$b.Height}}</b><span>{{$b.TxCount}} tx</span><span data-ts="{{$b.Ts}}">{{$b.Ago}}</span></a>{{end}}{{end}}</div>
+</section>
+
+<section class="sec {{if .MempoolTxs}}grid g2{{end}}" style="align-items:start">
 <div>
 <h2><span class="g">#</span> recent blocks</h2>
-<table class="recent-blocks">
-<tr><th>Height</th><th>Hash</th><th>Age</th><th>Txs</th></tr>
-{{range .Blocks}}
-<tr>
-<td><a href="/block/{{.Height}}">{{.Height}}</a></td>
-<td class="hash"><a href="/block/{{.Hash}}">{{slice .Hash 0 16}}...</a></td>
-<td>{{.Ago}}</td>
-<td>{{.TxCount}}</td>
-</tr>
-{{end}}
-</table>
+<div class="card tbl"><table class="recent-blocks">
+<thead><tr><th>height</th><th>hash</th><th class="r">age</th><th class="r">txs</th></tr></thead>
+<tbody>{{range .Blocks}}<tr data-h="{{.Height}}"><td><a href="/block/{{.Height}}">{{.Height}}</a></td><td class="hash"><a href="/block/{{.Hash}}">{{slice .Hash 0 12}}…{{slice .Hash 58}}</a></td><td class="r"><span data-ts="{{.Ts}}">{{.Ago}}</span></td><td class="r">{{.TxCount}}</td></tr>{{end}}</tbody>
+</table></div>
 </div>
-</div>
-{{else}}
-<h2><span class="g">#</span> recent blocks</h2>
-<table class="recent-blocks">
-<tr><th>Height</th><th>Hash</th><th>Age</th><th>Txs</th></tr>
-{{range .Blocks}}
-<tr>
-<td><a href="/block/{{.Height}}">{{.Height}}</a></td>
-<td class="hash"><a href="/block/{{.Hash}}">{{.Hash}}</a></td>
-<td>{{.Ago}}</td>
-<td>{{.TxCount}}</td>
-</tr>
-{{end}}
-</table>
-{{end}}
+{{if .MempoolTxs}}<div>
+<h2><span class="g">#</span> mempool <span class="n">{{.MempoolTotal}} waiting</span></h2>
+<div class="card tbl"><table>
+<thead><tr><th>hash</th><th class="r">fee</th><th class="r hide-s">fee/B</th><th class="r hide-s">size</th><th class="r">age</th></tr></thead>
+<tbody>{{range .MempoolTxs}}<tr><td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 12}}…</a></td><td class="r">{{printf "%.8f" .Fee}}</td><td class="r hide-s">{{.FeeRate}}</td><td class="r hide-s">{{.Size}} B</td><td class="r"><span data-ts="{{.Ts}}">{{.Ago}}</span></td></tr>{{end}}</tbody>
+</table></div>
+</div>{{end}}
+</section>
 
-<footer><a href="https://blocknetcrypto.com">← blocknetcrypto.com</a>{{if .IsTestnet}} <span class="d">·</span> <span class="d">testnet</span>{{end}}</footer>
-` + explorerEggScript + explorerLiveScript + `
+</main>
+<script>
+(function(){
+window.bnTipTs={{.TipTs}};
+var bar=document.getElementById('nb-bar'),tx=document.getElementById('nb-txt');
+function nb(){var s=Date.now()/1000-window.bnTipTs,f=Math.min(1,s/300);bar.style.width=(f*100)+'%';
+if(s<300){var r=Math.ceil(300-s);tx.textContent='next block in ~'+(r>=60?Math.floor(r/60)+'m '+(r%60)+'s':r+'s');}else tx.textContent='next block any moment';}
+nb();setInterval(nb,1000);
+var up=Date.parse('` + networkUpgradeDate + `T00:00:00Z'),days=Math.ceil((up-Date.now())/864e5);
+if(days>0){document.getElementById('far-days').textContent='~'+days+' days';}
+})();
+</script>
+` + explorerGyroidScript + `
+{{template "foot" .}}
 </body>
 </html>`
 
@@ -260,196 +420,223 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Block {{.Height}} - blocknet explorer</title>
-<meta name="description" content="Zero-knowledge money">
-<meta property="og:title" content="Block {{.Height}} - blocknet">
-<meta property="og:description" content="Zero-knowledge money">
-<meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
-<meta property="og:image:width" content="1024">
-<meta property="og:image:height" content="1024">
+<title>Block {{.Height}} · blocknet explorer</title>
+<meta name="description" content="blocknet block {{.Height}}">
+<meta property="og:title" content="Block {{.Height}} · blocknet">
+<meta property="og:description" content="blocknet block {{.Height}}: {{.TxCount}} transactions.">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com/block/{{.Height}}">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#000000">
-<meta http-equiv="refresh" content="300">
-<link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
-<style>` + explorerCSS + `</style>
-{{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
+{{template "head" .}}
 </head>
 <body>
-` + explorerUpgradeBanner + `
-<div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
-<div class="topnav"><a href="/">blocks</a> <a href="/stats">stats</a></div>
+{{template "top" .}}
+<main class="wrap">
 
-<div class="nav">
-{{if .HasPrev}}<a href="/block/{{.PrevHeight}}">← Block {{.PrevHeight}}</a>{{end}}
-{{if .HasNext}}<a href="/block/{{.NextHeight}}">Block {{.NextHeight}} →</a>{{end}}
+<div class="crumb"><a href="/">blocks</a> / block</div>
+<div class="ph">
+<h1><span class="g">#</span>{{.Height}} <span class="d">block</span></h1>
+<div class="pager">
+<a class="btn{{if not .HasPrev}} off{{end}}" href="/block/{{.PrevHeight}}" id="prev-link">← {{.PrevHeight}}</a>
+<a class="btn{{if not .HasNext}} off{{end}}" href="/block/{{.NextHeight}}" id="next-link" data-next="{{.NextHeight}}">{{.NextHeight}} →</a>
+<span class="hint">← → keys</span>
+</div>
 </div>
 
-<div class="block-columns">
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin:-8px 0 22px">
+<span class="badge ok"><span data-conf-height="{{.Height}}">{{.Confirmations}}</span> confirmations</span>
+{{if .Final}}<span class="badge">final</span>{{else}}<span class="badge wait">final after 100 confirmations</span>{{end}}
+<span class="badge"><span data-ts="{{.Ts}}"></span></span>
+</div>
+
+<div class="grid g2" style="align-items:start">
+<div class="card">
+<div class="kv">
+<div class="kk">hash</div><div class="vv m"><span{{if .IsGenesis}} title="{{.GenesisMsg}}" style="cursor:help"{{end}}>{{.Hash}}</span><button class="cp" data-cp="{{.Hash}}">copy</button></div>
+<div class="kk">previous</div><div class="vv m"><span>{{if .HasPrev}}<a href="/block/{{.PrevHash}}">{{.PrevHash}}</a>{{else}}{{.PrevHash}}{{end}}</span></div>
+<div class="kk">merkle root</div><div class="vv m"><span>{{.MerkleRoot}}</span></div>
+<div class="kk">time</div><div class="vv"><span>{{.Time}}</span></div>
+<div class="kk">difficulty</div><div class="vv"><span>{{.Difficulty}}</span></div>
+<div class="kk">nonce</div><div class="vv"><span>{{.Nonce}}</span></div>
+<div class="kk">reward</div><div class="vv"><span>{{printf "%.8f" .Reward}} <span class="d">BNT</span></span></div>
+</div>
+</div>
+
 <div>
-<h2><span class="g">#</span> block {{.Height}}</h2>
-<div class="props">
-<div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{if .IsGenesis}}<span title="{{.GenesisMsg}}" style="cursor:help">{{.Hash}}</span>{{else}}{{.Hash}}{{end}}</div></div>
-<div class="prop"><div class="prop-k">Previous</div><div class="prop-v mono"><a href="/block/{{.PrevHash}}">{{.PrevHash}}</a></div></div>
-<div class="prop"><div class="prop-k">Merkle Root</div><div class="prop-v mono">{{.MerkleRoot}}</div></div>
-<div class="prop"><div class="prop-k">Time</div><div class="prop-v">{{.Time}}</div></div>
-<div class="prop"><div class="prop-k">Difficulty</div><div class="prop-v">{{.Difficulty}}</div></div>
-<div class="prop"><div class="prop-k">Nonce</div><div class="prop-v">{{.Nonce}}</div></div>
-<div class="prop"><div class="prop-k">Block Reward</div><div class="prop-v">{{printf "%.8f" .Reward}} BNT</div></div>
-<div class="prop"><div class="prop-k">Transactions</div><div class="prop-v">{{.TxCount}}</div></div>
+<h2><span class="g">#</span> transactions <span class="n">{{.TxCount}}</span></h2>
+<div class="card tbl"><table>
+<thead><tr><th>hash</th><th>type</th><th class="r">in</th><th class="r">out</th></tr></thead>
+<tbody>{{range .Txs}}<tr><td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 16}}…{{slice .Hash 58}}</a></td><td>{{if .IsCoinbase}}<span class="chip cb">coinbase</span>{{else}}<span class="chip">transfer</span>{{end}}</td><td class="r">{{.Inputs}}</td><td class="r">{{.Outputs}}</td></tr>{{end}}</tbody>
+</table></div>
 </div>
 </div>
 
-<div>
-<h2><span class="g">#</span> transactions</h2>
-<table>
-<tr><th>Hash</th><th>Type</th><th>Inputs</th><th>Outputs</th></tr>
-{{range .Txs}}
-<tr>
-<td class="hash"><a href="/tx/{{.Hash}}">{{slice .Hash 0 24}}...</a></td>
-<td>{{if .IsCoinbase}}<span class="g">coinbase</span>{{else}}transfer{{end}}</td>
-<td>{{.Inputs}}</td>
-<td>{{.Outputs}}</td>
-</tr>
-{{end}}
-</table>
-</div>
-</div>
-
-<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
-` + explorerEggScript + explorerLiveScript + `
+</main>
+<script>
+document.addEventListener('keydown',function(e){if(e.metaKey||e.ctrlKey||e.altKey)return;var a=document.activeElement;if(a&&a.tagName==='INPUT')return;
+var l=e.key==='ArrowLeft'?document.getElementById('prev-link'):e.key==='ArrowRight'?document.getElementById('next-link'):null;
+if(l&&!l.classList.contains('off'))location.href=l.href;});
+</script>
+{{template "foot" .}}
 </body>
 </html>`
+
+const explorerTxCSS = `<style>
+.io{margin-bottom:12px}
+.io-h{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.io-h b{color:var(--hi);font-weight:normal}
+.ringw{display:flex;gap:16px;align-items:center;margin:4px 0 6px}
+.ring{width:84px;height:84px;flex-shrink:0}
+.ring-t{font-size:12px;color:var(--mu);line-height:1.5}
+.ring-t b{color:var(--tx);font-weight:normal}
+.lock{color:var(--ac)}
+.tabs{display:flex;gap:4px;margin-bottom:14px;background:#0a0a0a;border:1px solid var(--ln);border-radius:8px;padding:3px;width:max-content}
+.tab{background:transparent;color:var(--mu);border:0;padding:6px 14px;cursor:pointer;font-size:12px;border-radius:6px}
+.tab.on{background:var(--ac);color:#000}
+.prove input{display:block;width:100%;background:#000;border:1px solid var(--ln2);color:var(--hi);padding:10px 12px;font-size:13px;margin-bottom:8px;border-radius:7px}
+.prove input:focus{outline:none;border-color:var(--ac)}
+.prove button.go{background:var(--ac);border:0;color:#000;padding:10px 22px;cursor:pointer;font-size:13px;border-radius:7px}
+.prove button.go:hover{background:var(--ac-h)}
+.prove button.go:disabled{opacity:.5}
+.warnl{font-size:12px;color:var(--warn);margin:0 0 12px}
+#prove-result{margin-top:14px}
+.io.more{display:none}
+.all-out .io.more{display:block}
+#more-out{cursor:pointer;font-family:inherit}
+.vv .trunc{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>`
 
 const explorerTxTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Transaction - blocknet explorer</title>
-<meta name="description" content="Zero-knowledge money">
-<meta property="og:title" content="Transaction - blocknet">
-<meta property="og:description" content="Zero-knowledge money">
-<meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
-<meta property="og:image:width" content="1024">
-<meta property="og:image:height" content="1024">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#000000">
-<meta http-equiv="refresh" content="300">
-<link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
-<style>` + explorerCSS + `</style>
-{{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
+<title>Transaction {{slice .Hash 0 12}} · blocknet explorer</title>
+<meta name="description" content="blocknet transaction">
+<meta property="og:title" content="Transaction · blocknet">
+<meta property="og:description" content="A private blocknet transaction. Amounts and senders are hidden.">
+{{template "head" .}}
+` + explorerTxCSS + `
 </head>
 <body>
-` + explorerUpgradeBanner + `
-<div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
-<div class="topnav"><a href="/">blocks</a> <a href="/stats">stats</a></div>
+{{template "top" .}}
+<main class="wrap">
 
-<div class="tx-columns">
-<div class="tx-col-left">
-<h2><span class="g">#</span> transaction</h2>
-<div class="props">
-<div class="prop"><div class="prop-k">Hash</div><div class="prop-v mono">{{.Hash}}</div></div>
-<div class="prop"><div class="prop-k">Tx Public Key</div><div class="prop-v mono">{{.TxPubKey}}</div></div>
-<div class="prop"><div class="prop-k">Block</div><div class="prop-v">{{if .InMempool}}<span class="d">Pending (in mempool)</span>{{else}}<a href="/block/{{.BlockHeight}}">{{.BlockHeight}}</a> (<span id="tx-confirmations" data-height="{{.BlockHeight}}">{{.Confirmations}}</span> confirmations){{end}}</div></div>
-<div class="prop"><div class="prop-k">Type</div><div class="prop-v">{{if .IsCoinbase}}<span class="g">coinbase</span>{{else}}transfer{{end}}</div></div>
-{{if not .IsCoinbase}}<div class="prop"><div class="prop-k">Fee</div><div class="prop-v">{{printf "%.8f" .Fee}} BNT</div></div>{{end}}
-<div class="prop"><div class="prop-k">Inputs</div><div class="prop-v">{{.InputCount}}</div></div>
-<div class="prop"><div class="prop-k">Outputs</div><div class="prop-v">{{.OutputCount}}</div></div>
+<div class="crumb"><a href="/">blocks</a> / {{if .InMempool}}mempool{{else}}<a href="/block/{{.BlockHeight}}">block {{.BlockHeight}}</a>{{end}} / transaction</div>
+<div class="ph">
+<h1><span class="g">#</span>{{slice .Hash 0 12}}… <span class="d">transaction</span></h1>
+<div style="display:flex;gap:8px;flex-wrap:wrap">
+{{if .InMempool}}<span class="badge wait"><span class="dot" style="background:var(--warn);animation:none"></span>Pending (in mempool)</span>{{else}}<span class="badge ok"><span id="tx-confirmations" data-conf-height="{{.BlockHeight}}">{{.Confirmations}}</span> confirmations</span>{{end}}
+{{if .IsCoinbase}}<span class="badge ok">coinbase</span>{{else}}<span class="badge">transfer</span>{{end}}
+</div>
 </div>
 
-<h2><span class="g">#</span> TX Proof</h2>
-<div class="prove-tabs">
-<button id="tab-recv" class="prove-tab prove-tab-active" onclick="switchProveTab('recv')">TX Received</button>
-<button id="tab-send" class="prove-tab" onclick="switchProveTab('send')">TX Sent</button>
+<div class="grid g2" style="align-items:start">
+<div>
+<div class="card">
+<div class="kv">
+<div class="kk">hash</div><div class="vv m"><span>{{.Hash}}</span><button class="cp" data-cp="{{.Hash}}">copy</button></div>
+<div class="kk">tx public key</div><div class="vv m"><span>{{.TxPubKey}}</span><button class="cp" data-cp="{{.TxPubKey}}">copy</button></div>
+<div class="kk">block</div><div class="vv"><span>{{if .InMempool}}<span class="d">pending</span>{{else}}<a href="/block/{{.BlockHeight}}">{{.BlockHeight}}</a>{{end}}</span></div>
+{{if not .IsCoinbase}}<div class="kk">fee</div><div class="vv"><span>{{printf "%.8f" .Fee}} <span class="d">BNT</span></span></div>{{end}}
+<div class="kk">inputs</div><div class="vv"><span>{{.InputCount}}</span></div>
+<div class="kk">outputs</div><div class="vv"><span>{{.OutputCount}}</span></div>
+<div class="kk">amounts</div><div class="vv"><span><span class="lock">●</span> hidden <span class="d">· Pedersen commitments</span></span></div>
 </div>
-<div class="prove-box">
+</div>
+
+<div class="card prove sec">
+<h2 style="margin-bottom:12px"><span class="g">#</span> tx proof</h2>
+<div class="tabs"><button id="tab-recv" class="tab on" onclick="switchProveTab('recv')">received</button><button id="tab-send" class="tab" onclick="switchProveTab('send')">sent</button></div>
 <div id="prove-recv">
-<p class="d" style="font-size:13px;margin-bottom:12px">Check if an output belongs to you. Your view privkey is sent to this server.</p>
-<input type="text" id="recv-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false">
-<input type="text" id="recv-view" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false">
-<button id="recv-btn" onclick="doRecvProve()">Check</button>
+<p class="note" style="margin:0 0 10px">Check if an output in this transaction is yours.</p>
+<p class="warnl">Your view private key is sent to this server.</p>
+<input type="text" id="recv-spend" placeholder="spend public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off">
+<input type="text" id="recv-view" placeholder="view private key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off">
+<button class="go" id="recv-btn" onclick="doRecvProve()">check</button>
 </div>
 <div id="prove-send" style="display:none">
-<p class="d" style="font-size:13px;margin-bottom:12px">Prove participation in a TX. Provide a view privkey and the recipient's public address. Anyone can independently verify this proof.</p>
-<input type="text" id="send-txpriv" placeholder="View privkey (64 hex)" maxlength="64" spellcheck="false">
-<input type="text" id="send-spend" placeholder="Spend pubkey (64 hex)" maxlength="64" spellcheck="false">
-<input type="text" id="send-view" placeholder="View pubkey (64 hex)" maxlength="64" spellcheck="false">
-<button id="send-btn" onclick="doSendProve()">Prove</button>
+<p class="note" style="margin:0 0 10px">Prove you sent this transaction. Give the view private key and the recipient's public keys. Anyone can check this proof.</p>
+<input type="text" id="send-txpriv" placeholder="view private key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off">
+<input type="text" id="send-spend" placeholder="recipient spend public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off">
+<input type="text" id="send-view" placeholder="recipient view public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off">
+<button class="go" id="send-btn" onclick="doSendProve()">prove</button>
 </div>
-<div id="prove-result" style="margin-top:16px;display:none"></div>
+<div id="prove-result" style="display:none"></div>
 </div>
 </div>
 
-<div class="tx-col-right">
+<div>
 {{if .Inputs}}
-<h2><span class="g">#</span> inputs (ring signatures)</h2>
-<p class="d" style="font-size:13px;margin-bottom:16px">Each input uses a ring of {{(index .Inputs 0).RingSize}} public keys. The real spender is hidden among decoys.</p>
+<h2><span class="g">#</span> inputs <span class="n">ring signatures</span></h2>
 {{range .Inputs}}
-<div class="io-card">
-<div class="prop"><div class="prop-k">Input #{{.Index}}</div><div class="prop-v"></div></div>
-<div class="prop"><div class="prop-k">Key Image</div><div class="prop-v mono">{{.KeyImage}}</div></div>
-<div class="prop"><div class="prop-k">Ring Size</div><div class="prop-v">{{.RingSize}}</div></div>
-<div class="prop"><div class="prop-k">Pseudo Output</div><div class="prop-v mono">{{.PseudoOutput}}</div></div>
+<div class="card io">
+<div class="io-h"><b>input {{.Index}}</b><span class="chip">ring of {{.RingSize}}</span></div>
+<div class="ringw"><svg class="ring" data-n="{{.RingSize}}" viewBox="0 0 84 84" aria-hidden="true"></svg>
+<div class="ring-t"><b>1 real input, {{.RingSize}} keys in all.</b><br>The others are decoys. Nobody can tell which one is real.</div></div>
+<div class="kv">
+<div class="kk">key image</div><div class="vv m"><span>{{.KeyImage}}</span></div>
+<div class="kk">pseudo output</div><div class="vv m"><span>{{.PseudoOutput}}</span></div>
+</div>
 </div>
 {{end}}
 {{end}}
 
-<h2 style="margin-top:24px"><span class="g">#</span> outputs (stealth addresses)</h2>
-<p class="d" style="font-size:13px;margin-bottom:16px">Amounts are hidden by Pedersen commitments. Range proofs ensure validity without revealing values.</p>
-{{range .Outputs}}
-<div class="io-card">
-<div class="prop"><div class="prop-k">Output #{{.Index}}</div><div class="prop-v"></div></div>
-<div class="prop"><div class="prop-k">Stealth Address</div><div class="prop-v mono">{{.PublicKey}}</div></div>
-<div class="prop"><div class="prop-k">Commitment</div><div class="prop-v mono">{{.Commitment}}</div></div>
-<div class="prop"><div class="prop-k">Range Proof</div><div class="prop-v">{{.RangeProof}} bytes (Bulletproof)</div></div>
-{{if .EncMemo}}<div class="prop"><div class="prop-k">Memo</div><div class="prop-v mono"><span class="g">{{.EncMemo}}</span> <span class="d">(encrypted)</span></div></div>{{end}}
+<h2 class="{{if .Inputs}}sec{{end}}"><span class="g">#</span> outputs <span class="n">stealth addresses</span></h2>
+{{range $i, $o := .Outputs}}
+<div class="card io{{if ge $i 4}} more{{end}}">
+<div class="io-h"><b>output {{.Index}}</b><span class="chip"><span class="lock">●</span> amount hidden</span></div>
+<div class="kv">
+<div class="kk">stealth address</div><div class="vv m"><span>{{.PublicKey}}</span></div>
+<div class="kk">commitment</div><div class="vv m"><span>{{.Commitment}}</span></div>
+<div class="kk">range proof</div><div class="vv"><span>{{.RangeProof}} bytes <span class="d">· Bulletproof</span></span></div>
+{{if .EncMemo}}<div class="kk">memo</div><div class="vv m"><span class="trunc"><span class="g">encrypted</span> {{.EncMemo}}</span></div>{{end}}
+</div>
 </div>
 {{end}}
+{{if gt (len .Outputs) 4}}<button class="btn" id="more-out" onclick="document.body.classList.add('all-out');this.remove()">show all {{len .Outputs}} outputs</button>{{end}}
 </div>
 </div>
 
+</main>
 <script>
+(function(){
+var rings=document.querySelectorAll('svg.ring'),NS='http://www.w3.org/2000/svg',rm=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches;
+for(var k=0;k<rings.length;k++){var s=rings[k],n=+s.getAttribute('data-n')||1,dots=[];
+var c=document.createElementNS(NS,'circle');c.setAttribute('cx',42);c.setAttribute('cy',42);c.setAttribute('r',30);c.setAttribute('fill','none');c.setAttribute('stroke','#1c1c1c');s.appendChild(c);
+for(var i=0;i<n;i++){var a=i/n*Math.PI*2-Math.PI/2,d=document.createElementNS(NS,'circle');d.setAttribute('cx',(42+30*Math.cos(a)).toFixed(2));d.setAttribute('cy',(42+30*Math.sin(a)).toFixed(2));d.setAttribute('r',3.4);d.setAttribute('fill','#3a3a3a');s.appendChild(d);dots.push(d);}
+var q=document.createElementNS(NS,'text');q.setAttribute('x',42);q.setAttribute('y',47);q.setAttribute('text-anchor','middle');q.setAttribute('fill','#666');q.setAttribute('font-size','14');q.setAttribute('font-family','ui-monospace,monospace');q.textContent='?';s.appendChild(q);
+if(!rm)(function(dots){var cur=-1;setInterval(function(){if(cur>=0)dots[cur].setAttribute('fill','#3a3a3a');var nx;do{nx=Math.random()*dots.length|0;}while(nx===cur&&dots.length>1);cur=nx;dots[cur].setAttribute('fill',getComputedStyle(document.documentElement).getPropertyValue('--ac').trim()||'#af0');},420);})(dots);}
+})();
 function switchProveTab(tab){
-var rt=document.getElementById('tab-recv'),st=document.getElementById('tab-send');
-var rp=document.getElementById('prove-recv'),sp=document.getElementById('prove-send');
 document.getElementById('prove-result').style.display='none';
-if(tab==='recv'){
-rt.className='prove-tab prove-tab-active';st.className='prove-tab';
-rp.style.display='';sp.style.display='none';
-}else{
-st.className='prove-tab prove-tab-active';rt.className='prove-tab';
-sp.style.display='';rp.style.display='none';
+document.getElementById('tab-recv').className='tab'+(tab==='recv'?' on':'');
+document.getElementById('tab-send').className='tab'+(tab==='send'?' on':'');
+document.getElementById('prove-recv').style.display=tab==='recv'?'':'none';
+document.getElementById('prove-send').style.display=tab==='send'?'':'none';
 }
-}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function renderProveResult(data){
 var res=document.getElementById('prove-result');
 res.style.display='block';
-if(data.error){res.innerHTML='<span style="color:#f44">'+data.error+'</span>';return;}
+if(data.error){res.innerHTML='<span style="color:#f44">'+esc(data.error)+'</span>';return;}
 var matched=data.filter(function(o){return o.match;});
-if(matched.length===0){res.innerHTML='<span class="d">No outputs in this transaction match the provided keys.</span>';return;}
-var html='<div style="color:var(--ac);margin-bottom:12px">'+matched.length+' output'+(matched.length>1?'s':'')+' matched</div>';
+if(matched.length===0){res.innerHTML='<span class="d">No outputs in this transaction match these keys.</span>';return;}
+var html='<div class="g" style="margin-bottom:8px">'+matched.length+' output'+(matched.length>1?'s':'')+' matched</div>';
 for(var i=0;i<matched.length;i++){
 var o=matched[i];
-html+='<div style="padding:12px 0;margin-bottom:8px">';
-html+='<div class="prop"><div class="prop-k">Output #'+o.index+'</div><div class="prop-v" style="color:var(--ac);font-size:18px">'+o.amount.toFixed(8)+' BNT</div></div>';
-if(o.memo){html+='<div class="prop"><div class="prop-k">Memo</div><div class="prop-v">'+o.memo.replace(/</g,'&lt;')+'</div></div>';}
+html+='<div class="kv" style="border-top:1px solid #111;padding-top:4px"><div class="kk">output '+o.index+'</div><div class="vv"><span class="g" style="font-size:18px">'+o.amount.toFixed(8)+' BNT</span></div>';
+if(o.memo){html+='<div class="kk">memo</div><div class="vv"><span>'+esc(o.memo)+'</span></div>';}
 html+='</div>';
 }
 res.innerHTML=html;
 }
 function proveRequest(url,body,btn){
-btn.disabled=true;btn.textContent='Checking...';
+btn.disabled=true;btn.textContent='checking…';
 fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
 .then(function(r){return r.json();})
 .then(function(data){btn.disabled=false;btn.textContent=btn.dataset.label;renderProveResult(data);})
 .catch(function(){btn.disabled=false;btn.textContent=btn.dataset.label;var r=document.getElementById('prove-result');r.style.display='block';r.innerHTML='<span style="color:#f44">Request failed</span>';});
 }
-document.getElementById('recv-btn').dataset.label='Check';
-document.getElementById('send-btn').dataset.label='Prove';
+document.getElementById('recv-btn').dataset.label='check';
+document.getElementById('send-btn').dataset.label='prove';
 function doRecvProve(){
 var sp=document.getElementById('recv-spend').value.trim();
 var vp=document.getElementById('recv-view').value.trim();
@@ -466,98 +653,60 @@ if(tp.length!==64||sp.length!==64||vp.length!==64){res.style.display='block';res
 proveRequest('/prove-send','tx={{.Hash}}&tx_priv='+tp+'&spend_pub='+sp+'&view_pub='+vp,document.getElementById('send-btn'));
 }
 </script>
-
-<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
-` + explorerEggScript + explorerLiveScript + `
+{{template "foot" .}}
 </body>
 </html>`
+
+const explorerStatsCSS = `<style>
+.charts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.chart{padding:16px 16px 8px}
+.chart h2{font-size:13px;margin-bottom:6px}
+.chart.wide{grid-column:1/-1}
+canvas{width:100%;height:260px;display:block}
+@media(max-width:980px){.charts{grid-template-columns:1fr}}
+</style>`
 
 const explorerStatsTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Network Stats - blocknet explorer</title>
+<title>Network stats · blocknet explorer</title>
 <meta name="description" content="blocknet network statistics">
-<meta property="og:title" content="Network Stats - blocknet">
-<meta property="og:description" content="Historical blockchain data">
-<meta property="og:image" content="https://blocknetcrypto.com/blocknet.png">
-<meta property="og:image:width" content="1024">
-<meta property="og:image:height" content="1024">
+<meta property="og:title" content="Network stats · blocknet">
+<meta property="og:description" content="Difficulty, hashrate, block time and emission for blocknet.">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com/stats">
-<meta property="og:type" content="website">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="theme-color" content="#000">
-<link rel="icon" type="image/x-icon" href="https://blocknetcrypto.com/favicon.ico">
-<style>
-*{margin:0;padding:0;box-sizing:border-box}
-:root{--ac:#af0;--ac-h:#cf3}
-body{background:#000;color:#b0b0b0;font:15px/1.6 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;padding:24px 32px}
-a{color:var(--ac)}
-a:hover{color:var(--ac-h)}
-h1,h2{color:#eee;font-weight:normal}
-h1{font-size:24px;margin:0}
-h2{font-size:18px;margin:40px 0 16px}
-.g{color:var(--ac)}
-.d{color:#555}
-.header{display:flex;justify-content:space-between;align-items:baseline;flex-wrap:wrap;gap:12px;margin-bottom:8px}
-.topnav{font-size:13px;display:flex;gap:16px;margin-bottom:24px}
-.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:16px;margin-bottom:24px}
-.stat{padding:20px;text-align:center}
-.stat-v{font-size:24px;color:#eee}
-.stat-k{font-size:12px;color:#666;text-transform:uppercase;margin-top:4px}
-.chart-box{background:#000;padding:12px 12px 8px}
-canvas{width:100%;height:280px;display:block}
-footer{margin-top:48px;padding-top:24px;border-top:1px dashed #333;color:#444;font-size:13px}
-@media(max-width:1000px){body{padding:16px}h1{font-size:20px}.stat-grid{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
-@media(max-width:500px){.stat-grid{grid-template-columns:1fr 1fr}.stat-v{font-size:18px}}
-</style>
-{{if .IsTestnet}}<style>:root{--ac:#f0a;--ac-h:#f5c}</style>{{end}}
+{{template "head" .}}
+` + explorerStatsCSS + `
 </head>
 <body>
-` + explorerUpgradeBanner + `
-<div class="header"><h1><a href="/" style="text-decoration:none;color:#eee"><span class="g" id="egg" style="-webkit-user-select:none;user-select:none">$</span> blocknet <span class="d">explorer</span></a></h1></div>
-<div class="topnav"><a href="/">← blocks</a></div>
+{{template "top" .}}
+<main class="wrap">
 
-<h2><span class="g">#</span> network overview</h2>
-<div class="stat-grid">
-<div class="stat"><div class="stat-v" id="stat-height">{{.Height}}</div><div class="stat-k">Block Height</div></div>
-<div class="stat"><div class="stat-v">{{.Hashrate}} H/s</div><div class="stat-k">Hashrate</div></div>
-<div class="stat"><div class="stat-v" id="stat-difficulty">{{.Difficulty}}</div><div class="stat-k">Difficulty</div></div>
-<div class="stat"><div class="stat-v">{{.AvgBlockTime}}s</div><div class="stat-k">Avg Block Time</div></div>
-</div>
-<div class="stat-grid">
-<div class="stat"><div class="stat-v">{{.TotalTx}}</div><div class="stat-k">Window Transactions</div></div>
-<div class="stat"><div class="stat-v">{{.Emitted}}</div><div class="stat-k">Coins Emitted</div></div>
-<div class="stat"><div class="stat-v">{{.PctEmitted}}%</div><div class="stat-k">Emission Progress</div></div>
-<div class="stat"><div class="stat-v">{{.Peers}}</div><div class="stat-k">Peers</div></div>
-</div>
+<div class="ph"><h1><span class="g">#</span>network <span class="d">stats</span></h1><span class="badge"><span class="dot"></span>live</span></div>
 
-<h2><span class="g">#</span> difficulty</h2>
-<div class="chart-box"><canvas id="c-diff"></canvas></div>
+<section class="grid g4">
+<div class="card"><div class="k">block height</div><div class="v" id="stat-height">{{.Height}}</div></div>
+<div class="card"><div class="k">hashrate</div><div class="v">{{.Hashrate}} <small>H/s</small></div></div>
+<div class="card"><div class="k">next difficulty</div><div class="v" id="stat-difficulty">{{.Difficulty}}</div></div>
+<div class="card"><div class="k">avg block time</div><div class="v">{{.AvgBlockTime}}<small>s</small></div></div>
+<div class="card"><div class="k">window transactions</div><div class="v">{{.TotalTx}}</div></div>
+<div class="card"><div class="k">coins emitted</div><div class="v">{{.Emitted}}</div></div>
+<div class="card"><div class="k">emission progress</div><div class="v">{{.PctEmitted}}<small>%</small></div><div class="pbar"><i style="width:{{.PctEmitted}}%"></i></div></div>
+<div class="card"><div class="k">peers</div><div class="v">{{.Peers}}</div></div>
+</section>
 
-<h2 style="color:#a0f"><span style="color:#a0f">#</span> difficulty delta</h2>
-<div class="chart-box"><canvas id="c-ddelta"></canvas></div>
+<section class="sec charts">
+<div class="card chart wide"><h2><span class="g">#</span> difficulty</h2><canvas id="c-diff"></canvas></div>
+<div class="card chart"><h2 style="color:#a0f"><span>#</span> difficulty delta</h2><canvas id="c-ddelta"></canvas></div>
+<div class="card chart"><h2 style="color:#fa0"><span>#</span> estimated hashrate</h2><canvas id="c-hash"></canvas></div>
+<div class="card chart"><h2 style="color:#f0a"><span>#</span> block time</h2><canvas id="c-bt"></canvas></div>
+<div class="card chart"><h2 style="color:#a0f"><span>#</span> nonce distribution</h2><canvas id="c-nonce"></canvas></div>
+<div class="card chart"><h2 style="color:#0fa"><span>#</span> transactions per block</h2><canvas id="c-tx"></canvas></div>
+<div class="card chart"><h2 style="color:#0af"><span>#</span> block size</h2><canvas id="c-size"></canvas></div>
+<div class="card chart wide"><h2><span class="g">#</span> emission schedule</h2><canvas id="c-emission"></canvas></div>
+</section>
 
-<h2 style="color:#fa0"><span style="color:#fa0">#</span> estimated hashrate</h2>
-<div class="chart-box"><canvas id="c-hash"></canvas></div>
-
-<h2 style="color:#f0a"><span style="color:#f0a">#</span> block time</h2>
-<div class="chart-box"><canvas id="c-bt"></canvas></div>
-
-<h2 style="color:#a0f"><span style="color:#a0f">#</span> nonce distribution</h2>
-<div class="chart-box"><canvas id="c-nonce"></canvas></div>
-
-<h2 style="color:#0fa"><span style="color:#0fa">#</span> transactions per block</h2>
-<div class="chart-box"><canvas id="c-tx"></canvas></div>
-
-<h2 style="color:#0af"><span style="color:#0af">#</span> block size</h2>
-<div class="chart-box"><canvas id="c-size"></canvas></div>
-
-<h2><span class="g">#</span> emission schedule</h2>
-<div class="chart-box"><canvas id="c-emission"></canvas></div>
-
-<footer><a href="/">← explorer</a>   <a href="https://blocknetcrypto.com">blocknetcrypto.com</a></footer>
+</main>
 
 <script>
 var D={{.DataJSON}};
@@ -600,7 +749,7 @@ c.height=rect.height*dpr;
 var ctx=c.getContext('2d');
 ctx.scale(dpr,dpr);
 var W=rect.width,H=rect.height;
-var pad={t:24,r:16,b:32,l:60};
+var pad={t:24,r:30,b:32,l:60};
 var pw=W-pad.l-pad.r,ph=H-pad.t-pad.b;
 
 var src=opts.data||D;
@@ -797,7 +946,7 @@ var rect=c.getBoundingClientRect();
 c.width=rect.width*dpr;c.height=rect.height*dpr;
 var ctx=c.getContext('2d');ctx.scale(dpr,dpr);
 var W=rect.width,H=rect.height;
-var pad={t:24,r:16,b:32,l:60};
+var pad={t:24,r:30,b:32,l:60};
 var dd=[];
 for(var i=1;i<D.length;i++){
 if(D[i-1].d>0&&D[i].h>100)dd.push({h:D[i].h,v:(D[i].d-D[i-1].d)/D[i-1].d*100});
@@ -880,7 +1029,7 @@ var rect=c.getBoundingClientRect();
 c.width=rect.width*dpr;c.height=rect.height*dpr;
 var ctx=c.getContext('2d');ctx.scale(dpr,dpr);
 var W=rect.width,H=rect.height;
-var pad={t:24,r:16,b:32,l:60};
+var pad={t:24,r:30,b:32,l:60};
 var pw=W-pad.l-pad.r,ph=H-pad.t-pad.b;
 var lnonces=[];for(var i=0;i<D.length;i++)lnonces.push(Math.log10(D[i].n+1));
 var nMin=Infinity,nMax=-Infinity;
@@ -960,6 +1109,6 @@ draw('c-emission',function(d){return d.r;},'#f0a',{data:emD,yLabel:'BNT/block',s
 
 })();
 </script>
-` + explorerEggScript + explorerLiveScript + `
+{{template "foot" .}}
 </body>
 </html>`

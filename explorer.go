@@ -325,6 +325,7 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Ago        string
 		TxCount    int
 		Difficulty uint64
+		Ts         int64
 	}
 
 	var blocks []blockSummary
@@ -340,6 +341,7 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 				Ago:        timeAgo(block.Header.Timestamp),
 				TxCount:    len(block.Transactions),
 				Difficulty: block.Header.Difficulty,
+				Ts:         block.Header.Timestamp,
 			})
 		}
 		if h == 0 {
@@ -356,6 +358,7 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		FeeRate uint64
 		Size    int
 		Ago     string
+		Ts      int64
 	}
 	var mempoolTxs []mempoolTx
 	mempoolEntries := e.daemon.mempool.GetAllEntries()
@@ -369,10 +372,16 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 			FeeRate: entry.FeeRate,
 			Size:    entry.Size,
 			Ago:     timeAgo(entry.AddedAt.Unix()),
+			Ts:      entry.AddedAt.Unix(),
 		})
 	}
 
 	snapshot := e.statsForRequest()
+
+	var tipTs int64
+	if len(blocks) > 0 {
+		tipTs = blocks[0].Ts
+	}
 
 	data := map[string]interface{}{
 		"IsTestnet":    params.IsTestnet,
@@ -387,6 +396,8 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"MempoolTxs":   mempoolTxs,
 		"MempoolTotal": len(mempoolEntries),
 		"Blocks":       blocks,
+		"TipTs":        tipTs,
+		"AvgBlockTime": snapshot.AvgBlockTime,
 	}
 
 	renderTemplate(w, explorerIndexPage, data)
@@ -449,26 +460,35 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		genesisMsg = `sha3.256("CNBC 02/Feb/2026 Bitcoin is coming off a brutal week")`
 	}
 
-	setImmutableCacheIfFinal(w, block.Header.Height, chain.HeightFast())
+	chainHeight := chain.HeightFast()
+	setImmutableCacheIfFinal(w, block.Header.Height, chainHeight)
+
+	var confirmations uint64
+	if chainHeight >= block.Header.Height {
+		confirmations = chainHeight - block.Header.Height + 1
+	}
 
 	data := map[string]interface{}{
-		"IsTestnet":  params.IsTestnet,
-		"Height":     block.Header.Height,
-		"Hash":       fmt.Sprintf("%x", hash[:]),
-		"PrevHash":   fmt.Sprintf("%x", block.Header.PrevHash[:]),
-		"MerkleRoot": fmt.Sprintf("%x", block.Header.MerkleRoot[:]),
-		"Time":       time.Unix(block.Header.Timestamp, 0).UTC().Format("2006-01-02 15:04:05 UTC"),
-		"Difficulty": block.Header.Difficulty,
-		"Nonce":      block.Header.Nonce,
-		"TxCount":    len(block.Transactions),
-		"Txs":        txs,
-		"HasPrev":    block.Header.Height > 0,
-		"PrevHeight": block.Header.Height - 1,
-		"NextHeight": block.Header.Height + 1,
-		"HasNext":    block.Header.Height < chain.HeightFast(),
-		"Reward":     float64(GetBlockReward(block.Header.Height)) / 100_000_000,
-		"IsGenesis":  block.Header.Height == 0,
-		"GenesisMsg": genesisMsg,
+		"IsTestnet":     params.IsTestnet,
+		"Height":        block.Header.Height,
+		"Hash":          fmt.Sprintf("%x", hash[:]),
+		"PrevHash":      fmt.Sprintf("%x", block.Header.PrevHash[:]),
+		"MerkleRoot":    fmt.Sprintf("%x", block.Header.MerkleRoot[:]),
+		"Time":          time.Unix(block.Header.Timestamp, 0).UTC().Format("2006-01-02 15:04:05 UTC"),
+		"Difficulty":    block.Header.Difficulty,
+		"Nonce":         block.Header.Nonce,
+		"TxCount":       len(block.Transactions),
+		"Txs":           txs,
+		"HasPrev":       block.Header.Height > 0,
+		"PrevHeight":    block.Header.Height - 1,
+		"NextHeight":    block.Header.Height + 1,
+		"HasNext":       block.Header.Height < chainHeight,
+		"Ts":            block.Header.Timestamp,
+		"Confirmations": confirmations,
+		"Final":         confirmations > uint64(MaxReorgDepth),
+		"Reward":        float64(GetBlockReward(block.Header.Height)) / 100_000_000,
+		"IsGenesis":     block.Header.Height == 0,
+		"GenesisMsg":    genesisMsg,
 	}
 
 	renderTemplate(w, explorerBlockPage, data)
