@@ -65,6 +65,10 @@ func (e *Explorer) handleEvents(w http.ResponseWriter, r *http.Request) {
 				"hash":      fmt.Sprintf("%x", hash[:]),
 				"timestamp": block.Header.Timestamp,
 				"tx_count":  len(block.Transactions),
+				// The chain map colors the new cell by the block's own values.
+				// The key is not "difficulty": that tile shows the next target.
+				"block_difficulty": block.Header.Difficulty,
+				"fees":             blockFees(block),
 				// The pages show the next target, not the mined block's own
 				// difficulty. Sending the block's value would write a
 				// different number into the same tile.

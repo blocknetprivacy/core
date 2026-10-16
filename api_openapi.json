@@ -3,7 +3,7 @@
   "info": {
     "title": "Blocknet Daemon API",
     "description": "Network upgrade notice: Blocknet plans a network upgrade around 2027-02-16. After it, you will have 1 year to move your coins to the new format, until about 2028-02-16. Coins not moved by then cannot be spent. The wallet will guide you. JSON API for the Blocknet privacy blockchain daemon. The API starts when the core runs with `--api <addr>`. Private endpoints require Bearer token authentication with the token in `<dataDir>/api.cookie`, written on startup. Public blockchain routes (`GET /api/health`, `/api/status`, `/api/block/{id}`, `/api/tx/{hash}`, `/api/mempool`, `/api/mempool/txs`, `/api/peers`, `/api/peers/banned`, `/api/stats`, and `POST /api/verify`, `/api/verify-proof`) need no token. Node settings are read and changed with `GET` and `PATCH /api/settings`.",
-    "version": "0.22.0",
+    "version": "0.23.0",
     "license": {
       "name": "MIT"
     }

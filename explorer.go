@@ -21,6 +21,7 @@ import (
 
 const (
 	explorerIndexListLimit      = 20
+	explorerIndexBlockRows      = 10
 	explorerStatsMaxPoints      = 1000
 	explorerStatsMaxTraversal   = 20000
 	explorerStatsRefreshEvery   = 30 * time.Second
@@ -48,6 +49,8 @@ type Explorer struct {
 	// proveLimiter guards /prove and /prove-send, which do a chain read plus a
 	// per-output ECDH. Same limits as the API's proofLimiter.
 	proveLimiter *perIPLimiter
+
+	mapCache explorerMapCache
 }
 
 type chartPoint struct {
@@ -85,6 +88,7 @@ func NewExplorer(daemon *Daemon) *Explorer {
 	e.mux.HandleFunc("/", e.handleIndex)
 	e.mux.HandleFunc("/block/", e.handleBlock)
 	e.mux.HandleFunc("/tx/", e.handleTx)
+	e.mux.HandleFunc("/blockdata/", e.handleBlockData)
 	e.mux.HandleFunc("/search", e.handleSearch)
 	e.mux.HandleFunc("/stats", e.handleStats)
 	e.mux.HandleFunc("/prove", e.handleProve)
@@ -314,6 +318,10 @@ func (e *Explorer) buildStatsSnapshot() explorerStatsSnapshot {
 }
 
 func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		renderNotFound(w, r.URL.Path, "There is no page at this address.")
+		return
+	}
 	chain := e.daemon.chain
 	height := chain.HeightFast()
 
@@ -330,7 +338,7 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	var blocks []blockSummary
 
-	for h := height; len(blocks) < explorerIndexListLimit; h-- {
+	for h := height; len(blocks) < explorerIndexBlockRows; h-- {
 		block := chain.GetBlockByHeightFast(h)
 		if block != nil {
 			hash := block.Hash()
@@ -384,20 +392,26 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := map[string]interface{}{
-		"IsTestnet":    params.IsTestnet,
-		"Height":       height,
-		"Difficulty":   snapshot.Difficulty,
-		"Peers":        snapshot.Peers,
-		"Hashrate":     snapshot.Hashrate,
-		"Emitted":      fmtAmountComma(emitted),
-		"Remaining":    fmtAmountComma(remaining),
-		"PctEmitted":   fmt.Sprintf("%.4f", pctEmitted),
-		"TailStarted":  pctEmitted >= 100,
-		"MempoolTxs":   mempoolTxs,
-		"MempoolTotal": len(mempoolEntries),
-		"Blocks":       blocks,
-		"TipTs":        tipTs,
-		"AvgBlockTime": snapshot.AvgBlockTime,
+		"IsTestnet":     params.IsTestnet,
+		"Height":        height,
+		"Difficulty":    snapshot.Difficulty,
+		"Peers":         snapshot.Peers,
+		"Hashrate":      snapshot.Hashrate,
+		"Emitted":       fmtAmountComma(emitted),
+		"Remaining":     fmtAmountComma(remaining),
+		"PctEmitted":    fmt.Sprintf("%.4f", pctEmitted),
+		"TailStarted":   pctEmitted >= 100,
+		"MempoolTxs":    mempoolTxs,
+		"MempoolTotal":  len(mempoolEntries),
+		"Blocks":        blocks,
+		"TipTs":         tipTs,
+		"AvgBlockTime":  snapshot.AvgBlockTime,
+		"MapJSON":       e.chainMapJSON(),
+		"LatestTxs":     e.latestTransfers(explorerIndexBlockRows),
+		"Reward":        fmt.Sprintf("%.2f", float64(GetBlockReward(height))/100_000_000),
+		"FaradayHeight": networkUpgradeHeight,
+		"FaradayLeft":   faradayBlocksLeft(height),
+		"UpgradeDate":   networkUpgradeDate,
 	}
 
 	renderTemplate(w, explorerIndexPage, data)
@@ -430,7 +444,7 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if block == nil {
-		http.Error(w, "Block not found", http.StatusNotFound)
+		renderNotFound(w, path, "No block has this height or hash.")
 		return
 	}
 
@@ -441,9 +455,11 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		IsCoinbase bool
 		Inputs     int
 		Outputs    int
+		Fee        float64
 	}
 
 	var txs []txSummary
+	totalIn, totalOut := 0, 0
 	for i, tx := range block.Transactions {
 		txHash, _ := tx.TxID()
 		txs = append(txs, txSummary{
@@ -451,7 +467,17 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 			IsCoinbase: i == 0 && block.Header.Height > 0,
 			Inputs:     len(tx.Inputs),
 			Outputs:    len(tx.Outputs),
+			Fee:        float64(tx.Fee) / 100_000_000,
 		})
+		totalIn += len(tx.Inputs)
+		totalOut += len(tx.Outputs)
+	}
+
+	var blockTime int64
+	if block.Header.Height > 0 {
+		if prev := chain.GetBlockByHeightFast(block.Header.Height - 1); prev != nil {
+			blockTime = block.Header.Timestamp - prev.Header.Timestamp
+		}
 	}
 
 	// Genesis block has a special message in the hash preimage
@@ -489,6 +515,11 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		"Reward":        float64(GetBlockReward(block.Header.Height)) / 100_000_000,
 		"IsGenesis":     block.Header.Height == 0,
 		"GenesisMsg":    genesisMsg,
+		"BlockTime":     blockTime,
+		"BlockTimePct":  min(100, float64(blockTime)/9),
+		"Fees":          float64(blockFees(block)) / 100_000_000,
+		"InputsTotal":   totalIn,
+		"OutputsTotal":  totalOut,
 	}
 
 	renderTemplate(w, explorerBlockPage, data)
@@ -496,8 +527,12 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 
 func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/tx/")
-	if path == "" || len(path) < 64 {
+	if path == "" {
 		http.Redirect(w, r, "/", http.StatusFound)
+		return
+	}
+	if len(path) < 64 {
+		renderNotFound(w, path, "A transaction hash is 64 hex characters.")
 		return
 	}
 
@@ -519,7 +554,7 @@ func (e *Explorer) handleTx(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !found {
-		http.Error(w, "Transaction not found, wait 60s and try again", http.StatusNotFound)
+		renderNotFound(w, path, "No transaction has this hash. A new transaction can take a minute to appear.")
 		return
 	}
 
@@ -680,7 +715,7 @@ func (e *Explorer) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Error(w, "Not found: "+q, http.StatusNotFound)
+	renderNotFound(w, q, "Search takes a block height, a block hash or a transaction hash.")
 }
 
 type proveResult struct {
