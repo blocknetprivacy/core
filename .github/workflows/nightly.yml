@@ -169,8 +169,34 @@ jobs:
           name: blocknet-core-amd64-windows-nightly
           path: blocknet-core-amd64-windows-nightly.zip
 
+  build-android-arm64:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: aarch64-linux-android
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Android binary
+        run: make android
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp blocknet-core-arm64-android dist/
+          cd dist && zip -q ../blocknet-core-arm64-android-nightly.zip blocknet-core-arm64-android
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: blocknet-core-arm64-android-nightly
+          path: blocknet-core-arm64-android-nightly.zip
+
   release-nightly:
-    needs: [build-linux-amd64, build-linux-arm64, build-macos-arm64, build-macos-amd64, build-windows-amd64]
+    needs: [build-linux-amd64, build-linux-arm64, build-macos-arm64, build-macos-amd64, build-windows-amd64, build-android-arm64]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

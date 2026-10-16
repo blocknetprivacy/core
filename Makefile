@@ -1,4 +1,4 @@
-.PHONY: all clean clean-data build-rust build-go test run install deploy release
+.PHONY: all clean clean-data build-rust build-go test run install deploy release android
 
 VERSION := 0.14.0
 OS := $(shell uname -s | tr '[:upper:]' '[:lower:]')
@@ -37,6 +37,17 @@ endif
 	@echo "Built: releases/blocknet-$(VERSION)-$(OS)-$(ARCH).zip"
 	@echo "Checksum added to releases/SHA256SUMS.txt"
 
+ANDROID_NDK_HOME ?= $(firstword $(wildcard /opt/homebrew/share/android-ndk $(HOME)/Library/Android/sdk/ndk/* $(HOME)/Android/Sdk/ndk/*))
+ANDROID_API := 24
+ANDROID_CC = $(firstword $(wildcard $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/*/bin/aarch64-linux-android$(ANDROID_API)-clang))
+
+android:
+	@test -n "$(ANDROID_CC)" || (echo "Android NDK not found. Install it with: brew install --cask android-ndk" && exit 1)
+	@echo "Building for android-arm64..."
+	rustup target add aarch64-linux-android
+	cd crypto-rs && CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$(ANDROID_CC) CC_aarch64_linux_android=$(ANDROID_CC) cargo build --release --target aarch64-linux-android
+	CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC=$(ANDROID_CC) go build -ldflags="-s -w -checklinkname=0" -o blocknet-core-arm64-android .
+
 # Run tests
 test:
 	@echo "Testing Rust library..."
@@ -60,7 +71,7 @@ seed: build-go
 clean:
 	@echo "Cleaning..."
 	cd crypto-rs && cargo clean
-	rm -f blocknet
+	rm -f blocknet blocknet-core-arm64-android
 	rm -rf releases/
 	go clean
 

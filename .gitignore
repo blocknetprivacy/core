@@ -72,3 +72,4 @@ txt/
 !/.gitignore
 !/.github/
 !/.dockerignore
+blocknet-core-arm64-android

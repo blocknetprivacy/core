@@ -1,8 +1,9 @@
 package main
 
 /*
-#cgo LDFLAGS: ${SRCDIR}/crypto-rs/target/release/libblocknet_crypto.a -lm
-#cgo linux LDFLAGS: -ldl -lpthread
+#cgo !android LDFLAGS: ${SRCDIR}/crypto-rs/target/release/libblocknet_crypto.a -lm
+#cgo android,arm64 LDFLAGS: ${SRCDIR}/crypto-rs/target/aarch64-linux-android/release/libblocknet_crypto.a -lm -ldl
+#cgo linux,!android LDFLAGS: -ldl -lpthread
 #cgo darwin LDFLAGS: -ldl -lpthread -framework Security
 #cgo windows LDFLAGS: -lws2_32 -luserenv -lbcrypt -lntdll
 #include "crypto-rs/blocknet_crypto.h"
