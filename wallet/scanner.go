@@ -23,6 +23,7 @@ const derivationBoundaryWindow = 128
 // BlockData is the minimal block info needed for scanning
 type BlockData struct {
 	Height       uint64
+	Hash         [32]byte
 	Transactions []TxData
 }
 
@@ -112,7 +113,7 @@ func (s *Scanner) scanBlockWithIndex(block *BlockData, spendableByKeyImage map[[
 	for i := range block.Transactions {
 		tx := &block.Transactions[i]
 		matches := s.matchTxOutputs(tx, block.Height, keys)
-		f, sp := s.applyTxMatches(tx, block.Height, keys, matches, spendableByKeyImage)
+		f, sp := s.applyTxMatches(tx, block.Height, block.Hash, keys, matches, spendableByKeyImage)
 		found += f
 		spent += sp
 	}
@@ -223,7 +224,7 @@ func (s *Scanner) matchTxOutputs(tx *TxData, height uint64, keys StealthKeys) []
 // applyTxMatches records the wallet outputs found by matchTxOutputs and checks
 // the transaction's key images for spends. It mutates wallet state and the
 // key-image index, so it must run serially in block/transaction order.
-func (s *Scanner) applyTxMatches(tx *TxData, height uint64, keys StealthKeys, matches []outputMatch, spendableByKeyImage map[[32]byte][][32]byte) (found int, spent int) {
+func (s *Scanner) applyTxMatches(tx *TxData, height uint64, blockHash [32]byte, keys StealthKeys, matches []outputMatch, spendableByKeyImage map[[32]byte][][32]byte) (found int, spent int) {
 	canCompose := s.config.BlindingAdd != nil
 
 	for _, m := range matches {
@@ -276,6 +277,7 @@ func (s *Scanner) applyTxMatches(tx *TxData, height uint64, keys StealthKeys, ma
 			OneTimePubKey:  out.PubKey,
 			Commitment:     out.Commitment,
 			BlockHeight:    height,
+			BlockHash:      blockHash,
 			IsCoinbase:     tx.IsCoinbase,
 			Spent:          false,
 		}
@@ -326,7 +328,7 @@ func (s *Scanner) buildSpendableKeyImageIndex() map[[32]byte][][32]byte {
 // key images regenerated) per block.
 func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
 	return s.scanBatch(blocks, func(block *BlockData, found, spent int) {
-		s.wallet.SetSyncedHeight(block.Height)
+		s.wallet.SetSyncedBlock(block.Height, block.Hash)
 	})
 }
 
@@ -335,10 +337,10 @@ func (s *Scanner) ScanBlocks(blocks []*BlockData) (totalFound, totalSpent int) {
 // block with its height and the per-block found/spent counts. Scanning stops at
 // the first nil block. It does not update the wallet's synced height; the caller
 // decides when to persist that.
-func (s *Scanner) ScanBlocksReport(blocks []*BlockData, report func(height uint64, found, spent int)) (totalFound, totalSpent int) {
+func (s *Scanner) ScanBlocksReport(blocks []*BlockData, report func(block *BlockData, found, spent int)) (totalFound, totalSpent int) {
 	return s.scanBatch(blocks, func(block *BlockData, found, spent int) {
 		if report != nil {
-			report(block.Height, found, spent)
+			report(block, found, spent)
 		}
 	})
 }
@@ -374,7 +376,7 @@ func (s *Scanner) scanBatch(blocks []*BlockData, onBlock func(block *BlockData, 
 		var bf, bsp int
 		for ti := range block.Transactions {
 			tx := &block.Transactions[ti]
-			f, sp := s.applyTxMatches(tx, block.Height, keys, matches[bi][ti], spendableByKeyImage)
+			f, sp := s.applyTxMatches(tx, block.Height, block.Hash, keys, matches[bi][ti], spendableByKeyImage)
 			bf += f
 			bsp += sp
 		}
@@ -487,9 +489,9 @@ func BlockToScanData(blockJSON []byte) (*BlockData, error) {
 			TxID        [32]byte `json:"tx_id"`
 			TxPublicKey [32]byte `json:"tx_public_key"`
 			Outputs     []struct {
-				PublicKey       [32]byte `json:"public_key"`
-				Commitment      [32]byte `json:"commitment"`
-				EncryptedAmount [8]byte  `json:"encrypted_amount"`
+				PublicKey       [32]byte       `json:"public_key"`
+				Commitment      [32]byte       `json:"commitment"`
+				EncryptedAmount [8]byte        `json:"encrypted_amount"`
 				EncryptedMemo   [MemoSize]byte `json:"encrypted_memo"`
 			} `json:"outputs"`
 			Inputs []struct {

@@ -1284,8 +1284,12 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 	// Broadcast to peers
 	d.syncMgr.BroadcastBlock(marshalBlockJSON(block))
 
-	// Notify subscribers
-	d.notifyBlock(block)
+	// Notify wallet/UI subscribers only for blocks that became main-chain.
+	// Side-chain blocks may be accepted for fork choice, but scanning them would
+	// record outputs the wallet cannot spend on the canonical chain.
+	if isMainChain {
+		d.notifyBlock(block)
+	}
 	d.notifyMinedBlock(block)
 
 	return nil
