@@ -265,6 +265,7 @@ type OwnedOutput struct {
 	OneTimePubKey  [32]byte `json:"one_time_pub"`
 	Commitment     [32]byte `json:"commitment"`
 	BlockHeight    uint64   `json:"block_height"`
+	BlockHash      [32]byte `json:"block_hash,omitempty"`
 	IsCoinbase     bool     `json:"is_coinbase"` // True if from mining reward
 	Spent          bool     `json:"spent"`
 	SpentHeight    uint64   `json:"spent_height,omitempty"`
@@ -323,16 +324,17 @@ func (r *SendRecord) TotalAmount() uint64 {
 
 // WalletData is the serializable wallet state
 type WalletData struct {
-	Version      uint32         `json:"version"`
-	ViewOnly     bool           `json:"view_only"`          // True if this is a view-only wallet
-	Mnemonic     string         `json:"mnemonic,omitempty"` // BIP39 12-word recovery phrase (empty for view-only)
-	Keys         StealthKeys    `json:"keys"`
-	Outputs      []*OwnedOutput `json:"outputs"`
-	SendHistory  []*SendRecord  `json:"send_history,omitempty"` // Track outgoing transactions
+	Version        uint32           `json:"version"`
+	ViewOnly       bool             `json:"view_only"`          // True if this is a view-only wallet
+	Mnemonic       string           `json:"mnemonic,omitempty"` // BIP39 12-word recovery phrase (empty for view-only)
+	Keys           StealthKeys      `json:"keys"`
+	Outputs        []*OwnedOutput   `json:"outputs"`
+	SendHistory    []*SendRecord    `json:"send_history,omitempty"`    // Track outgoing transactions
 	PendingCredits []*PendingCredit `json:"pending_credits,omitempty"` // UX-only pending credits (e.g. unconfirmed change)
-	SyncedHeight uint64         `json:"synced_height"`
-	SyncedHash   [32]byte       `json:"synced_hash"` // Hash of the block at SyncedHeight, used to detect reorgs. Zero for wallets synced before this was tracked.
-	CreatedAt    int64          `json:"created_at"`
+	SyncedHeight   uint64           `json:"synced_height"`
+	SyncedHash     [32]byte         `json:"synced_hash,omitempty"` // Hash of the block at SyncedHeight, used to detect reorgs. Zero for wallets synced before this was tracked.
+	SyncedBlocks   []SyncedBlock    `json:"synced_blocks,omitempty"`
+	CreatedAt      int64            `json:"created_at"`
 }
 
 // ViewOnlyKeys contains only the keys needed for a view-only wallet
@@ -393,13 +395,13 @@ type Wallet struct {
 	memoDecryptLastHeight atomic.Uint64
 
 	// Callbacks for crypto operations (set by main package)
-	generateStealthKeys        func() (*StealthKeys, error)
-	deriveStealthAddress       func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
-	checkStealthOutput         func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
-	deriveSpendKey             func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
-	deriveOutputSecret         func(txPub, viewPriv [32]byte) ([32]byte, error)
-	deriveOutputSecretIndexed  func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error)
-	generateKeypairFromSeed    func(seed [32]byte) (priv, pub [32]byte, err error)
+	generateStealthKeys       func() (*StealthKeys, error)
+	deriveStealthAddress      func(spendPub, viewPub [32]byte) (txPriv, txPub, oneTimePub [32]byte, err error)
+	checkStealthOutput        func(txPub, outputPub, viewPriv, spendPub [32]byte) bool
+	deriveSpendKey            func(txPub, viewPriv, spendPriv [32]byte) ([32]byte, error)
+	deriveOutputSecret        func(txPub, viewPriv [32]byte) ([32]byte, error)
+	deriveOutputSecretIndexed func(txPub, viewPriv [32]byte, outputIndex uint32) ([32]byte, error)
+	generateKeypairFromSeed   func(seed [32]byte) (priv, pub [32]byte, err error)
 }
 
 // PendingCredit tracks a credit we expect to receive but haven't yet scanned
@@ -410,6 +412,16 @@ type PendingCredit struct {
 	Amount  uint64   `json:"amount"`
 	AddedAt int64    `json:"added_at"`
 }
+
+// SyncedBlock records the canonical block hash that a wallet scanned at a height.
+type SyncedBlock struct {
+	Height uint64   `json:"height"`
+	Hash   [32]byte `json:"hash"`
+}
+
+// Keep recent scan history bounded. The caller falls back to a finalized-floor
+// rescan if a reorg reaches beyond the retained history.
+const syncedBlockHistoryLimit uint64 = 256
 
 type reservedOutpoint struct {
 	TxID        [32]byte
@@ -460,16 +472,16 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 	}
 
 	w := &Wallet{
-		filename:                   filename,
-		password:                   cloneBytes(password),
-		inputReservations:          make(map[reservedOutpoint]inputReservation),
-		generateStealthKeys:        cfg.GenerateStealthKeys,
-		deriveStealthAddress:       cfg.DeriveStealthAddress,
-		checkStealthOutput:         cfg.CheckStealthOutput,
-		deriveSpendKey:             cfg.DeriveSpendKey,
-		deriveOutputSecret:         cfg.DeriveOutputSecret,
-		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
-		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
+		filename:                  filename,
+		password:                  cloneBytes(password),
+		inputReservations:         make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:       cfg.GenerateStealthKeys,
+		deriveStealthAddress:      cfg.DeriveStealthAddress,
+		checkStealthOutput:        cfg.CheckStealthOutput,
+		deriveSpendKey:            cfg.DeriveSpendKey,
+		deriveOutputSecret:        cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
+		generateKeypairFromSeed:   cfg.GenerateKeypairFromSeed,
 	}
 
 	w.data = WalletData{
@@ -497,16 +509,16 @@ func NewWalletFromMnemonic(filename string, password []byte, mnemonic string, cf
 // This path does not include a BIP39 mnemonic in the wallet file.
 func NewWalletFromStealthKeys(filename string, password []byte, keys StealthKeys, cfg WalletConfig) (*Wallet, error) {
 	w := &Wallet{
-		filename:                   filename,
-		password:                   cloneBytes(password),
-		inputReservations:          make(map[reservedOutpoint]inputReservation),
-		generateStealthKeys:        cfg.GenerateStealthKeys,
-		deriveStealthAddress:       cfg.DeriveStealthAddress,
-		checkStealthOutput:         cfg.CheckStealthOutput,
-		deriveSpendKey:             cfg.DeriveSpendKey,
-		deriveOutputSecret:         cfg.DeriveOutputSecret,
-		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
-		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
+		filename:                  filename,
+		password:                  cloneBytes(password),
+		inputReservations:         make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:       cfg.GenerateStealthKeys,
+		deriveStealthAddress:      cfg.DeriveStealthAddress,
+		checkStealthOutput:        cfg.CheckStealthOutput,
+		deriveSpendKey:            cfg.DeriveSpendKey,
+		deriveOutputSecret:        cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
+		generateKeypairFromSeed:   cfg.GenerateKeypairFromSeed,
 	}
 
 	w.data = WalletData{
@@ -548,18 +560,18 @@ func LoadWallet(filename string, password []byte, cfg WalletConfig) (*Wallet, er
 	data.Mnemonic = ""
 
 	return &Wallet{
-		data:                       data,
-		filename:                   filename,
-		password:                   cloneBytes(password),
-		enc:                        em,
-		inputReservations:          make(map[reservedOutpoint]inputReservation),
-		generateStealthKeys:        cfg.GenerateStealthKeys,
-		deriveStealthAddress:       cfg.DeriveStealthAddress,
-		generateKeypairFromSeed:    cfg.GenerateKeypairFromSeed,
-		checkStealthOutput:         cfg.CheckStealthOutput,
-		deriveSpendKey:             cfg.DeriveSpendKey,
-		deriveOutputSecret:         cfg.DeriveOutputSecret,
-		deriveOutputSecretIndexed:  cfg.DeriveOutputSecretIndexed,
+		data:                      data,
+		filename:                  filename,
+		password:                  cloneBytes(password),
+		enc:                       em,
+		inputReservations:         make(map[reservedOutpoint]inputReservation),
+		generateStealthKeys:       cfg.GenerateStealthKeys,
+		deriveStealthAddress:      cfg.DeriveStealthAddress,
+		generateKeypairFromSeed:   cfg.GenerateKeypairFromSeed,
+		checkStealthOutput:        cfg.CheckStealthOutput,
+		deriveSpendKey:            cfg.DeriveSpendKey,
+		deriveOutputSecret:        cfg.DeriveOutputSecret,
+		deriveOutputSecretIndexed: cfg.DeriveOutputSecretIndexed,
 	}, nil
 }
 
@@ -1188,6 +1200,60 @@ type OutputRef struct {
 	OutputIndex int
 }
 
+// RemoveOutputs removes wallet outputs matching the supplied refs and returns
+// snapshots of the removed entries. Missing refs are ignored.
+func (w *Wallet) RemoveOutputs(refs []OutputRef) []*OwnedOutput {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	type outKey struct {
+		txID   [32]byte
+		outIdx int
+	}
+	remove := make(map[outKey]struct{}, len(refs))
+	for _, ref := range refs {
+		remove[outKey{ref.TxID, ref.OutputIndex}] = struct{}{}
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	kept := w.data.Outputs[:0]
+	removed := make([]*OwnedOutput, 0, len(refs))
+	for _, out := range w.data.Outputs {
+		if out == nil {
+			kept = append(kept, out)
+			continue
+		}
+		k := outKey{out.TxID, out.OutputIndex}
+		if _, ok := remove[k]; !ok {
+			kept = append(kept, out)
+			continue
+		}
+
+		c := *out
+		if len(out.Memo) > 0 {
+			c.Memo = append([]byte(nil), out.Memo...)
+		} else {
+			c.Memo = nil
+		}
+		removed = append(removed, &c)
+
+		if w.inputReservations != nil {
+			delete(w.inputReservations, reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex})
+		}
+	}
+
+	if len(kept) == 0 {
+		w.data.Outputs = nil
+	} else {
+		w.data.Outputs = kept
+	}
+
+	return removed
+}
+
 // ReserveSpecificInputs validates and reserves caller-specified outputs (coin control).
 // Returns granular errors identifying which output failed and why.
 func (w *Wallet) ReserveSpecificInputs(refs []OutputRef, currentHeight uint64, ttl time.Duration) (lease uint64, inputs []*OwnedOutput, err error) {
@@ -1322,23 +1388,36 @@ func (w *Wallet) SyncedHash() [32]byte {
 	return w.data.SyncedHash
 }
 
-// SetSyncedTip records the synced height together with the hash of the block at
-// that height, so the scan path can detect reorgs: a newly-connected block whose
-// parent is not this hash means blocks the wallet scanned were disconnected.
-func (w *Wallet) SetSyncedTip(height uint64, hash [32]byte) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	w.data.SyncedHeight = height
-	w.data.SyncedHash = hash
+// SyncedBlock returns the last canonical block scanned by the wallet.
+func (w *Wallet) SyncedBlock() (uint64, [32]byte) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.data.SyncedHeight, w.data.SyncedHash
 }
 
-// SetSyncedHeight updates the sync height. The synced-tip hash is cleared
-// because no hash was supplied; the next scanned block re-anchors it.
+// SetSyncedHeight updates the sync height without block-hash metadata.
 func (w *Wallet) SetSyncedHeight(height uint64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.data.SyncedHeight = height
 	w.data.SyncedHash = [32]byte{}
+	w.pruneSyncedBlocksLocked(height)
+}
+
+// SetSyncedTip records the synced height together with the hash of the block at
+// that height, so the scan path can detect reorgs: a newly-connected block whose
+// parent is not this hash means blocks the wallet scanned were disconnected.
+func (w *Wallet) SetSyncedTip(height uint64, hash [32]byte) {
+	w.SetSyncedBlock(height, hash)
+}
+
+// SetSyncedBlock updates the wallet sync point to a canonical block hash.
+func (w *Wallet) SetSyncedBlock(height uint64, hash [32]byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.data.SyncedHeight = height
+	w.data.SyncedHash = hash
+	w.recordSyncedBlockLocked(height, hash)
 }
 
 // RewindToHeight removes outputs from blocks above the given height
@@ -1365,10 +1444,56 @@ func (w *Wallet) RewindToHeight(height uint64) int {
 	if w.data.SyncedHeight > height {
 		w.data.SyncedHeight = height
 	}
-	// The recorded synced-tip hash is no longer valid after a rewind; the next
-	// scanned block re-anchors it.
-	w.data.SyncedHash = [32]byte{}
+	w.pruneSyncedBlocksLocked(height)
+	w.data.SyncedHash = w.syncedHashAtLocked(w.data.SyncedHeight)
 	return removed
+}
+
+func (w *Wallet) recordSyncedBlockLocked(height uint64, hash [32]byte) {
+	if hash == ([32]byte{}) {
+		w.pruneSyncedBlocksLocked(height)
+		return
+	}
+	for i := range w.data.SyncedBlocks {
+		if w.data.SyncedBlocks[i].Height == height {
+			w.data.SyncedBlocks[i].Hash = hash
+			w.pruneSyncedBlocksLocked(height)
+			return
+		}
+	}
+	w.data.SyncedBlocks = append(w.data.SyncedBlocks, SyncedBlock{Height: height, Hash: hash})
+	w.pruneSyncedBlocksLocked(height)
+}
+
+func (w *Wallet) pruneSyncedBlocksLocked(maxHeight uint64) {
+	if len(w.data.SyncedBlocks) == 0 {
+		return
+	}
+	minHeight := uint64(0)
+	if maxHeight >= syncedBlockHistoryLimit {
+		minHeight = maxHeight - syncedBlockHistoryLimit + 1
+	}
+	kept := w.data.SyncedBlocks[:0]
+	for _, block := range w.data.SyncedBlocks {
+		if block.Height >= minHeight && block.Height <= maxHeight {
+			kept = append(kept, block)
+		}
+	}
+	if len(kept) == 0 {
+		w.data.SyncedBlocks = nil
+		return
+	}
+	w.data.SyncedBlocks = kept
+}
+
+func (w *Wallet) syncedHashAtLocked(height uint64) [32]byte {
+	for i := len(w.data.SyncedBlocks) - 1; i >= 0; i-- {
+		block := w.data.SyncedBlocks[i]
+		if block.Height == height {
+			return block.Hash
+		}
+	}
+	return [32]byte{}
 }
 
 // OutputCount returns total output count

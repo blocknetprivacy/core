@@ -226,18 +226,19 @@ func (c *CLI) recoverWalletAfterChainReset() {
 		return
 	}
 	chainHeight := c.daemon.Chain().Height()
-	walletHeight := c.wallet.SyncedHeight()
-	if walletHeight > chainHeight {
-		removed := c.wallet.RewindToHeight(chainHeight)
-		if removed > 0 {
-			fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, chainHeight)
-			if err := c.wallet.Save(); err != nil {
-				fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
-			}
+	originalWalletHeight := c.wallet.SyncedHeight()
+	rewound := rewindWalletToCanonicalTip(c.wallet, c.daemon.Chain())
+	if rewound > 0 {
+		fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", rewound, c.wallet.SyncedHeight())
+		if err := c.wallet.Save(); err != nil {
+			fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
 		}
-	} else if chainHeight > 0 && walletHeight == chainHeight {
-		// Conservative reorg recovery: if wallet and chain are at the same height,
-		// rewind one block to clear potentially stale same-height fork state.
+	}
+
+	walletHeight, walletHash := c.wallet.SyncedBlock()
+	if chainHeight > 0 && originalWalletHeight == chainHeight && walletHeight == chainHeight && !walletSyncHashKnown(walletHash) {
+		// Legacy wallets do not know which block hash they scanned at the tip.
+		// Rewind one block so the next scan records canonical hash metadata.
 		removed := c.wallet.RewindToHeight(chainHeight - 1)
 		if removed > 0 {
 			fmt.Printf("  Chain reset: removed %d orphaned outputs, rewound to height %d\n", removed, chainHeight-1)
@@ -245,6 +246,18 @@ func (c *CLI) recoverWalletAfterChainReset() {
 				fmt.Printf("  Warning: failed to persist rewound wallet: %v\n", err)
 			}
 		}
+	}
+
+	issues := repairableWalletOutputIssues(auditWalletCanonicalOutputs(c.daemon.Chain(), c.wallet.AllOutputs()), false)
+	removed := removeWalletOutputIssues(c.wallet, issues)
+	if len(removed) == 0 {
+		return
+	}
+
+	fmt.Printf("  Chain repair: removed %d noncanonical wallet outputs totaling %s\n",
+		len(removed), formatAmount(sumOwnedOutputs(removed)))
+	if err := c.wallet.Save(); err != nil {
+		fmt.Printf("  Warning: failed to persist wallet output repair: %v\n", err)
 	}
 }
 
@@ -369,18 +382,47 @@ func (c *CLI) autoScanBlocks() {
 			w := c.wallet
 			c.mu.RUnlock()
 
-			if scanner == nil {
+			if scanner == nil || w == nil {
 				continue
 			}
 
-			applyBlockToWallet(c.daemon.Chain(), w, scanner, block)
-			w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
-				return c.daemon.Mempool().HasTransaction(txID)
-			})
+			if removed := rewindWalletToCanonicalTip(w, c.daemon.Chain()); removed > 0 {
+				unsaved++
+			}
 
-			unsaved++
-			if unsaved >= saveBatchSize {
-				doSave()
+			for {
+				walletHeight, walletHash := w.SyncedBlock()
+				chainHeight := c.daemon.Chain().Height()
+				if walletHeight >= chainHeight {
+					break
+				}
+
+				nextHeight := walletHeight + 1
+				canonical := c.daemon.Chain().GetBlockByHeight(nextHeight)
+				if canonical == nil {
+					break
+				}
+				if walletSyncHashKnown(walletHash) && canonical.Header.PrevHash != walletHash {
+					if walletHeight == 0 {
+						break
+					}
+					if removed := w.RewindToHeight(walletHeight - 1); removed > 0 {
+						unsaved++
+					}
+					continue
+				}
+
+				blockData := blockToScanData(canonical)
+				scanner.ScanBlock(blockData)
+				w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
+					return c.daemon.Mempool().HasTransaction(txID)
+				})
+
+				w.SetSyncedBlock(blockData.Height, blockData.Hash)
+				unsaved++
+				if unsaved >= saveBatchSize {
+					doSave()
+				}
 			}
 		}
 	}
@@ -463,6 +505,7 @@ func (c *CLI) watchMinedBlocks() {
 func blockToScanData(block *Block) *wallet.BlockData {
 	data := &wallet.BlockData{
 		Height:       block.Header.Height,
+		Hash:         block.Hash(),
 		Transactions: make([]wallet.TxData, len(block.Transactions)),
 	}
 

@@ -1803,23 +1803,35 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 
 	// Handle chain-ahead-of-wallet (chain was reset while wallet was offline)
 	chainHeight := s.daemon.Chain().Height()
-	walletHeight := wl.SyncedHeight()
-	if walletHeight > chainHeight {
-		if removed := wl.RewindToHeight(chainHeight); removed > 0 {
+	originalWalletHeight := wl.SyncedHeight()
+	if removed := rewindWalletToCanonicalTip(wl, s.daemon.Chain()); removed > 0 {
+		if err := wl.Save(); err != nil {
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+			return
+		}
+	}
+
+	walletHeight, walletHash := wl.SyncedBlock()
+	if originalWalletHeight == chainHeight && walletHeight == chainHeight && chainHeight > 0 && !walletSyncHashKnown(walletHash) {
+		// Legacy wallets do not know which block hash they scanned at the tip.
+		// Rewind one block so the next scan records canonical hash metadata.
+		if removed := wl.RewindToHeight(chainHeight - 1); removed > 0 {
 			if err := wl.Save(); err != nil {
 				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 				return
 			}
 		}
-		walletHeight = wl.SyncedHeight()
 	}
 
-	// Conservative reorg recovery: when wallet and chain heights match exactly,
-	// rewind one block and rescan tip. This clears stale same-height branch data
-	// even for wallets that predate tip-hash sync metadata.
-	if walletHeight == chainHeight && chainHeight > 0 {
-		wl.RewindToHeight(chainHeight - 1)
-		walletHeight = wl.SyncedHeight()
+	if issues := repairableWalletOutputIssues(auditWalletCanonicalOutputs(s.daemon.Chain(), wl.AllOutputs()), false); len(issues) > 0 {
+		removed := removeWalletOutputIssues(wl, issues)
+		if len(removed) > 0 {
+			log.Printf("Wallet load: removed %d noncanonical wallet output(s) totaling %d atomic units", len(removed), sumOwnedOutputs(removed))
+			if err := wl.Save(); err != nil {
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+				return
+			}
+		}
 	}
 
 	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
@@ -1924,7 +1936,11 @@ func (s *APIServer) handleCreateWallet(w http.ResponseWriter, r *http.Request) {
 
 	chainHeight := s.daemon.Chain().Height()
 	if chainHeight > 0 {
-		wl.SetSyncedHeight(chainHeight)
+		if block := s.daemon.Chain().GetBlockByHeight(chainHeight); block != nil {
+			wl.SetSyncedBlock(chainHeight, block.Hash())
+		} else {
+			wl.SetSyncedHeight(chainHeight)
+		}
 		if err := wl.Save(); err != nil {
 			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
 			return
@@ -2403,6 +2419,51 @@ func (s *APIServer) handleAudit(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleWalletOutputsAudit checks wallet outputs against the canonical chain.
+// POST /api/wallet/outputs/audit
+func (s *APIServer) handleWalletOutputsAudit(w http.ResponseWriter, r *http.Request) {
+	if !s.requireWallet(w, r) {
+		return
+	}
+
+	var req struct {
+		Repair bool `json:"repair"`
+	}
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+
+	outputs := s.wallet.AllOutputs()
+	issues := auditWalletCanonicalOutputs(s.daemon.Chain(), outputs)
+
+	removedCount := 0
+	var removedAmount uint64
+	if req.Repair {
+		removed := removeWalletOutputIssues(s.wallet, issues)
+		removedCount = len(removed)
+		removedAmount = sumOwnedOutputs(removed)
+		if removedCount > 0 {
+			if err := s.wallet.Save(); err != nil {
+				writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+				return
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total_outputs":   len(outputs),
+		"stale_outputs":   len(issues),
+		"stale_amount":    sumCanonicalOutputIssues(issues),
+		"repaired":        req.Repair,
+		"removed_outputs": removedCount,
+		"removed_amount":  removedAmount,
+		"issues":          issues,
+	})
+}
+
 // handleViewKeys returns the wallet's view-only keys (spend public, view private,
 // view public). Requires password confirmation and brute-force protection, like seed.
 // POST /api/wallet/viewkeys
@@ -2859,6 +2920,12 @@ func (s *APIServer) catchUpScan() {
 
 	ctx := s.cli.ctx
 
+	if removed := rewindWalletToCanonicalTip(w, s.daemon.Chain()); removed > 0 {
+		if err := w.Save(); err != nil {
+			log.Printf("Warning: catchUpScan reorg save: %v", err)
+		}
+	}
+
 	walletHeight := w.SyncedHeight()
 	chainHeight := s.daemon.Chain().Height()
 	if walletHeight >= chainHeight {
@@ -2876,10 +2943,25 @@ func (s *APIServer) catchUpScan() {
 		if block == nil {
 			break
 		}
-		applyBlockToWallet(s.daemon.Chain(), w, sc, block)
+		_, walletHash := w.SyncedBlock()
+		if walletSyncHashKnown(walletHash) && block.Header.PrevHash != walletHash {
+			if h <= 1 {
+				break
+			}
+			if removed := w.RewindToHeight(h - 2); removed > 0 {
+				if err := w.Save(); err != nil {
+					log.Printf("Warning: catchUpScan reorg save at height %d: %v", h, err)
+				}
+			}
+			h = w.SyncedHeight()
+			continue
+		}
+		sc.ScanBlock(blockToScanData(block))
 		w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
 			return s.daemon.Mempool().HasTransaction(txID)
 		})
+		blockHash := block.Hash()
+		w.SetSyncedBlock(h, blockHash)
 
 		if h%100 == 0 || h == chainHeight {
 			if err := w.Save(); err != nil {
