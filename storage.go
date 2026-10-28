@@ -119,7 +119,7 @@ func NewStorage(dataDir string) (*Storage, error) {
 
 	// Create buckets
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{bucketBlocks, bucketHeights, bucketOutputs, bucketKeyImages, bucketMeta, bucketTxIndex} {
+		for _, bucket := range [][]byte{bucketBlocks, bucketHeights, bucketOutputs, bucketKeyImages, bucketMeta, bucketTxIndex, bucketCanonicalRing} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return err
 			}
@@ -261,6 +261,9 @@ func (s *Storage) SetMainChainBlock(height uint64, hash [32]byte) error {
 	key := heightKey(height)
 
 	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := invalidateCanonicalRingIndexLocked(tx); err != nil {
+			return err
+		}
 		return tx.Bucket(bucketHeights).Put(key, hash[:])
 	})
 }
@@ -397,6 +400,9 @@ func (s *Storage) RemoveMainChainBlock(height uint64) error {
 	key := heightKey(height)
 
 	return s.db.Update(func(tx *bolt.Tx) error {
+		if err := invalidateCanonicalRingIndexLocked(tx); err != nil {
+			return err
+		}
 		return tx.Bucket(bucketHeights).Delete(key)
 	})
 }
@@ -555,6 +561,9 @@ func (s *Storage) SetTip(hash [32]byte, height, work uint64) error {
 
 	if err := s.db.Update(func(tx *bolt.Tx) error {
 		meta := tx.Bucket(bucketMeta)
+		if err := invalidateCanonicalRingIndexLocked(tx); err != nil {
+			return err
+		}
 		if err := meta.Put(metaKeyTip, hash[:]); err != nil {
 			return err
 		}
@@ -637,11 +646,14 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 			return fmt.Errorf("main-chain commit block parent missing: height=%d prev=%x", commit.Block.Header.Height, commit.Block.Header.PrevHash[:8])
 		}
 
+		var prevTip [32]byte
+		var prevTipFound bool
 		if commit.IsMainTip {
 			tipHash, tipHeight, found, err := readTipMeta(meta)
 			if err != nil {
 				return fmt.Errorf("invalid tip metadata: %w", err)
 			}
+			prevTip, prevTipFound = tipHash, found
 
 			if !found {
 				if commit.Height != 0 {
@@ -684,6 +696,10 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 
 			workBytes := make([]byte, 8)
 			binary.BigEndian.PutUint64(workBytes, commit.Work)
+
+			if err := applyCanonicalRingChangesLocked(tx, prevTip, prevTipFound, nil, []*Block{commit.Block}, commit.Hash); err != nil {
+				return fmt.Errorf("update canonical ring index: %w", err)
+			}
 
 			if err := meta.Put(metaKeyTip, commit.Hash[:]); err != nil {
 				return err
@@ -919,6 +935,10 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 			}
 		}
 
+		if err := applyCanonicalRingChangesLocked(tx, currentTip, true, commit.Disconnect, commit.Connect, commit.NewTip); err != nil {
+			return fmt.Errorf("update canonical ring index: %w", err)
+		}
+
 		// Update tip
 		heightBytes := make([]byte, 8)
 		workBytes := make([]byte, 8)
@@ -978,6 +998,13 @@ func (s *Storage) CommitTruncate(commit *TruncateCommit) error {
 
 		if tx.Bucket(bucketBlocks).Get(commit.NewTip[:]) == nil {
 			return fmt.Errorf("truncate target block not found: %x", commit.NewTip[:8])
+		}
+
+		// Truncation can drop heights whose block data is missing, so the
+		// persisted ring index cannot be updated exactly; the next start
+		// rebuilds it.
+		if err := invalidateCanonicalRingIndexLocked(tx); err != nil {
+			return err
 		}
 
 		for _, height := range commit.Heights {

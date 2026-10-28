@@ -85,6 +85,9 @@ type Daemon struct {
 	gossipBlockGateMu      sync.Mutex
 	gossipBlockInFlight    int
 	gossipBlockLastAttempt *gossipAttemptLRU
+
+	// Supplies seed nodes right before P2P dialing (DaemonConfig.ResolveSeedNodes).
+	resolveSeedNodes func() []string
 }
 
 const (
@@ -201,8 +204,12 @@ func (c *gossipAttemptLRU) Set(pid peer.ID, t time.Time) {
 // DaemonConfig configures the daemon
 type DaemonConfig struct {
 	// P2P settings
-	ListenAddrs       []string
-	SeedNodes         []string
+	ListenAddrs []string
+	SeedNodes   []string
+	// ResolveSeedNodes, when set, is called by Start right before P2P dialing
+	// and its result replaces SeedNodes. Seed discovery can take seconds, and
+	// nothing before dialing needs it, so it no longer delays the API.
+	ResolveSeedNodes  func() []string
 	P2PWhitelistPeers []string
 	// Optional P2P peer limits (0 uses p2p defaults)
 	P2PMaxInbound  int
@@ -273,8 +280,12 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		}
 	}
 
+	startup := newStartupTimer()
+	defer startup.done()
+
 	// Create chain with persistent storage
 	chain, err := NewChainWithCacheCap(cfg.DataDir, cfg.ChainCacheCap)
+	startup.stage("open_chain")
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("failed to create chain: %w", err)
@@ -311,6 +322,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		}
 	}
 
+	startup.stage("genesis_check")
+
 	// Track self-heal info for caller to report.
 	var repairTruncatedTo uint64
 	var repairViolations int
@@ -334,6 +347,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 			// non-fatal: proceed without checkpoints
 		}
 	}
+
+	startup.stage("load_checkpoints")
 
 	// Enable checkpoint fast-sync (skip expensive PoW up to last checkpoint) while
 	// we're still below that height. This is trust-based and can be bypassed via
@@ -366,6 +381,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		}
 	}
 
+	startup.stage("verify_chain")
+
 	// Create mempool (uses chain's key image checker)
 	mempool := NewMempool(DefaultMempoolConfig(), chain.IsKeyImageSpent, chain.IsCanonicalRingMember)
 
@@ -397,6 +414,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		return nil, fmt.Errorf("failed to create P2P node: %w", err)
 	}
 
+	startup.stage("p2p_node")
+
 	// Wire up peer count for miner (skip mining when no peers)
 	miner.config.PeerCount = func() int { return len(node.Peers()) }
 
@@ -415,6 +434,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		seedMode:               cfg.SeedMode,
 		listenAddrs:            cfg.ListenAddrs,
 		gossipBlockLastAttempt: newGossipAttemptLRU(maxGossipBlockAttemptEntries),
+		resolveSeedNodes:       cfg.ResolveSeedNodes,
 	}
 
 	// Create sync manager with callbacks
@@ -477,6 +497,8 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 	d.explorerAddr = cfg.ExplorerAddr
 
 	d.SetSaveCheckpoints(cfg.SaveCheckpoints)
+
+	startup.stage("daemon_wiring")
 
 	return d, nil
 }
@@ -555,6 +577,12 @@ func (d *Daemon) notifyMinedBlock(block *Block) {
 
 // Start begins daemon operations
 func (d *Daemon) Start() error {
+	if d.resolveSeedNodes != nil {
+		seedsStartedAt := time.Now()
+		d.node.SetSeedNodes(d.resolveSeedNodes())
+		log.Printf("[perf] startup stage=resolve_seed_nodes waited=%s", time.Since(seedsStartedAt).Round(time.Millisecond))
+	}
+
 	// Start P2P node
 	if err := d.node.Start(); err != nil {
 		// Bootstrap assist: if enabled, write peer.txt even when we couldn't connect to seeds.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
@@ -130,16 +131,30 @@ func main() {
 		peerIDPort = TestnetPeerIDPort
 		fallbackSeeds = DefaultTestnetSeedNodes
 	}
-	seedNodes := ResolveSeedNodes(DefaultSeedHosts, p2pPort, peerIDPort)
-	if len(seedNodes) == 0 {
-		seedNodes = fallbackSeeds
+	// Seed lookups wait up to 3s on the slowest host, so they run alongside
+	// chain loading and are only awaited before P2P dialing, after the API is
+	// already serving.
+	seedsResolved := make(chan []string, 1)
+	go func() {
+		seedNodes := ResolveSeedNodes(DefaultSeedHosts, p2pPort, peerIDPort)
+		if len(seedNodes) == 0 {
+			seedNodes = fallbackSeeds
+		}
+		seedsResolved <- seedNodes
+	}()
+	var resolveSeedsOnce sync.Once
+	var seedNodes []string
+	resolveSeeds := func() []string {
+		resolveSeedsOnce.Do(func() { seedNodes = <-seedsResolved })
+		return seedNodes
 	}
 
+	logSinceProcessStart("new_daemon_start")
 	cli, err := NewCLI(CLIConfig{
-		DataDir:   *dataDir,
-		APIAddr:   *apiAddr,
-		SeedNodes: seedNodes,
-		Settings:  settings,
+		DataDir:          *dataDir,
+		APIAddr:          *apiAddr,
+		ResolveSeedNodes: resolveSeeds,
+		Settings:         settings,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)

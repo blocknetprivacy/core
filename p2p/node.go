@@ -306,6 +306,11 @@ func (n *Node) handleSyncStream(s network.Stream) {
 	// Sync protocol will be implemented with the sync handler
 }
 
+// SetSeedNodes replaces the bootstrap seed list. Call it before Start.
+func (n *Node) SetSeedNodes(seedAddrs []string) {
+	n.pex.setSeedNodes(seedAddrs)
+}
+
 // Start begins P2P operations (connecting to seeds, etc.)
 func (n *Node) Start() error {
 	// Start peer exchange (connects to seeds)
