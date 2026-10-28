@@ -291,3 +291,49 @@ func TestHandleBlockTemplate_LiveSameTipCacheFullReturns503(t *testing.T) {
 		t.Fatalf("cache size changed on rejected template: got %d", len(api.templateCache))
 	}
 }
+
+func TestHandleBlockTemplate_AddressOverrideServesWithoutLoadedWallet(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+	daemon.syncMgr = new(p2p.SyncManager) // avoid nil deref in handler
+
+	payee, err := wallet.NewWallet(filepath.Join(t.TempDir(), "payee.dat"), []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatalf("failed to create payee wallet: %v", err)
+	}
+	// No wallet loaded, as right after a daemon restart.
+	api := NewAPIServer(daemon, nil, nil, t.TempDir(), nil)
+
+	get := func(path string) *httptest.ResponseRecorder {
+		rr := httptest.NewRecorder()
+		api.handleBlockTemplate(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		return rr
+	}
+
+	if rr := get("/api/mining/blocktemplate"); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("template without wallet or address: got %d, want 503 (%s)", rr.Code, rr.Body.String())
+	}
+	if rr := get("/api/mining/blocktemplate?address=not-an-address"); rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid override address: got %d, want 400 (%s)", rr.Code, rr.Body.String())
+	}
+
+	rr := get("/api/mining/blocktemplate?address=" + url.QueryEscape(payee.Address()))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("template with override address: got %d, want 200 (%s)", rr.Code, rr.Body.String())
+	}
+	var got struct {
+		Block             *Block `json:"block"`
+		RewardAddressUsed string `json:"reward_address_used"`
+		TemplateID        string `json:"template_id"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode template: %v", err)
+	}
+	if got.RewardAddressUsed != payee.Address() || got.TemplateID == "" || got.Block == nil || len(got.Block.Transactions) == 0 {
+		t.Fatalf("unexpected template: reward=%q template_id=%q", got.RewardAddressUsed, got.TemplateID)
+	}
+}
