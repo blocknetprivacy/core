@@ -131,6 +131,10 @@ type SyncManager struct {
 	syncProgress   uint64                     // Current height we've processed to
 	downloadBuffer map[uint64]DownloadedBlock // Buffer for out-of-order blocks
 
+	// peerTipChecked is set once a sync check has compared the local chain
+	// with at least one peer's status; see PeerTipChecked.
+	peerTipChecked atomic.Bool
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -575,6 +579,7 @@ collectStatuses:
 	// shorter — downloaded blocks land as side-chain entries, the chain
 	// never advances, and the retry fires endlessly.
 	if maxWork <= ourStatus.TotalWork {
+		sm.peerTipChecked.Store(true)
 		return
 	}
 
@@ -637,6 +642,10 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 // parallelSyncFrom performs parallel chain sync from multiple peers
 func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64) {
 	sm.mu.Lock()
+	// A peer is ahead. Mark the tip checked only under the lock that registers
+	// the sync run, so PeerTipChecked never reads true while IsSyncing and
+	// IsSyncingFarBehind still describe the pre-sync tip as current.
+	sm.peerTipChecked.Store(true)
 	if sm.syncing {
 		sm.mu.Unlock()
 		return
@@ -1389,6 +1398,15 @@ func (sm *SyncManager) IsSyncingFarBehind(tolerance uint64) bool {
 	// the tip itself only moves forward.
 	height := sm.getStatus().Height
 	return target > height && target-height > tolerance
+}
+
+// PeerTipChecked reports whether a sync check has compared the local chain
+// with at least one peer's status since this manager was created. When a peer
+// had more work, it turns true only together with the resulting sync run, so
+// callers that also consult IsSyncingFarBehind see a consistent picture. Until
+// then the local tip may be one the network has already passed.
+func (sm *SyncManager) PeerTipChecked() bool {
+	return sm.peerTipChecked.Load()
 }
 
 // SyncProgress returns sync progress info (current, target, elapsed)

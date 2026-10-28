@@ -82,6 +82,8 @@ func mustStartTestDaemon(t *testing.T, chain *Chain) (*Daemon, func()) {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+	// Tests run without peers; skip the startup tip-freshness wait.
+	d.tipGateOpen.Store(true)
 
 	cleanup := func() {
 		cancel()

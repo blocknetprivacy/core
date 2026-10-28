@@ -31,6 +31,11 @@ const (
 	// seconds and do not make templates meaningfully stale; hard-failing them
 	// starves pools of work for the whole run.
 	blockTemplateSyncHeightTolerance = uint64(2)
+
+	// blockTemplatePeerTipWait caps how long after sync starts the template
+	// endpoint waits for the first comparison of the local tip with a peer's
+	// chain status, so isolated, testnet and no-peer nodes still get work.
+	blockTemplatePeerTipWait = 15 * time.Second
 )
 
 // ============================================================================
@@ -2684,6 +2689,11 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	s.mu.RUnlock()
 	if loadedWallet == nil && overrideAddr == "" {
 		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+		return
+	}
+
+	if !s.daemon.templateTipChecked() {
+		writeCodedError(w, http.StatusServiceUnavailable, "node_starting", "waiting for peer chain height, retry")
 		return
 	}
 

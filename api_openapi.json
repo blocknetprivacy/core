@@ -3510,7 +3510,7 @@
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "503": {
-            "description": "A template cannot currently be served because no wallet is loaded (and no `address` was given), the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live. Capacity responses include Retry-After with the number of seconds until the earliest lease expiry.",
+            "description": "A template cannot currently be served because no wallet is loaded (and no `address` was given), the node has just started and has not yet compared its tip with a peer (for up to 15 seconds after it starts syncing), the node is syncing, the chain tip changed during construction, or all 512 same-tip lease slots are live. Capacity responses include Retry-After with the number of seconds until the earliest lease expiry.",
             "headers": {
               "Retry-After": {
                 "description": "Seconds until the earliest live template lease expires. Present for mining_template_cache_full responses.",
@@ -3523,6 +3523,12 @@
                 "examples": {
                   "no_wallet": {
                     "value": { "error": "no wallet loaded" }
+                  },
+                  "node_starting": {
+                    "value": {
+                      "code": "node_starting",
+                      "error": "waiting for peer chain height, retry"
+                    }
                   },
                   "syncing": {
                     "value": { "error": "node is syncing" }
