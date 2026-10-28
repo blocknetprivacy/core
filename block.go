@@ -1229,18 +1229,21 @@ func NewChainWithCacheCap(dataDir string, cacheCapSetting int) (*Chain, error) {
 	}
 
 	// Load chain state from storage
+	loadStartedAt := time.Now()
 	if err := c.loadFromStorage(); err != nil {
 		if closeErr := storage.Close(); closeErr != nil {
 			return nil, fmt.Errorf("failed to load chain state: %w (additionally failed to close storage: %v)", err, closeErr)
 		}
 		return nil, fmt.Errorf("failed to load chain state: %w", err)
 	}
+	log.Printf("[perf] startup stage=load_chain_state height=%d elapsed=%s", c.height, time.Since(loadStartedAt).Round(time.Millisecond))
 
 	return c, nil
 }
 
 // loadFromStorage loads chain state from disk
 func (c *Chain) loadFromStorage() error {
+	loadStartedAt := time.Now()
 	tipHash, tipHeight, tipWork, found := c.storage.GetTip()
 	if !found {
 		// Fresh chain - no state to load
@@ -1326,6 +1329,8 @@ func (c *Chain) loadFromStorage() error {
 	}
 
 	c.canonicalRingIndexDirty = true
+	recentLoaded := time.Now()
+	log.Printf("[perf] startup stage=load_recent_blocks blocks=%d elapsed=%s", tipHeight-startHeight+1, recentLoaded.Sub(loadStartedAt).Round(time.Millisecond))
 
 	// Build the canonical ring-member index eagerly while we still have
 	// exclusive, single-threaded access (NewChain hasn't returned yet, so no
@@ -1334,9 +1339,33 @@ func (c *Chain) loadFromStorage() error {
 	// (both of which only run under c.mu.Lock). This is what lets the
 	// read-only ring-member checks stay safe under c.mu.RLock: they never need
 	// to rebuild the index from a read-locked context.
+	//
+	// The index is persisted beside the chain (storage_ring_index.go), so a
+	// normal start only loads it; it is rebuilt from blocks only when the
+	// persisted copy does not match the stored tip.
+	if heights, tip, ok, err := c.storage.LoadCanonicalRingIndex(); err != nil {
+		log.Printf("Warning: persisted canonical ring index unreadable, rebuilding: %v", err)
+	} else if ok && tip == c.bestHash {
+		index := make(map[[64]byte]struct{}, len(heights))
+		for key := range heights {
+			index[key] = struct{}{}
+		}
+		c.canonicalRingIndex = index
+		c.canonicalRingHeights = heights
+		c.canonicalRingIndexTip = tip
+		c.canonicalRingIndexReady = true
+		c.canonicalRingIndexDirty = false
+		log.Printf("[perf] startup stage=canonical_ring_index source=persisted members=%d elapsed=%s", len(index), time.Since(recentLoaded).Round(time.Millisecond))
+		return nil
+	}
 	if err := c.ensureCanonicalRingIndexLocked(); err != nil {
 		return fmt.Errorf("failed to build canonical ring-member index: %w", err)
 	}
+	built := time.Now()
+	if err := c.storage.SaveCanonicalRingIndex(c.canonicalRingHeights, c.canonicalRingIndexTip); err != nil {
+		log.Printf("Warning: failed to persist canonical ring index (next start rebuilds it): %v", err)
+	}
+	log.Printf("[perf] startup stage=canonical_ring_index source=rebuilt members=%d rebuild=%s persist=%s", len(c.canonicalRingIndex), built.Sub(recentLoaded).Round(time.Millisecond), time.Since(built).Round(time.Millisecond))
 
 	return nil
 }
