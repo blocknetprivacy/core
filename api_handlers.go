@@ -31,6 +31,11 @@ const (
 	// seconds and do not make templates meaningfully stale; hard-failing them
 	// starves pools of work for the whole run.
 	blockTemplateSyncHeightTolerance = uint64(2)
+
+	// blockTemplatePeerTipWait caps how long after sync starts the template
+	// endpoint waits for the first comparison of the local tip with a peer's
+	// chain status, so isolated, testnet and no-peer nodes still get work.
+	blockTemplatePeerTipWait = 15 * time.Second
 )
 
 // ============================================================================
@@ -2684,8 +2689,21 @@ func (s *APIServer) handleMiningStop(w http.ResponseWriter, r *http.Request) {
 // and submit back via POST /api/mining/submitblock.
 // GET /api/mining/blocktemplate
 func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) {
-	if s.wallet == nil {
+	// The wallet only supplies the default coinbase keys. A template paying an
+	// explicit ?address= is served without one, so a pool that passes its
+	// address gets work as soon as a restarted daemon's API is up instead of
+	// waiting for its wallet to finish loading.
+	overrideAddr := sanitizeInput(r.URL.Query().Get("address"))
+	s.mu.RLock()
+	loadedWallet := s.wallet
+	s.mu.RUnlock()
+	if loadedWallet == nil && overrideAddr == "" {
 		writeError(w, http.StatusServiceUnavailable, "no wallet loaded")
+		return
+	}
+
+	if !s.daemon.templateTipChecked() {
+		writeCodedError(w, http.StatusServiceUnavailable, "node_starting", "waiting for peer chain height, retry")
 		return
 	}
 
@@ -2700,18 +2718,21 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	reward := GetBlockReward(tp.Height)
 
 	// Optionally override the coinbase destination (pool/dev-fee switching).
-	recipientSpendPub := s.wallet.SpendPubKey()
-	recipientViewPub := s.wallet.ViewPubKey()
-	rewardAddrUsed := s.wallet.Address()
-	if addr := sanitizeInput(r.URL.Query().Get("address")); addr != "" {
-		spendPub, viewPub, err := parseValidatedAddress(addr)
+	var recipientSpendPub, recipientViewPub [32]byte
+	var rewardAddrUsed string
+	if overrideAddr != "" {
+		spendPub, viewPub, err := parseValidatedAddress(overrideAddr)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid address")
 			return
 		}
 		recipientSpendPub = spendPub
 		recipientViewPub = viewPub
-		rewardAddrUsed = addr
+		rewardAddrUsed = overrideAddr
+	} else {
+		recipientSpendPub = loadedWallet.SpendPubKey()
+		recipientViewPub = loadedWallet.ViewPubKey()
+		rewardAddrUsed = loadedWallet.Address()
 	}
 
 	// Create coinbase paying to the selected reward address

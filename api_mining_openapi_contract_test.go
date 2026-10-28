@@ -70,6 +70,11 @@ func TestOpenAPIMiningTemplateLeaseAndCompactSubmitContract(t *testing.T) {
 	if got := tipChangedValue["code"]; got != "mining_template_tip_changed" {
 		t.Fatalf("blocktemplate tip-change code mismatch: got %#v", got)
 	}
+	nodeStarting := mustGetMapAny(t, unavailableExamples, "node_starting")
+	nodeStartingValue := mustGetMapAny(t, nodeStarting, "value")
+	if got := nodeStartingValue["code"]; got != "node_starting" {
+		t.Fatalf("blocktemplate node-starting code mismatch: got %#v", got)
+	}
 	unavailableHeaders := mustGetMapAny(t, blockTemplateUnavailable, "headers")
 	if _, ok := unavailableHeaders["Retry-After"]; !ok {
 		t.Fatal("blocktemplate 503 contract missing Retry-After header")
