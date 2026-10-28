@@ -1788,9 +1788,11 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		walletPath = filepath.Join(filepath.Dir(s.cli.walletFilePath()), base)
 	}
 
+	loadStartedAt := time.Now()
 	password := []byte(req.Password)
 	passHash := passwordHash(password)
 	wl, err := wallet.LoadWallet(walletPath, password, defaultWalletConfig())
+	decodedAt := time.Now()
 	wipeBytes(password)
 	if err != nil {
 		if status, msg, ok := walletLoadClientError(err); ok {
@@ -1816,6 +1818,7 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	rewoundAt := time.Now()
 	walletHeight, walletHash := wl.SyncedBlock()
 	if originalWalletHeight == chainHeight && walletHeight == chainHeight && chainHeight > 0 && !walletSyncHashKnown(walletHash) {
 		// Legacy wallets do not know which block hash they scanned at the tip.
@@ -1828,6 +1831,7 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	auditStartedAt := time.Now()
 	if issues := repairableWalletOutputIssues(auditWalletCanonicalOutputs(s.daemon.Chain(), wl.AllOutputs()), false); len(issues) > 0 {
 		removed := removeWalletOutputIssues(wl, issues)
 		if len(removed) > 0 {
@@ -1838,6 +1842,12 @@ func (s *APIServer) handleLoadWallet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	auditedAt := time.Now()
+	log.Printf("[perf] wallet load outputs=%d decode=%s rewind=%s audit=%s total=%s",
+		len(wl.AllOutputs()), decodedAt.Sub(loadStartedAt).Round(time.Millisecond),
+		rewoundAt.Sub(decodedAt).Round(time.Millisecond), auditedAt.Sub(auditStartedAt).Round(time.Millisecond),
+		auditedAt.Sub(loadStartedAt).Round(time.Millisecond))
 
 	wl.SetInputFilter(func(out *wallet.OwnedOutput) bool {
 		ki, err := GenerateKeyImage(out.OneTimePrivKey)

@@ -39,7 +39,10 @@ type CLIConfig struct {
 	DataDir   string
 	APIAddr   string
 	SeedNodes []string
-	Settings  Settings
+	// ResolveSeedNodes, when set, supplies the seeds just before P2P dialing
+	// and replaces SeedNodes (see DaemonConfig.ResolveSeedNodes).
+	ResolveSeedNodes func() []string
+	Settings         Settings
 }
 
 // defaultWalletConfig returns the wallet config with crypto callbacks.
@@ -123,6 +126,12 @@ func NewCLI(cfg CLIConfig) (*CLI, error) {
 		IdentityKeyPath:   seedIdentityKeyPath(st),
 		ChainCacheCap:     st.ChainCacheCap,
 	}
+	if resolve := cfg.ResolveSeedNodes; resolve != nil {
+		extraPeers := append([]string{}, st.ExtraPeers...)
+		daemonCfg.ResolveSeedNodes = func() []string {
+			return append(append([]string{}, resolve()...), extraPeers...)
+		}
+	}
 
 	daemon, err := NewDaemon(daemonCfg, nil)
 	if err != nil {
@@ -162,10 +171,12 @@ func (c *CLI) Run() error {
 	// while it connects — managers like bnt no longer time out and kill it.
 	// Clients can still see that sync is incomplete (height/syncing fields), so
 	// funds may not be fully visible until the chain catches up.
+	logSinceProcessStart("daemon_ready")
 	if c.api != nil {
 		if err := c.api.Start(c.apiAddr); err != nil {
 			return fmt.Errorf("failed to start API: %w", err)
 		}
+		logSinceProcessStart("api_listening")
 		if isInsecureAPIBindAddress(c.apiAddr) {
 			fmt.Printf("\n%s\n  API bind address %q is not loopback\n  Place behind trusted network boundaries or TLS\n", c.errorHead("Warning"), c.apiAddr)
 		}
