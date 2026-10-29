@@ -1010,6 +1010,19 @@ func PowHash(header []byte, nonce uint64) ([32]byte, error) {
 	return output, nil
 }
 
+// PowSetCacheEnabled controls idle PoW memory retention for the process.
+// Disabling releases cached memory.
+func PowSetCacheEnabled(enabled bool) error {
+	var value C.uint8_t
+	if enabled {
+		value = 1
+	}
+	if result := C.blocknet_pow_set_cache_enabled(value); result != 0 {
+		return fmt.Errorf("pow cache configuration failed (error %d)", result)
+	}
+	return nil
+}
+
 // PowCheckTarget checks if a hash meets the difficulty target
 // Returns true if hash < target (valid block)
 func PowCheckTarget(hash, target [32]byte) bool {

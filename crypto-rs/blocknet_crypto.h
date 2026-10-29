@@ -413,6 +413,10 @@ int32_t blocknet_pow_hash(
     uint8_t* output
 );
 
+// Configure idle PoW memory retention (enabled by default).
+// Disabling releases the cached arena; active hashes still require 2 GiB each.
+int32_t blocknet_pow_set_cache_enabled(uint8_t enabled);
+
 // Check if hash meets difficulty target
 // Returns 1 if hash < target (valid), 0 otherwise
 int32_t blocknet_pow_check_target(

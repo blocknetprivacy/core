@@ -22,6 +22,24 @@ const POW_ITERATIONS: u32 = 1;
 const POW_PARALLELISM: u32 = 1;
 const POW_OUTPUT_LEN: usize = 32;
 
+fn pow_kernel() -> &'static FixedArgon2id {
+    // Fixed Argon2id v0x13, one pass and one lane, with runtime CPU checks.
+    POW_KERNEL.get_or_init(|| {
+        FixedArgon2id::with_kernel(POW_MEMORY_KB, CpuKernel::preferred_for_verification())
+            .expect("verification dispatch selects a supported kernel")
+    })
+}
+
+/// Enable or disable retention of idle PoW scratch memory. Enabled by default.
+#[unsafe(no_mangle)]
+pub extern "C" fn blocknet_pow_set_cache_enabled(enabled: u8) -> i32 {
+    let pool = POW_MEMORY.get_or_init(|| MemoryPool::new(pow_kernel().block_count()));
+    match pool.set_cache_enabled(enabled != 0) {
+        Ok(()) => 0,
+        Err(()) => -2,
+    }
+}
+
 /// Compute Argon2id hash for proof of work
 ///
 /// # Arguments
@@ -44,11 +62,7 @@ pub extern "C" fn blocknet_pow_hash(
     let header = unsafe { std::slice::from_raw_parts(header_ptr, header_len) };
     let nonce_bytes = nonce.to_le_bytes();
 
-    // Fixed Argon2id v0x13, one pass and one lane, with runtime CPU checks.
-    let hasher = POW_KERNEL.get_or_init(|| {
-        FixedArgon2id::with_kernel(POW_MEMORY_KB, CpuKernel::preferred_for_verification())
-            .expect("verification dispatch selects a supported kernel")
-    });
+    let hasher = pow_kernel();
     let pool = POW_MEMORY.get_or_init(|| MemoryPool::new(hasher.block_count()));
     let mut memory = match pool.checkout() {
         Ok(memory) => memory,
