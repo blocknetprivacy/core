@@ -18,6 +18,9 @@ bulletproofs = "5.0"
 merlin = "3.0"
 argon2 = "0.5"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 hex = "0.4"
 

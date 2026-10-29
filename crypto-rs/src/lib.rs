@@ -16,6 +16,7 @@ mod commitment;
 mod hash;
 mod keys;
 mod pow;
+mod pow_memory;
 mod rangeproof;
 mod ring;
 mod stealth;
