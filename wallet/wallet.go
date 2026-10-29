@@ -644,7 +644,7 @@ func (w *Wallet) Save() error {
 		return fmt.Errorf("failed to encrypt wallet: %w", err)
 	}
 
-	if err := os.WriteFile(filename, encrypted, 0600); err != nil {
+	if err := writeWalletAtomic(filename, encrypted); err != nil {
 		return fmt.Errorf("failed to write wallet file: %w", err)
 	}
 
