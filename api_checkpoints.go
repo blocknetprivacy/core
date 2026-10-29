@@ -1,87 +1,20 @@
 package main
 
-import (
-	"encoding/hex"
-	"fmt"
-	"io"
-	"net/http"
-	"os"
-	"strings"
-)
+import "net/http"
 
-// handleSaveCheckpoints appends checkpoints for known blocks (every 100 blocks)
-// to the on-disk checkpoints file, resuming after the last one already written.
+// handleSaveCheckpoints atomically rebuilds checkpoints from finalized canonical
+// blocks. Existing entries are revalidated rather than blindly appended.
 // POST /api/checkpoints/save
 func (s *APIServer) handleSaveCheckpoints(w http.ResponseWriter, r *http.Request) {
-	chain := s.daemon.Chain()
-	tip := chain.Height()
-	height := finalizedCheckpointHeight(tip)
 	cpPath := checkpointsPath(s.dataDir)
-
-	if height == 0 {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"written":         0,
-			"chain_height":    tip,
-			"last_checkpoint": 0,
-			"path":            cpPath,
-			"message":         "chain is empty, nothing to save",
-		})
-		return
-	}
-
-	var lastWritten uint64
-	if _, _, maxH, err := loadCheckpointsFile(cpPath); err == nil && maxH > 0 {
-		lastWritten = maxH
-	}
-
-	// Next checkpoint height is the first multiple of 100 above the last written.
-	start := lastWritten + 100 - (lastWritten % 100)
-	if lastWritten == 0 {
-		start = 100
-	}
-
-	if start > height {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"written":         0,
-			"chain_height":    tip,
-			"last_checkpoint": lastWritten,
-			"path":            cpPath,
-			"message":         "already up to date",
-		})
-		return
-	}
-
-	if err := os.MkdirAll(s.dataDir, 0o755); err != nil {
-		writeInternal(w, r, http.StatusInternalServerError, "failed to create data dir", err)
-		return
-	}
-	f, err := os.OpenFile(cpPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	written, height, lastHeight, err := s.daemon.saveCanonicalCheckpoints(cpPath, true)
 	if err != nil {
-		writeInternal(w, r, http.StatusInternalServerError, "failed to open checkpoints file", err)
+		writeInternal(w, r, http.StatusInternalServerError, "failed to save checkpoints", err)
 		return
 	}
-	defer f.Close()
-
-	written := 0
-	lastHeight := lastWritten
-	for h := start; h <= height; h += 100 {
-		block := chain.GetBlockByHeight(h)
-		if block == nil {
-			break
-		}
-		hash := block.Hash()
-		line := fmt.Sprintf("%d:%s\n", h, strings.ToUpper(hex.EncodeToString(hash[:])))
-		if _, err := io.WriteString(f, line); err != nil {
-			writeInternal(w, r, http.StatusInternalServerError, "failed to write checkpoint", err)
-			return
-		}
-		written++
-		lastHeight = h
-	}
-
 	writeJSON(w, http.StatusOK, map[string]any{
 		"written":         written,
-		"chain_height":    tip,
+		"chain_height":    height,
 		"last_checkpoint": lastHeight,
 		"path":            cpPath,
 	})
