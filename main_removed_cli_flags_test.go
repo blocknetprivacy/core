@@ -59,16 +59,10 @@ func TestDaemonFlagsStillAccepted(t *testing.T) {
 	}
 }
 
-func TestPoWCacheFlag(t *testing.T) {
-	for _, value := range []string{"true", "false"} {
-		res := runMainHelper(t, helperRun{args: []string{"--pow-cache=" + value, "--version"}})
-		if res.exitCode != 0 || strings.TrimSpace(res.stdout) != Version || res.stderr != "" {
-			t.Fatalf("cache=%s: exit %d stdout=%q stderr=%q", value, res.exitCode, res.stdout, res.stderr)
-		}
-	}
-	res := runMainHelper(t, helperRun{args: []string{"--pow-cache=invalid", "--version"}})
-	if res.exitCode != 2 {
-		t.Fatalf("invalid cache value: exit %d stderr=%q", res.exitCode, res.stderr)
+func TestPoWCacheFlagRemoved(t *testing.T) {
+	res := runMainHelper(t, helperRun{args: []string{"--pow-cache=false", "--version"}})
+	if res.exitCode != 2 || !strings.Contains(res.stderr, "flag provided but not defined") {
+		t.Fatalf("exit %d stderr=%q", res.exitCode, res.stderr)
 	}
 }
 
