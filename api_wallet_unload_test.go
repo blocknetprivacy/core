@@ -3,8 +3,11 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"blocknet/wallet"
 )
@@ -140,5 +143,75 @@ func TestHandleUnloadWallet_SecondCallReturns503(t *testing.T) {
 	second := mustMakeHTTPJSONRequest(t, handler, http.MethodPost, "/api/wallet/unload", nil, nil)
 	if second.Code != http.StatusServiceUnavailable {
 		t.Fatalf("second unload: expected 503, got %d: %s", second.Code, second.Body.String())
+	}
+}
+
+// A catch-up scan running when its wallet is unloaded used to keep scanning
+// and re-saving the wallet file until the daemon restarted. It now stops at
+// its next step, and the unload returns only after any step or save in
+// flight has finished.
+func TestHandleUnloadWallet_StopsCatchUpScan(t *testing.T) {
+	walletScanTestnet(t)
+	chain, _, cleanup := mustCreateTestChain(t)
+	t.Cleanup(cleanup)
+	mustAddGenesisBlock(t, chain)
+	other, err := GenerateStealthKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for h := uint64(1); h <= 50; h++ {
+		cb, err := CreateCoinbase(other.SpendPubKey, other.ViewPubKey, 50_000_000, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		walletScanAppendBlock(t, chain, cb.Tx)
+	}
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	t.Cleanup(stopDaemon)
+
+	walletFile := filepath.Join(t.TempDir(), "wallet.dat")
+	w, err := wallet.NewWallet(walletFile, []byte("pw"), defaultWalletConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := wallet.NewScanner(w, defaultScannerConfig())
+	s := NewAPIServer(daemon, w, sc, t.TempDir(), []byte("pw"))
+	s.cli = &CLI{ctx: t.Context(), daemon: daemon, walletFile: walletFile, wallet: w, scanner: sc}
+
+	// Hold the scan lock so the catch-up cannot move before the unload.
+	s.cli.walletScanMu.Lock()
+	scanned := make(chan struct{})
+	go func() { s.catchUpScan(); close(scanned) }()
+	time.Sleep(100 * time.Millisecond)
+	unloaded := make(chan *httptest.ResponseRecorder)
+	go func() {
+		unloaded <- mustMakeHTTPJSONRequest(t, http.HandlerFunc(s.handleUnloadWallet), http.MethodPost, "/api/wallet/unload", nil, nil)
+	}()
+	for s.cli.walletLoaded(w) {
+		time.Sleep(time.Millisecond)
+	}
+	s.cli.walletScanMu.Unlock()
+
+	if resp := <-unloaded; resp.Code != http.StatusOK {
+		t.Fatalf("unload: %d %s", resp.Code, resp.Body.String())
+	}
+	before, err := os.Stat(walletFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-scanned:
+	case <-time.After(10 * time.Second):
+		t.Fatal("catch-up scan kept running after unload")
+	}
+	if h := w.SyncedHeight(); h != 0 {
+		t.Fatalf("unloaded wallet scanned to height %d", h)
+	}
+	after, err := os.Stat(walletFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) || after.Size() != before.Size() {
+		t.Fatal("wallet file written after unload")
 	}
 }
