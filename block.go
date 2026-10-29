@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha3"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -2907,46 +2908,18 @@ func (c *Chain) IsFinalized(height uint64) bool {
 // blocks from tip backwards. Returns the transaction, block height, and
 // whether it was found.
 func (c *Chain) FindTxByHashStr(hashStr string) (*Transaction, uint64, bool) {
-	if tx, height, ok := c.findTxByIndex(hashStr); ok {
-		return tx, height, true
-	}
-	if c.storage.TxIndexReady() {
+	decoded, err := hex.DecodeString(hashStr)
+	if err != nil || len(decoded) != 32 {
 		return nil, 0, false
 	}
-
-	c.mu.RLock()
-	tipHeight := c.height
-	c.mu.RUnlock()
-
-	for h := tipHeight; ; h-- {
-		hash, found := c.storage.GetBlockHashByHeight(h)
-		if !found {
-			if h == 0 {
-				break
-			}
-			continue
-		}
-
-		block, err := c.storage.GetBlock(hash)
-		if err != nil || block == nil {
-			if h == 0 {
-				break
-			}
-			continue
-		}
-
-		for _, tx := range block.Transactions {
-			txID, _ := tx.TxID()
-			if fmt.Sprintf("%x", txID) == hashStr {
-				return tx, h, true
-			}
-		}
-
-		if h == 0 {
-			break
-		}
+	var id [32]byte
+	copy(id[:], decoded)
+	txn, height, err := c.storage.FindCanonicalTransaction(id)
+	if err != nil {
+		log.Printf("transaction lookup failed: %v", err)
+		return nil, 0, false
 	}
-	return nil, 0, false
+	return txn, height, txn != nil
 }
 
 // ============================================================================

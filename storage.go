@@ -148,6 +148,10 @@ func NewStorage(dataDir string) (*Storage, error) {
 		return nil, fmt.Errorf("failed to build transaction index: %w", err)
 	}
 
+	if err := s.ensureTransactionLocations(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("initialize transaction lookup index: %w", err)
+	}
 	return s, nil
 }
 
@@ -209,13 +213,20 @@ func (s *Storage) SaveBlock(block *Block) error {
 	if err != nil {
 		return err
 	}
+	locations, err := transactionLocations(block)
+	if err != nil {
+		return err
+	}
 
 	return s.db.Update(func(tx *bolt.Tx) error {
 		blocks := tx.Bucket(bucketBlocks)
 		if block.Header.Height > 0 && blocks.Get(block.Header.PrevHash[:]) == nil {
 			return fmt.Errorf("block %x at height %d has missing parent %x", hash[:8], block.Header.Height, block.Header.PrevHash[:8])
 		}
-		return blocks.Put(hash[:], data)
+		if err := blocks.Put(hash[:], data); err != nil {
+			return err
+		}
+		return putTransactionLocations(tx, locations)
 	})
 }
 
@@ -614,6 +625,10 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 	if err != nil {
 		return err
 	}
+	locations, err := transactionLocations(commit.Block)
+	if err != nil {
+		return err
+	}
 
 	type serializedOutput struct {
 		key  []byte
@@ -670,6 +685,9 @@ func (s *Storage) CommitBlock(commit *BlockCommit) error {
 		}
 
 		if err := blocks.Put(commit.Hash[:], blockData); err != nil {
+			return err
+		}
+		if err := putTransactionLocations(tx, locations); err != nil {
 			return err
 		}
 
@@ -749,10 +767,11 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 		data []byte
 	}
 	type serializedBlock struct {
-		hash    [32]byte
-		height  uint64
-		data    []byte
-		outputs []serializedOutput
+		hash      [32]byte
+		height    uint64
+		data      []byte
+		outputs   []serializedOutput
+		locations []txLocationEntry
 	}
 
 	prepared := make([]serializedBlock, len(commit.Connect))
@@ -765,6 +784,10 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 			hash:   block.Hash(),
 			height: block.Header.Height,
 			data:   blockData,
+		}
+		sb.locations, err = transactionLocations(block)
+		if err != nil {
+			return err
 		}
 		for _, txn := range block.Transactions {
 			txid, _ := txn.TxID()
@@ -908,6 +931,9 @@ func (s *Storage) CommitReorg(commit *ReorgCommit) error {
 
 			if err := blocks.Put(sb.hash[:], sb.data); err != nil {
 				return fmt.Errorf("failed to save block: %w", err)
+			}
+			if err := putTransactionLocations(tx, sb.locations); err != nil {
+				return err
 			}
 
 			if err := heights.Put(hKey, sb.hash[:]); err != nil {
