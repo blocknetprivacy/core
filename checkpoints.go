@@ -20,7 +20,7 @@ const (
 	checkpointsFilename = "checkpoints.dat"
 
 	// DefaultCheckpointsURL is where nodes fetch checkpoints when not in --full-sync mode.
-	// The file is served from a web host and is append-only.
+	// The file is served from a web host and contains finalized canonical blocks.
 	DefaultCheckpointsURL = "https://bntpool.com/checkpoints.dat"
 
 	// Keep downloads bounded in case of a misconfigured URL.
@@ -95,15 +95,10 @@ func refreshCheckpointsFile(ctx context.Context, path string) (checkpointsRefres
 			return res, fmt.Errorf("failed to back up checkpoints: %w", err)
 		}
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, remoteData, 0o644); err != nil {
-		_ = os.Remove(tmp)
-		return res, fmt.Errorf("failed to write checkpoints: %w", err)
+	if err := replaceCheckpointsFile(path, remoteData); err != nil {
+		return res, fmt.Errorf("failed to publish checkpoints: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return res, fmt.Errorf("failed to finalize checkpoints file: %w", err)
-	}
+
 	return checkpointsRefresh{checkpoints: remote, maxHeight: remoteMax, replaced: true}, nil
 }
 
