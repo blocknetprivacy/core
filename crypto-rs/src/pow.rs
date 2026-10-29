@@ -3,7 +3,11 @@
 //! Memory-hard PoW to resist ASICs and ensure fair mining.
 //! Uses 2GB memory, making specialized hardware impractical.
 
+use crate::pow_memory::MemoryPool;
 use argon2::{Algorithm, Argon2, Params, Version};
+use std::sync::OnceLock;
+
+static POW_MEMORY: OnceLock<MemoryPool> = OnceLock::new();
 
 /// Argon2id parameters for PoW
 /// - Memory: 2GB (2097152 KB)
@@ -43,11 +47,16 @@ pub extern "C" fn blocknet_pow_hash(
         Err(_) => return -2,
     };
 
+    let pool = POW_MEMORY.get_or_init(|| MemoryPool::new(params.block_count()));
+    let mut memory = match pool.checkout() {
+        Ok(memory) => memory,
+        Err(()) => return -2,
+    };
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     // Hash: password=nonce, salt=header
     let mut output = [0u8; POW_OUTPUT_LEN];
-    match argon2.hash_password_into(&nonce_bytes, header, &mut output) {
+    match argon2.hash_password_into_with_memory(&nonce_bytes, header, &mut output, memory.as_mut()) {
         Ok(_) => {
             unsafe {
                 std::ptr::copy_nonoverlapping(output.as_ptr(), output_ptr, POW_OUTPUT_LEN);
@@ -130,6 +139,29 @@ pub extern "C" fn blocknet_difficulty_to_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Explicitly run this with --ignored; it uses a second 2 GiB reference arena.
+    #[test]
+    #[ignore]
+    fn production_memory_reuse_matches_reference() {
+        let params = Params::new(
+            POW_MEMORY_KB, POW_ITERATIONS, POW_PARALLELISM, Some(POW_OUTPUT_LEN),
+        ).unwrap();
+        let reference = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        let header = [0x5au8; 80];
+        for nonce in [0u64, u64::MAX, 0] {
+            let mut actual = [0u8; 32];
+            let mut expected = [0u8; 32];
+            assert_eq!(
+                blocknet_pow_hash(header.as_ptr(), header.len(), nonce, actual.as_mut_ptr()),
+                0,
+            );
+            reference
+                .hash_password_into(&nonce.to_le_bytes(), &header, &mut expected)
+                .unwrap();
+            assert_eq!(actual, expected, "nonce={nonce}");
+        }
+    }
 
     #[test]
     fn test_pow_hash() {

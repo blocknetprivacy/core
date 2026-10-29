@@ -1,0 +1,85 @@
+{
+  "cpu": "AMD Ryzen 9 9950X3D",
+  "pinned_logical_cpu": 16,
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "notes": [
+    "Three fresh processes per variant; five hashes per process; first excluded from steady-state medians.",
+    "Runs were sequential and counterbalanced, on a shared WSL2 desktop with THP set to madvise.",
+    "No additional benchmark load threads, no target-cpu=native overrides.",
+    "All 60 computed hashes matched across builds."
+  ],
+  "builds": {
+    "stock": {
+      "sha256": "6ca38857b68186b841bd3bd8b0ff4dca234de741b4a91259a580a61faec1eb38",
+      "base_revision": "14ccd4bd2a9a6ca2ebc6fcb27503357c2032a35b"
+    },
+    "reuse_only": {
+      "sha256": "9779a97da8c9f30ffa8cd185a813a902ee0f26f8a4b109f11f439808bde98f74",
+      "base_revision": "14ccd4bd2a9a6ca2ebc6fcb27503357c2032a35b"
+    },
+    "reuse_hugepages": {
+      "sha256": "5c25c80b19b42e2953cdad32081a8eb7d3b207ebf76a759d010ac7c693c5a908",
+      "base_revision": "14ccd4bd2a9a6ca2ebc6fcb27503357c2032a35b"
+    },
+    "optimized_kernel": {
+      "sha256": "428876527ca92b948d983799039083eae13c072a819e9a688811948f314c3c0d",
+      "base_revision": "07fbe40304a3340f29fabf7c01f70d9e28fc4832"
+    }
+  },
+  "reuse_only_change": "Same memory patch with Memory::new returning Self::heap(blocks), bypassing mmap/madvise. Argon2 and buffer reuse are otherwise unchanged.",
+  "comparison": "Single-hash C ABI timing, not full block validation, chain sync throughput, or mining hashrate.",
+  "summary": {
+    "stock": {
+      "first_median_ms": 2169.176691,
+      "steady_median_ms": 2092.4140085,
+      "steady_min_ms": 1951.19997,
+      "steady_max_ms": 2578.719687,
+      "minor_faults_per_steady_hash": [
+        524289,
+        524290
+      ],
+      "rounds": 3,
+      "hashes_per_round": 5,
+      "anonymous_hugepages_kib": 0
+    },
+    "reuse_only": {
+      "first_median_ms": 1938.815942,
+      "steady_median_ms": 1198.69414,
+      "steady_min_ms": 1092.446269,
+      "steady_max_ms": 1261.761872,
+      "minor_faults_per_steady_hash": [
+        0,
+        1
+      ],
+      "rounds": 3,
+      "hashes_per_round": 5,
+      "anonymous_hugepages_kib": 0
+    },
+    "reuse_hugepages": {
+      "first_median_ms": 1032.954941,
+      "steady_median_ms": 953.8123889999999,
+      "steady_min_ms": 855.873056,
+      "steady_max_ms": 987.636834,
+      "minor_faults_per_steady_hash": [
+        0,
+        1
+      ],
+      "rounds": 3,
+      "hashes_per_round": 5,
+      "anonymous_hugepages_kib": 2097152
+    },
+    "optimized_kernel": {
+      "first_median_ms": 562.947709,
+      "steady_median_ms": 499.2335525,
+      "steady_min_ms": 451.085832,
+      "steady_max_ms": 630.403577,
+      "minor_faults_per_steady_hash": [
+        0,
+        1
+      ],
+      "rounds": 3,
+      "hashes_per_round": 5,
+      "anonymous_hugepages_kib": 2097152
+    }
+  }
+}
