@@ -30,6 +30,7 @@ var DefaultSeedHosts = []SeedHost{
 	{"bnt-0.blocknetcrypto.com", "12D3KooWSQTy8rav5nmapgxomAMpSrigJTUXHmjH25dtHhGU3BAM"},
 	{"blocknet.id", "12D3KooWLRJWWeBK3Fcd4zuw2GAC3SQEbMXpMFYedAkSWCShPeeM"},
 	{"toxicrainbows.com", "12D3KooWQLYYe5jVgeQ8qrqtZitD8r7HmdPvyM2n4RQ6wRMeZuk7"},
+	{"seed.bntpool.com", "12D3KooWJrLG1Y71bzVSTCpwyhjbJNUB8LjpWCYNQsMgEuWkH4LE"},
 }
 
 var DefaultTestnetSeedHosts = []SeedHost{

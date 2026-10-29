@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net"
 	"net/netip"
 	"strings"
 	"sync"
@@ -14,10 +13,12 @@ import (
 
 	"blocknet/protocol/params"
 
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/multiformats/go-multiaddr"
-	manet "github.com/multiformats/go-multiaddr/net"
 )
 
 func filterRoutableAddrs(addrs []multiaddr.Multiaddr) []multiaddr.Multiaddr {
@@ -188,6 +189,7 @@ type PeerExchange struct {
 	// Connection tracking
 	lastExchange map[peer.ID]time.Time
 	probedAt     map[peer.ID]time.Time
+	prober       host.Host
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -258,8 +260,15 @@ func (pex *PeerExchange) isWhitelistedLocked(pid peer.ID) bool {
 func (pex *PeerExchange) Start(ctx context.Context) error {
 	pex.ctx, pex.cancel = context.WithCancel(ctx)
 
+	if prober, err := newProbeHost(); err != nil {
+		log.Printf("PEX reachability checks disabled: %v", err)
+	} else {
+		pex.prober = prober
+	}
+
 	// Connect to seed nodes
 	if err := pex.connectToSeeds(); err != nil {
+		pex.closeProber()
 		return err
 	}
 
@@ -275,6 +284,22 @@ func (pex *PeerExchange) Start(ctx context.Context) error {
 func (pex *PeerExchange) Stop() {
 	if pex.cancel != nil {
 		pex.cancel()
+	}
+	pex.closeProber()
+}
+
+func newProbeHost() (host.Host, error) {
+	return libp2p.New(
+		libp2p.NoListenAddrs,
+		libp2p.Transport(tcp.NewTCPTransport, tcp.DisableReuseport()),
+		libp2p.DisableRelay(),
+		libp2p.UserAgent("blocknet-probe"),
+	)
+}
+
+func (pex *PeerExchange) closeProber() {
+	if pex.prober != nil {
+		_ = pex.prober.Close()
 	}
 }
 
@@ -310,7 +335,6 @@ func (pex *PeerExchange) connectToSeeds() error {
 			if err == nil {
 				connected++
 				pex.addKnownPeer(seed.ID, seed.Addrs)
-				pex.markReached(seed.ID)
 			}
 		}
 
@@ -340,6 +364,7 @@ func (pex *PeerExchange) connectToSeeds() error {
 func (pex *PeerExchange) exchangeLoop() {
 	// Initial exchange after short delay
 	time.Sleep(5 * time.Second)
+	pex.checkConnectedPeers()
 
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
@@ -368,13 +393,7 @@ func (pex *PeerExchange) doExchange() {
 	// Pick random peers to exchange with (max 3, crypto/rand)
 	cryptoShuffle(peers)
 
-	for _, p := range peers {
-		if len(pex.outboundAddrs(p)) > 0 {
-			pex.markReached(p)
-		} else if pex.shouldProbe(p) {
-			go pex.probeInbound(p)
-		}
-	}
+	pex.checkConnectedPeers()
 
 	count := 3
 	if len(peers) < count {
@@ -634,18 +653,7 @@ func (pex *PeerExchange) tryConnect(pid peer.ID, addrs []multiaddr.Multiaddr) {
 	pi := peer.AddrInfo{ID: pid, Addrs: addrs}
 	if err := pex.node.host.Connect(ctx, pi); err == nil {
 		pex.updatePeerScore(pid, 1) // Successful connection
-		pex.markReached(pid)
 	}
-}
-
-func (pex *PeerExchange) outboundAddrs(pid peer.ID) []multiaddr.Multiaddr {
-	var addrs []multiaddr.Multiaddr
-	for _, c := range pex.node.host.Network().ConnsToPeer(pid) {
-		if c.Stat().Direction == network.DirOutbound {
-			addrs = append(addrs, c.RemoteMultiaddr())
-		}
-	}
-	return filterRoutableAddrs(addrs)
 }
 
 func (pex *PeerExchange) shouldProbe(pid peer.ID) bool {
@@ -663,30 +671,43 @@ func (pex *PeerExchange) shouldProbe(pid peer.ID) bool {
 	return true
 }
 
-func (pex *PeerExchange) probeInbound(pid peer.ID) {
+func (pex *PeerExchange) checkConnectedPeers() {
+	for _, p := range pex.node.host.Network().Peers() {
+		if pex.shouldProbe(p) {
+			go pex.probePeer(p)
+		}
+	}
+}
+
+func (pex *PeerExchange) probePeer(pid peer.ID) {
+	if pex.prober == nil {
+		return
+	}
+	candidates := filterRoutableAddrs(pex.node.host.Peerstore().Addrs(pid))
+	if len(candidates) > MaxPeerAddrsPerRecord {
+		candidates = candidates[:MaxPeerAddrsPerRecord]
+	}
 	var reached []multiaddr.Multiaddr
-	for _, a := range filterRoutableAddrs(pex.node.host.Peerstore().Addrs(pid)) {
+	for _, a := range candidates {
 		if _, err := a.ValueForProtocol(multiaddr.P_TCP); err != nil {
 			continue
 		}
-		proto, hostport, err := manet.DialArgs(a)
-		if err != nil {
-			continue
+		if pex.dialBack(pid, a) {
+			reached = append(reached, a)
 		}
-		ctx, cancel := context.WithTimeout(pex.ctx, 5*time.Second)
-		conn, err := (&net.Dialer{}).DialContext(ctx, proto, hostport)
-		cancel()
-		if err != nil {
-			continue
-		}
-		conn.Close()
-		reached = append(reached, a)
 	}
 	pex.markReachedAddrs(pid, reached)
 }
 
-func (pex *PeerExchange) markReached(pid peer.ID) {
-	pex.markReachedAddrs(pid, pex.outboundAddrs(pid))
+func (pex *PeerExchange) dialBack(pid peer.ID, addr multiaddr.Multiaddr) bool {
+	ps := pex.prober.Peerstore()
+	ps.ClearAddrs(pid)
+	ctx, cancel := context.WithTimeout(pex.ctx, 5*time.Second)
+	err := pex.prober.Connect(ctx, peer.AddrInfo{ID: pid, Addrs: []multiaddr.Multiaddr{addr}})
+	cancel()
+	_ = pex.prober.Network().ClosePeer(pid)
+	ps.ClearAddrs(pid)
+	return err == nil
 }
 
 func (pex *PeerExchange) markReachedAddrs(pid peer.ID, addrs []multiaddr.Multiaddr) {
@@ -764,6 +785,7 @@ func (pex *PeerExchange) getPeerRecords(max int) []PeerRecord {
 	defer pex.mu.RUnlock()
 
 	records := make([]PeerRecord, 0, max)
+	cutoff := time.Now().Add(-KnownPeerTTL).Unix()
 
 	// Add connected peers first (they're definitely reachable)
 	for _, p := range pex.node.Peers() {
@@ -771,26 +793,17 @@ func (pex *PeerExchange) getPeerRecords(max int) []PeerRecord {
 			break
 		}
 
-		addrs := pex.outboundAddrs(p)
-		if len(addrs) == 0 {
+		rec, ok := pex.knownPeers[p]
+		if !ok || rec.lastContact == 0 || rec.lastContact < cutoff {
 			continue
 		}
 
-		addrStrs := make([]string, len(addrs))
-		for i, a := range addrs {
-			addrStrs[i] = a.String()
-		}
-
-		records = append(records, PeerRecord{
-			ID:       p.String(),
-			Addrs:    addrStrs,
-			LastSeen: time.Now().Unix(),
-			Score:    10,
-		})
+		shared := *rec
+		shared.LastSeen = rec.lastContact
+		records = append(records, shared)
 	}
 
 	// Add from known peers
-	cutoff := time.Now().Add(-KnownPeerTTL).Unix()
 	for pid, rec := range pex.knownPeers {
 		if len(records) >= max {
 			break
