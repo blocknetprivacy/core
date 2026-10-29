@@ -7,6 +7,40 @@ import (
 	"time"
 )
 
+func TestReserveMatureInputsPrefersFewInputsAmongEligibleOutputs(t *testing.T) {
+	w := &Wallet{}
+	add := func(amount, height uint64, spent bool) *OwnedOutput {
+		out := &OwnedOutput{Amount: amount, BlockHeight: height, Spent: spent, OutputIndex: len(w.data.Outputs)}
+		w.data.Outputs = append(w.data.Outputs, out)
+		return out
+	}
+	for i := 0; i < 200; i++ {
+		add(1, 1, false)
+	}
+	add(200, 1, true)   // Spent exact match.
+	add(201, 95, false) // Immature single output.
+	filtered := add(202, 1, false)
+	w.inputFilter = func(out *OwnedOutput) bool { return out.OutputIndex == filtered.OutputIndex }
+	reserved := add(203, 1, false)
+	lease, _, err := w.ReserveSpecificInputs([]OutputRef{{OutputIndex: reserved.OutputIndex}}, 100, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.ReleaseInputLease(lease)
+	eligible := add(1000, 1, false)
+	selectionLease, selected, err := w.ReserveMatureInputs(100, 200, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.ReleaseInputLease(selectionLease)
+	if len(selected) != 1 || selected[0].OutputIndex != eligible.OutputIndex {
+		t.Fatalf("expected the single eligible large output, got %d inputs: %+v", len(selected), selected)
+	}
+	if _, _, err := w.ReserveSpecificInputs([]OutputRef{{OutputIndex: eligible.OutputIndex}}, 100, time.Minute); err == nil {
+		t.Fatal("selected output was not reserved")
+	}
+}
+
 func TestInputReservationLease_PreventsConcurrentSelectionAndReleases(t *testing.T) {
 	w := &Wallet{
 		inputReservations: make(map[reservedOutpoint]inputReservation),
@@ -357,4 +391,3 @@ func TestReserveSpecificInputs_SuccessReturnsDeepCopies(t *testing.T) {
 	}
 	w.ReleaseInputLease(lease2)
 }
-

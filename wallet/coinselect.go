@@ -15,8 +15,8 @@ var (
 
 const maxSelectedInputs = 256
 
-// SelectInputs chooses outputs to spend for a given target amount
-// Uses a combination of strategies to minimize fees and maximize privacy
+// SelectInputs covers the target with the fewest inputs, then tries to reduce
+// change without increasing that count. Equal-amount candidates are randomized.
 func SelectInputs(available []*OwnedOutput, targetAmount uint64) ([]*OwnedOutput, error) {
 	if len(available) == 0 {
 		return nil, ErrNoSpendableOutputs
@@ -41,19 +41,27 @@ func SelectInputs(available []*OwnedOutput, targetAmount uint64) ([]*OwnedOutput
 	// RandomShuffle no-ops and we fall back to deterministic behavior.
 	RandomShuffle(spendable)
 
-	// Try exact match first (best for privacy - no change output)
+	// Prefer one input even when a pair could avoid a change output. Among
+	// sufficient single outputs, choose the smallest; the shuffle breaks ties.
+	var single *OwnedOutput
+	for _, out := range spendable {
+		if out.Amount >= targetAmount && (single == nil || out.Amount < single.Amount) {
+			single = out
+		}
+	}
+	if single != nil {
+		return []*OwnedOutput{single}, nil
+	}
+
+	// With no sufficient single output, an exact pair has the minimum input
+	// count and avoids change.
 	if exact := findExactMatch(spendable, targetAmount); exact != nil {
 		return exact, nil
 	}
 
-	// Try smallest-first only when it can satisfy target within the tx input cap.
-	selected, ok := selectSmallestFirstCapped(spendable, targetAmount, maxSelectedInputs)
-	if ok {
-		return selected, nil
-	}
-
-	// Fallback to a mixed strategy that stays under input cap.
-	selected = selectMixed(spendable, targetAmount, maxSelectedInputs)
+	// Largest-first establishes the minimum count. The mixed strategy swaps
+	// individual inputs to reduce change without adding more inputs.
+	selected := selectMixed(spendable, targetAmount, maxSelectedInputs)
 	if selected != nil {
 		return selected, nil
 	}
@@ -109,86 +117,6 @@ func findExactMatch(outputs []*OwnedOutput, target uint64) []*OwnedOutput {
 	return nil
 }
 
-// selectSmallestFirst sorts by amount ascending and picks until target is reached
-// This tends to consolidate small UTXOs
-func selectSmallestFirst(outputs []*OwnedOutput, target uint64) []*OwnedOutput {
-	// Sort by amount (smallest first)
-	sorted := make([]*OwnedOutput, len(outputs))
-	copy(sorted, outputs)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Amount != sorted[j].Amount {
-			return sorted[i].Amount < sorted[j].Amount
-		}
-		// Tie-breaker: keep stable ordering for now; we'll shuffle equal-amount runs below.
-		return false
-	})
-
-	// Shuffle equal-amount runs so multiple same-amount UTXOs don't pick deterministically.
-	for i := 0; i < len(sorted); {
-		j := i + 1
-		for j < len(sorted) && sorted[j].Amount == sorted[i].Amount {
-			j++
-		}
-		if j-i > 1 {
-			// Fisher-Yates within [i, j)
-			for k := j - 1; k > i; k-- {
-				off, ok := randIndex(k - i + 1)
-				if !ok {
-					break // fail safe: stop shuffling this run
-				}
-				swap := i + off
-				sorted[k], sorted[swap] = sorted[swap], sorted[k]
-			}
-		}
-		i = j
-	}
-
-	var selected []*OwnedOutput
-	var total uint64
-
-	for _, out := range sorted {
-		selected = append(selected, out)
-		total += out.Amount
-		if total >= target {
-			return selected
-		}
-	}
-
-	return nil // shouldn't reach here if totalAvailable >= target
-}
-
-// selectSmallestFirstCapped mirrors smallest-first behavior but refuses
-// selections that need more than maxInputs.
-func selectSmallestFirstCapped(outputs []*OwnedOutput, target uint64, maxInputs int) ([]*OwnedOutput, bool) {
-	if maxInputs <= 0 {
-		return nil, false
-	}
-
-	sorted := make([]*OwnedOutput, len(outputs))
-	copy(sorted, outputs)
-	sort.Slice(sorted, func(i, j int) bool {
-		if sorted[i].Amount != sorted[j].Amount {
-			return sorted[i].Amount < sorted[j].Amount
-		}
-		return false
-	})
-
-	var selected []*OwnedOutput
-	var total uint64
-	for _, out := range sorted {
-		if len(selected) >= maxInputs {
-			return nil, false
-		}
-		selected = append(selected, out)
-		total += out.Amount
-		if total >= target {
-			return selected, true
-		}
-	}
-
-	return nil, false
-}
-
 // selectMixed starts with a capped largest-first set (fast to build),
 // then replaces some large inputs with smaller ones when possible.
 func selectMixed(outputs []*OwnedOutput, target uint64, maxInputs int) []*OwnedOutput {
@@ -215,7 +143,7 @@ func selectMixed(outputs []*OwnedOutput, target uint64, maxInputs int) []*OwnedO
 		}
 		candidates = append(candidates, out)
 	}
-	sort.Slice(candidates, func(i, j int) bool {
+	sort.SliceStable(candidates, func(i, j int) bool {
 		if candidates[i].Amount != candidates[j].Amount {
 			return candidates[i].Amount < candidates[j].Amount
 		}
@@ -223,7 +151,7 @@ func selectMixed(outputs []*OwnedOutput, target uint64, maxInputs int) []*OwnedO
 	})
 
 	// Keep selected ordered by largest first to replace expensive inputs first.
-	sort.Slice(selected, func(i, j int) bool {
+	sort.SliceStable(selected, func(i, j int) bool {
 		if selected[i].Amount != selected[j].Amount {
 			return selected[i].Amount > selected[j].Amount
 		}
@@ -257,7 +185,7 @@ func selectLargestFirstCapped(outputs []*OwnedOutput, target uint64, maxInputs i
 
 	sorted := make([]*OwnedOutput, len(outputs))
 	copy(sorted, outputs)
-	sort.Slice(sorted, func(i, j int) bool {
+	sort.SliceStable(sorted, func(i, j int) bool {
 		if sorted[i].Amount != sorted[j].Amount {
 			return sorted[i].Amount > sorted[j].Amount
 		}
