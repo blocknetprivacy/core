@@ -11,7 +11,7 @@ env:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -27,7 +27,8 @@ jobs:
 
   build-linux-amd64:
     needs: test
-    runs-on: ubuntu-latest
+    # Ubuntu 26.04's toolchain raises the binary's minimum CPU to x86-64-v3.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -40,6 +41,15 @@ jobs:
 
       - name: Build Go binary
         run: CGO_ENABLED=1 go build -ldflags="-s -w" -o blocknet-core-amd64-linux .
+
+      - name: Check baseline CPU compatibility
+        run: |
+          # Use QEMU 10 from Debian 13; Noble's QEMU 8.2 can crash reading /proc/self/maps.
+          docker run --rm -v "$PWD:/build:ro" -w /build debian:trixie-slim bash -euc '
+            apt-get update
+            apt-get install -y --no-install-recommends binutils qemu-user
+            bash .github/scripts/check-linux-amd64.sh ./blocknet-core-amd64-linux
+          '
 
       - name: Package
         run: |
