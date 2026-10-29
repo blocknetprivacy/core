@@ -31,6 +31,7 @@ var DefaultSeedHosts = []SeedHost{
 	{"blocknet.id", "12D3KooWLRJWWeBK3Fcd4zuw2GAC3SQEbMXpMFYedAkSWCShPeeM"},
 	{"toxicrainbows.com", "12D3KooWQLYYe5jVgeQ8qrqtZitD8r7HmdPvyM2n4RQ6wRMeZuk7"},
 	{"seed.bntpool.com", "12D3KooWJrLG1Y71bzVSTCpwyhjbJNUB8LjpWCYNQsMgEuWkH4LE"},
+	{"seed.longhornpool.net", "12D3KooWSTdNQFi3NuP9EgTHBSSDiPuk3uMT97JqYaqQuuyhBgJx"},
 }
 
 var DefaultTestnetSeedHosts = []SeedHost{

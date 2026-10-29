@@ -246,6 +246,7 @@ var DefaultSeedNodes = []string{
 	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWSQTy8rav5nmapgxomAMpSrigJTUXHmjH25dtHhGU3BAM",
 	"/ip4/135.181.47.224/tcp/28080/p2p/12D3KooWLRJWWeBK3Fcd4zuw2GAC3SQEbMXpMFYedAkSWCShPeeM",
 	"/ip4/69.164.251.242/tcp/28080/p2p/12D3KooWJrLG1Y71bzVSTCpwyhjbJNUB8LjpWCYNQsMgEuWkH4LE",
+	"/ip4/74.208.222.246/tcp/28080/p2p/12D3KooWSTdNQFi3NuP9EgTHBSSDiPuk3uMT97JqYaqQuuyhBgJx",
 }
 
 // DefaultTestnetSeedNodes are the hardcoded testnet bootstrap nodes.
