@@ -1659,6 +1659,7 @@ func (s *APIServer) handleUnloadWallet(w http.ResponseWriter, r *http.Request) {
 	s.cli.passwordHash = [32]byte{}
 	s.cli.passwordHashSet = false
 	s.cli.mu.Unlock()
+	s.cli.waitForWalletScans()
 
 	writeJSON(w, http.StatusOK, map[string]any{"unloaded": true})
 }
@@ -2956,61 +2957,40 @@ func (s *APIServer) catchUpScan() {
 	}
 
 	ctx := s.cli.ctx
-
-	if removed := rewindWalletToCanonicalTip(w, s.daemon.Chain()); removed > 0 {
-		if err := w.Save(); err != nil {
+	removed := s.cli.rewindScannedWallet(w)
+	if removed > 0 {
+		if err := s.cli.saveScannedWallet(w); err != nil {
 			log.Printf("Warning: catchUpScan reorg save: %v", err)
 		}
 	}
 
-	walletHeight := w.SyncedHeight()
-	chainHeight := s.daemon.Chain().Height()
-	if walletHeight >= chainHeight {
-		return
-	}
-
-	for h := walletHeight + 1; h <= chainHeight; h++ {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-
-		block := s.daemon.Chain().GetBlockByHeight(h)
-		if block == nil {
-			break
-		}
-		_, walletHash := w.SyncedBlock()
-		if walletSyncHashKnown(walletHash) && block.Header.PrevHash != walletHash {
-			if h <= 1 {
-				break
+	// While this runs the live block loop skips scanning; every step goes
+	// through syncWalletStep under walletScanMu and re-reads the chain tip, so
+	// blocks arriving meanwhile are picked up here. It stops once the wallet
+	// is unloaded or replaced.
+	catchUp := func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
 			}
-			if removed := w.RewindToHeight(h - 2); removed > 0 {
-				if err := w.Save(); err != nil {
-					log.Printf("Warning: catchUpScan reorg save at height %d: %v", h, err)
+			if !s.cli.scanWalletStep(w, sc) {
+				return
+			}
+			if h := w.SyncedHeight(); h%100 == 0 || h == s.daemon.Chain().Height() {
+				if err := s.cli.saveScannedWallet(w); err != nil {
+					log.Printf("Warning: catchUpScan save at height %d: %v", h, err)
 				}
 			}
-			h = w.SyncedHeight()
-			continue
-		}
-		sc.ScanBlock(blockToScanData(block))
-		w.ReconcileUnconfirmedSpends(func(txID [32]byte) bool {
-			return s.daemon.Mempool().HasTransaction(txID)
-		})
-		blockHash := block.Hash()
-		w.SetSyncedBlock(h, blockHash)
-
-		if h%100 == 0 || h == chainHeight {
-			if err := w.Save(); err != nil {
-				log.Printf("Warning: catchUpScan save at height %d: %v", h, err)
-			}
-		}
-
-		// Re-read chain height in case new blocks arrived during scan
-		if h == chainHeight {
-			chainHeight = s.daemon.Chain().Height()
 		}
 	}
+	s.cli.walletCatchUps.Add(1)
+	catchUp()
+	s.cli.walletCatchUps.Add(-1)
+	// A block the live loop skipped just before the count dropped is scanned
+	// here; later blocks are the live loop's again.
+	catchUp()
 }
 
 // ============================================================================
