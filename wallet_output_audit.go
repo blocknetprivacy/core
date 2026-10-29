@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/hex"
+	"log"
 
 	"blocknet/wallet"
 )
@@ -29,14 +30,47 @@ type walletCanonicalOutputIssue struct {
 }
 
 func auditWalletCanonicalOutputs(chain *Chain, outputs []*wallet.OwnedOutput) []walletCanonicalOutputIssue {
-	issues := make([]walletCanonicalOutputIssue, 0)
 	if chain == nil || len(outputs) == 0 {
-		return issues
+		return nil
 	}
 
+	// Probe all outputs through the storage indexes in one pass. Wallets
+	// holding ~100k outputs took over a minute here with one full block
+	// decode per output, which held up wallet load (and so pool templates)
+	// after every daemon restart. The per-output scan remains the fallback.
+	audited := make([]*wallet.OwnedOutput, 0, len(outputs))
+	probes := make([]canonicalOutputProbe, 0, len(outputs))
+	for _, out := range outputs {
+		if out == nil || out.OutputIndex < 0 {
+			continue
+		}
+		audited = append(audited, out)
+		probes = append(probes, canonicalOutputProbe{TxID: out.TxID, Height: out.BlockHeight, Index: out.OutputIndex})
+	}
+	var results []canonicalOutputProbeResult
+	if storage := chain.Storage(); storage != nil && len(probes) > 0 {
+		var err error
+		if results, err = storage.ProbeCanonicalOutputs(probes); err != nil {
+			log.Printf("Warning: indexed wallet output audit failed, scanning blocks instead: %v", err)
+			results = nil
+		}
+	}
+
+	issues := make([]walletCanonicalOutputIssue, 0)
+	next := 0
 	for _, out := range outputs {
 		if out == nil {
 			continue
+		}
+		if results != nil && out.OutputIndex >= 0 {
+			probe := results[next]
+			next++
+			// The index only clears outputs it finds exactly as recorded;
+			// anything else is judged by the original scan, so every issue
+			// reported is the one auditWalletCanonicalOutput would give.
+			if walletOutputMatchesProbe(out, probe) {
+				continue
+			}
 		}
 		if issue, ok := auditWalletCanonicalOutput(chain, out); ok {
 			issues = append(issues, issue)
@@ -45,8 +79,17 @@ func auditWalletCanonicalOutputs(chain *Chain, outputs []*wallet.OwnedOutput) []
 	return issues
 }
 
-func auditWalletCanonicalOutput(chain *Chain, out *wallet.OwnedOutput) (walletCanonicalOutputIssue, bool) {
-	base := walletCanonicalOutputIssue{
+// walletOutputMatchesProbe reports whether the canonical block at the
+// output's height holds its transaction with this exact output.
+func walletOutputMatchesProbe(out *wallet.OwnedOutput, probe canonicalOutputProbeResult) bool {
+	return probe.BlockFound && probe.TxFound &&
+		out.OutputIndex < probe.OutputCount &&
+		probe.PublicKey == out.OneTimePubKey &&
+		probe.Commitment == out.Commitment
+}
+
+func newWalletCanonicalOutputIssue(out *wallet.OwnedOutput) walletCanonicalOutputIssue {
+	return walletCanonicalOutputIssue{
 		Ref:         wallet.OutputRef{TxID: out.TxID, OutputIndex: out.OutputIndex},
 		TxID:        hex.EncodeToString(out.TxID[:]),
 		OutputIndex: out.OutputIndex,
@@ -56,6 +99,10 @@ func auditWalletCanonicalOutput(chain *Chain, out *wallet.OwnedOutput) (walletCa
 		OneTimePub:  hex.EncodeToString(out.OneTimePubKey[:]),
 		Commitment:  hex.EncodeToString(out.Commitment[:]),
 	}
+}
+
+func auditWalletCanonicalOutput(chain *Chain, out *wallet.OwnedOutput) (walletCanonicalOutputIssue, bool) {
+	base := newWalletCanonicalOutputIssue(out)
 
 	if out.OutputIndex < 0 {
 		base.Reason = walletOutputIssueNegativeIndex
