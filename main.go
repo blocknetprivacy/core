@@ -68,6 +68,7 @@ func main() {
 	testnet := flag.Bool("testnet", false, "Run on testnet (isolated network, different ports/data)")
 	dataDir := flag.String("data", DefaultDataDir, "Data directory")
 	apiAddr := flag.String("api", "", "API listen address (e.g. 127.0.0.1:8332)")
+	powCache := flag.Bool("pow-cache", true, "Keep the 2 GiB PoW buffer between hashes (set false for low-RAM servers)")
 	legacy := registerLegacySettingsFlags(flag.CommandLine)
 	registerRemovedCLIFlags(flag.CommandLine)
 	flag.Parse()
@@ -84,6 +85,11 @@ func main() {
 	if *version {
 		fmt.Println(Version)
 		return
+	}
+
+	if err := PowSetCacheEnabled(*powCache); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	if *testnet {
@@ -110,7 +116,7 @@ func main() {
 		if err := saveSettings(*dataDir, settings); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to save settings: %v\n", err)
 		}
-		fmt.Fprintln(os.Stderr, "Warning: startup flags other than --data, --testnet and --api are deprecated. Their values were saved to settings.json. Use GET and PATCH /api/settings.")
+		fmt.Fprintln(os.Stderr, "Warning: startup flags other than --data, --testnet, --api and --pow-cache are deprecated. Their values were saved to settings.json. Use GET and PATCH /api/settings.")
 	case !exists:
 		ids, err := configDirWhitelist()
 		if err != nil {

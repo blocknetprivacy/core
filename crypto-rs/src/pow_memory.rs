@@ -8,19 +8,43 @@ use std::sync::Mutex;
 
 pub(crate) struct MemoryPool {
     blocks: usize,
-    idle: Mutex<Option<Memory>>,
+    idle: Mutex<IdleMemory>,
+}
+
+struct IdleMemory {
+    enabled: bool,
+    memory: Option<Memory>,
 }
 
 impl MemoryPool {
     pub(crate) fn new(blocks: usize) -> Self {
         Self {
             blocks,
-            idle: Mutex::new(None),
+            idle: Mutex::new(IdleMemory {
+                enabled: true,
+                memory: None,
+            }),
         }
     }
 
+    pub(crate) fn set_cache_enabled(&self, enabled: bool) -> Result<(), ()> {
+        let released = {
+            let mut idle = self.idle.lock().map_err(|_| ())?;
+            idle.enabled = enabled;
+            if enabled {
+                None
+            } else {
+                idle.memory.take()
+            }
+        };
+        // Free an existing arena outside the cache lock. Active guards remain
+        // valid and observe the new policy when they return their arenas.
+        drop(released);
+        Ok(())
+    }
+
     pub(crate) fn checkout(&self) -> Result<MemoryGuard<'_>, ()> {
-        let cached = self.idle.lock().map_err(|_| ())?.take();
+        let cached = self.idle.lock().map_err(|_| ())?.memory.take();
         // Allocate outside the lock so a slow allocation does not block returns.
         let memory = match cached {
             Some(memory) => memory,
@@ -47,8 +71,8 @@ impl AsMut<[Block]> for MemoryGuard<'_> {
 impl Drop for MemoryGuard<'_> {
     fn drop(&mut self) {
         if let Ok(mut idle) = self.pool.idle.lock() {
-            if idle.is_none() {
-                *idle = self.memory.take();
+            if idle.enabled && idle.memory.is_none() {
+                idle.memory = self.memory.take();
             }
         }
         // Any surplus arena is freed after the cache lock is released.
@@ -169,6 +193,57 @@ mod tests {
     use blocknet_pow_kernel::{CpuKernel, FixedArgon2id};
 
     #[test]
+    fn disabled_cache_releases_idle_and_returned_arenas() {
+        let pool = MemoryPool::new(32);
+        let mut active = pool.checkout().unwrap();
+        active.as_mut()[0].as_mut()[0] = 42;
+        drop(pool.checkout().unwrap());
+        assert!(pool.idle.lock().unwrap().memory.is_some());
+
+        pool.set_cache_enabled(false).unwrap();
+        assert!(pool.idle.lock().unwrap().memory.is_none());
+        assert_eq!(active.as_mut()[0].as_ref()[0], 42);
+        drop(active);
+        drop(pool.checkout().unwrap());
+        assert!(pool.idle.lock().unwrap().memory.is_none());
+
+        pool.set_cache_enabled(true).unwrap();
+        drop(pool.checkout().unwrap());
+        assert!(pool.idle.lock().unwrap().memory.is_some());
+    }
+
+    #[test]
+    fn cache_modes_preserve_hashes() {
+        let pool = MemoryPool::new(4096);
+        let params = Params::new(4096, 1, 1, Some(32)).unwrap();
+        let reference = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        let hasher =
+            FixedArgon2id::with_kernel(4096, CpuKernel::preferred_for_verification()).unwrap();
+        for enabled in [true, false, false, true] {
+            pool.set_cache_enabled(enabled).unwrap();
+            for nonce in [0u64, 1, u64::MAX] {
+                let mut expected = [0u8; 32];
+                let mut actual = [0u8; 32];
+                reference
+                    .hash_password_into(&nonce.to_le_bytes(), b"test_header", &mut expected)
+                    .unwrap();
+                let mut memory = pool.checkout().unwrap();
+                hasher
+                    .hash_password_into_with_memory(
+                        &nonce.to_le_bytes(),
+                        b"test_header",
+                        &mut actual,
+                        memory.as_mut(),
+                    )
+                    .unwrap();
+                assert_eq!(actual, expected, "cache={enabled}, nonce={nonce}");
+                drop(memory);
+                assert_eq!(pool.idle.lock().unwrap().memory.is_some(), enabled);
+            }
+        }
+    }
+
+    #[test]
     fn reuse_and_concurrent_checkouts_keep_only_one_idle_arena() {
         let pool = MemoryPool::new(32);
         let mut a = pool.checkout().unwrap();
@@ -179,15 +254,16 @@ mod tests {
         drop(b);
         let mut reused = pool.checkout().unwrap();
         assert_eq!(ptr, reused.as_mut().as_ptr());
-        assert!(pool.idle.lock().unwrap().is_none());
+        assert!(pool.idle.lock().unwrap().memory.is_none());
         drop(reused);
-        assert!(pool.idle.lock().unwrap().is_some());
+        assert!(pool.idle.lock().unwrap().memory.is_some());
     }
 
     fn check_reference(mut memory: Memory, kib: u32) {
         let params = Params::new(kib, 1, 1, Some(32)).unwrap();
         let reference = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-        let hasher = FixedArgon2id::with_kernel(kib, CpuKernel::preferred_for_verification()).unwrap();
+        let hasher =
+            FixedArgon2id::with_kernel(kib, CpuKernel::preferred_for_verification()).unwrap();
         for header in [b"12345678".as_slice(), b"different_block_header".as_slice()] {
             for nonce in [0u64, 1, u64::MAX, 0] {
                 let mut expected = [0u8; 32];
@@ -229,9 +305,9 @@ mod tests {
                     barrier.wait();
                     let params = Params::new(4096, 1, 1, Some(32)).unwrap();
                     let reference = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-                    let hasher = FixedArgon2id::with_kernel(
-                        4096, CpuKernel::preferred_for_verification(),
-                    ).unwrap();
+                    let hasher =
+                        FixedArgon2id::with_kernel(4096, CpuKernel::preferred_for_verification())
+                            .unwrap();
                     let mut expected = [0u8; 32];
                     let mut actual = [0u8; 32];
                     reference
