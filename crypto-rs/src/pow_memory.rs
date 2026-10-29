@@ -2,7 +2,8 @@
 //!
 //! Cache at most one idle arena (2 GiB at production parameters). Concurrent
 //! callers still own separate arenas; surplus arenas are released on return.
-//! On Linux, idle pages may be reclaimed by the kernel under memory pressure.
+//! Linux allows lazy page reclamation; Windows releases the idle arena when
+//! the OS signals low available physical memory.
 
 use blocknet_pow_kernel::PowBlock as Block;
 use std::sync::{Arc, Condvar, Mutex};
@@ -16,6 +17,8 @@ pub(crate) struct MemoryPool {
     idle: Arc<Mutex<IdleMemory>>,
     wake: Arc<Condvar>,
     worker: Option<JoinHandle<()>>,
+    #[cfg(target_os = "windows")]
+    notifications: Option<Arc<windows::Notifications>>,
 }
 
 struct IdleMemory {
@@ -24,18 +27,34 @@ struct IdleMemory {
     reclaim_at: Option<Instant>,
     background: bool,
     stopping: bool,
+    #[cfg(target_os = "windows")]
+    pressure: bool,
 }
 
 impl MemoryPool {
     pub(crate) fn new(blocks: usize) -> Self {
+        Self::new_inner(
+            blocks,
+            #[cfg(target_os = "windows")]
+            windows::Notifications::new().map(Arc::new),
+        )
+    }
+
+    fn new_inner(
+        blocks: usize,
+        #[cfg(target_os = "windows")] notifications: Option<Arc<windows::Notifications>>,
+    ) -> Self {
         let idle = Arc::new(Mutex::new(IdleMemory {
             enabled: true,
             memory: None,
             reclaim_at: None,
-            background: false,
+            background: true,
             stopping: false,
+            #[cfg(target_os = "windows")]
+            pressure: false,
         }));
         let wake = Arc::new(Condvar::new());
+        #[cfg(not(target_os = "windows"))]
         let worker = if cfg!(target_os = "linux") {
             let idle = Arc::clone(&idle);
             let wake = Arc::clone(&wake);
@@ -46,12 +65,34 @@ impl MemoryPool {
         } else {
             None
         };
-        idle.lock().expect("new cache lock").background = worker.is_some();
+        #[cfg(target_os = "windows")]
+        let worker = notifications.as_ref().and_then(|notifications| {
+            let notifications = Arc::clone(notifications);
+            let idle = Arc::clone(&idle);
+            let wake = Arc::clone(&wake);
+            thread::Builder::new()
+                .name("pow-cache".into())
+                .spawn(move || windows::reclaim_idle_memory(idle, wake, notifications))
+                .ok()
+        });
+        if worker.is_none() {
+            idle.lock().expect("new cache lock").background = false;
+        }
         Self {
             blocks,
             idle,
             wake,
             worker,
+            #[cfg(target_os = "windows")]
+            notifications,
+        }
+    }
+
+    fn notify_worker(&self) {
+        self.wake.notify_one();
+        #[cfg(target_os = "windows")]
+        if let Some(notifications) = &self.notifications {
+            notifications.wake();
         }
     }
 
@@ -69,7 +110,7 @@ impl MemoryPool {
         // Free an existing arena outside the cache lock. Active guards remain
         // valid and observe the new policy when they return their arenas.
         drop(released);
-        self.wake.notify_one();
+        self.notify_worker();
         Ok(())
     }
 
@@ -96,13 +137,14 @@ impl Drop for MemoryPool {
         if let Ok(mut idle) = self.idle.lock() {
             idle.stopping = true;
         }
-        self.wake.notify_one();
+        self.notify_worker();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
         }
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn reclaim_idle_memory(cache: Arc<Mutex<IdleMemory>>, wake: Arc<Condvar>) {
     let Ok(mut idle) = cache.lock() else {
         return;
@@ -151,9 +193,14 @@ impl Drop for MemoryGuard<'_> {
     fn drop(&mut self) {
         let mut notify = false;
         if let Ok(mut idle) = self.pool.idle.lock() {
-            if idle.enabled && idle.memory.is_none() {
+            #[cfg(target_os = "windows")]
+            let can_cache = !idle.pressure;
+            #[cfg(not(target_os = "windows"))]
+            let can_cache = true;
+            if can_cache && idle.enabled && idle.memory.is_none() {
                 if let Some(memory) = self.memory.as_mut() {
-                    let background = idle.background && !matches!(memory, Memory::Heap(_));
+                    let background = idle.background
+                        && (cfg!(target_os = "windows") || !matches!(memory, Memory::Heap(_)));
                     if background || memory.prepare_for_idle() {
                         idle.memory = self.memory.take();
                         if background {
@@ -165,7 +212,7 @@ impl Drop for MemoryGuard<'_> {
             }
         }
         if notify {
-            self.pool.wake.notify_one();
+            self.pool.notify_worker();
         }
         // Any surplus arena is freed after the cache lock is released.
     }
@@ -177,15 +224,18 @@ enum Memory {
     Heap(Vec<Block>),
 }
 
+#[cfg(target_os = "windows")]
+#[path = "pow_memory_windows.rs"]
+mod windows;
+
 impl Memory {
     fn prepare_for_idle(&mut self) -> bool {
         match self {
             #[cfg(target_os = "linux")]
             Self::Mapped(mapping) => mapping.make_reclaimable(),
             // Heap pages cannot be discarded independently of the allocator.
-            // On Linux, release this fallback rather than retain pages that
-            // cannot participate in pressure-triggered reclamation.
-            Self::Heap(_) => !cfg!(target_os = "linux"),
+            // Without a native worker, release idle memory on Linux/Windows.
+            Self::Heap(_) => !cfg!(any(target_os = "linux", target_os = "windows")),
         }
     }
 
@@ -304,7 +354,7 @@ mod tests {
     use argon2::{Algorithm, Argon2, Params, Version};
     use blocknet_pow_kernel::{CpuKernel, FixedArgon2id};
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     #[test]
     fn idle_worker_marks_cached_memory_and_stops_with_pool() {
         let pool = MemoryPool::new(4096);
@@ -378,7 +428,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn heap_fallback_is_not_cached_on_linux() {
+    fn heap_fallback_is_not_cached() {
         let pool = MemoryPool::new(32);
         drop(MemoryGuard {
             pool: &pool,

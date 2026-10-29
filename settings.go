@@ -19,6 +19,7 @@ import (
 const settingsFilename = "settings.json"
 
 type Settings struct {
+	PowCache        bool     `json:"pow_cache"`
 	Listen          string   `json:"listen"`
 	Seed            bool     `json:"seed"`
 	FullSync        bool     `json:"full_sync"`
@@ -34,6 +35,7 @@ type Settings struct {
 }
 
 var restartSettings = []string{
+	"pow_cache",
 	"listen",
 	"seed",
 	"full_sync",
@@ -50,6 +52,7 @@ func settingsPath(dataDir string) string {
 
 func defaultSettings() Settings {
 	s := Settings{
+		PowCache:     true,
 		Listen:       "/ip4/0.0.0.0/tcp/28080",
 		WalletFile:   DefaultWalletFilename,
 		P2PWhitelist: []string{},

@@ -205,3 +205,57 @@ func TestPurgeKeepsSettings(t *testing.T) {
 		t.Fatalf("settings not kept after purge: err=%v", err)
 	}
 }
+
+func TestPowCacheSettingsDefaultAndPersistence(t *testing.T) {
+	dir := t.TempDir()
+	for _, contents := range []string{"", `{}`, `{"pow_cache":true}`, `{"pow_cache":false}`} {
+		if contents != "" {
+			if err := os.WriteFile(settingsPath(dir), []byte(contents), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		st, _, err := loadSettings(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := contents != `{"pow_cache":false}`
+		if st.PowCache != want {
+			t.Fatalf("%s: pow_cache=%v want %v", contents, st.PowCache, want)
+		}
+	}
+}
+
+func TestPowCacheSettingsPatchRequiresRestart(t *testing.T) {
+	s, _, dir := newSettingsTestServer(t)
+	for _, tc := range []struct {
+		body    string
+		enabled bool
+		restart []string
+	}{
+		{`{"pow_cache":false}`, false, []string{"pow_cache"}},
+		{`{"save_checkpoints":true}`, false, []string{"pow_cache"}},
+		{`{"pow_cache":null}`, true, []string{}},
+	} {
+		rr := patchSettings(t, s, tc.body)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("patch: %d %s", rr.Code, rr.Body.String())
+		}
+		var resp settingsResponse
+		if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if resp.Settings.PowCache != tc.enabled || !slices.Equal(resp.RestartRequired, tc.restart) {
+			t.Fatalf("patch %s: %+v", tc.body, resp)
+		}
+		stored, _, err := loadSettings(dir)
+		if err != nil || stored.PowCache != tc.enabled {
+			t.Fatalf("saved cache=%v err=%v", stored.PowCache, err)
+		}
+		if !s.cli.runningSettings.PowCache {
+			t.Fatal("restart-only setting changed running settings")
+		}
+	}
+	if rr := patchSettings(t, s, `{"pow_cache":"false"}`); rr.Code != http.StatusBadRequest {
+		t.Fatalf("invalid setting: %d", rr.Code)
+	}
+}
