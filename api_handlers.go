@@ -48,11 +48,15 @@ func (s *APIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		DaemonStats
 		PeerAddrs      []string                  `json:"peer_addrs"`
 		NetworkUpgrade networkUpgradeInfo        `json:"network_upgrade"`
+		UpdateNotice   string                    `json:"update_notice,omitempty"`
 		Wallet         *wallet.WalletDiagnostics `json:"wallet,omitempty"`
 	}{
 		DaemonStats:    s.daemon.Stats(),
 		PeerAddrs:      []string{},
 		NetworkUpgrade: currentNetworkUpgrade(),
+	}
+	if chain := s.daemon.Chain(); chain != nil {
+		resp.UpdateNotice = updateNotice(chain.Height())
 	}
 	if node := s.daemon.Node(); node != nil {
 		resp.PeerAddrs = node.FullMultiaddrs()
@@ -170,6 +174,7 @@ func (s *APIServer) handlePeers(w http.ResponseWriter, r *http.Request) {
 	type peerEntry struct {
 		PeerID string   `json:"peer_id"`
 		Addrs  []string `json:"addrs"`
+		Agent  string   `json:"agent,omitempty"`
 	}
 
 	entries := make([]peerEntry, len(infos))
@@ -177,6 +182,7 @@ func (s *APIServer) handlePeers(w http.ResponseWriter, r *http.Request) {
 		entries[i] = peerEntry{
 			PeerID: info.ID.String(),
 			Addrs:  info.Addrs,
+			Agent:  info.Agent,
 		}
 		if entries[i].Addrs == nil {
 			entries[i].Addrs = []string{}

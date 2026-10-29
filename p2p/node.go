@@ -100,6 +100,13 @@ func (n *Node) IsBanned(pid peer.ID) bool {
 	return n.pex.IsBanned(pid)
 }
 
+func (n *Node) IsWhitelisted(pid peer.ID) bool {
+	if n.pex == nil {
+		return false
+	}
+	return n.pex.IsWhitelisted(pid)
+}
+
 // BanPeer bans a peer for misbehavior
 func (n *Node) BanPeer(pid peer.ID, reason string) {
 	if n.pex == nil {
@@ -368,6 +375,7 @@ func (n *Node) Peers() []peer.ID {
 type PeerInfo struct {
 	ID    peer.ID
 	Addrs []string
+	Agent string
 }
 
 // PeerInfos returns connected peers with their remote multiaddrs.
@@ -376,6 +384,9 @@ func (n *Node) PeerInfos() []PeerInfo {
 	out := make([]PeerInfo, len(pids))
 	for i, pid := range pids {
 		info := PeerInfo{ID: pid}
+		if v, err := n.host.Peerstore().Get(pid, "AgentVersion"); err == nil {
+			info.Agent, _ = v.(string)
+		}
 		for _, conn := range n.host.Network().ConnsToPeer(pid) {
 			info.Addrs = append(info.Addrs, conn.RemoteMultiaddr().String())
 		}

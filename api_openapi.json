@@ -211,6 +211,10 @@
                             "notice": { "type": "string", "description": "Short notice text for users" }
                           }
                         },
+                        "update_notice": {
+                          "type": "string",
+                          "description": "Present only when this core version is more than about 6 months old, measured by the node's own chain height. Clients should show it to users."
+                        },
                         "wallet": { "$ref": "#/components/schemas/WalletDiagnostics" }
                       }
                     }
@@ -4280,11 +4284,16 @@
             "type": "array",
             "items": { "type": "string" },
             "description": "Remote multiaddrs of active connections to this peer"
+          },
+          "agent": {
+            "type": "string",
+            "description": "Software version the peer reported in its handshake, such as blocknet/0.23.0. Self-reported; omitted when unknown."
           }
         },
         "example": {
           "peer_id": "12D3KooWN7z3vEqr4C8pMk2axGfRbLVJzqPEasiY4L9DMqFjVnGq",
-          "addrs": ["/ip4/203.0.113.10/tcp/28080"]
+          "addrs": ["/ip4/203.0.113.10/tcp/28080"],
+          "agent": "blocknet/0.23.0"
         }
       },
       "BanEntry": {

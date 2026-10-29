@@ -66,6 +66,7 @@ type Daemon struct {
 	saveCheckpoints       atomic.Bool
 	checkpointsFile       string
 	lastCheckpointWritten uint64
+	fullSync              bool
 
 	// Self-heal info (set during NewDaemon if chain was truncated)
 	repairTruncatedTo uint64
@@ -243,20 +244,13 @@ type DaemonConfig struct {
 var DefaultSeedNodes = []string{
 	"/ip4/46.62.203.242/tcp/28080/p2p/12D3KooWQUNGJrsU5nRXNk45FT3ZumdtWC9Sg9Xt2AgU3XkP382R",
 	"/ip4/46.62.243.192/tcp/28080/p2p/12D3KooWSQTy8rav5nmapgxomAMpSrigJTUXHmjH25dtHhGU3BAM",
-	"/ip4/46.62.252.254/tcp/28080/p2p/12D3KooWCJzbwahELLrssLMbvxCXAp2HeeH1nPTYHH1kFERZxxb8",
-	"/ip4/46.62.202.165/tcp/28080/p2p/12D3KooWSAWJofx3Gk9Rbgs5UQFsUVCDkMDybr85v2j5gN3ocnUL",
-	"/ip4/46.62.249.240/tcp/28080/p2p/12D3KooWKSgY1tDEfTNXo7AEE3tzsrnieEHmcUjYJfGz1LF72UJt",
-	"/ip4/46.62.201.220/tcp/28080/p2p/12D3KooWPMeQZB8pJTavN6KXJ12LpMYfBSYDkV1md2xsYaWC8VMa",
+	"/ip4/135.181.47.224/tcp/28080/p2p/12D3KooWLRJWWeBK3Fcd4zuw2GAC3SQEbMXpMFYedAkSWCShPeeM",
 }
 
 // DefaultTestnetSeedNodes are the hardcoded testnet bootstrap nodes.
 var DefaultTestnetSeedNodes = []string{
 	"/ip4/46.62.203.242/tcp/38080/p2p/12D3KooWCEsiN7zKfWWq1rWVC9bseiDtnA1ohykXqJmmBvkQs7Sd",
 	"/ip4/46.62.243.192/tcp/38080/p2p/12D3KooWRowneDC78ZuMJEZiZ39x39yPZweh3CGKgo49C6KacL2H",
-	"/ip4/46.62.252.254/tcp/38080/p2p/12D3KooWSffcGmmgMM2G8sYWwdpdPKejWWk8nn5yHKAkaonH73Ap",
-	"/ip4/46.62.202.165/tcp/38080/p2p/12D3KooWRWTaJB23jPk6ZAv4WAHuwbW7DH29SNMDNVSkH5q6SQem",
-	"/ip4/46.62.249.240/tcp/38080/p2p/12D3KooWDKsiuCxjyLUQo2JnG9AA14EPrVPZrVMQaY4VFX5pbFXP",
-	"/ip4/46.62.201.220/tcp/38080/p2p/12D3KooWDFnzMzKEmhPgzgYYW3zrHcQcxvC6shRK6HA7XfFdvg7L",
 }
 
 // DefaultDaemonConfig returns sensible defaults
@@ -432,6 +426,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		node:                   node,
 		stealthKeys:            stealthKeys,
 		checkpointsFile:        checkpointsPath(cfg.DataDir),
+		fullSync:               cfg.FullSync,
 		repairTruncatedTo:      repairTruncatedTo,
 		repairViolations:       repairViolations,
 		repairFailed:           repairFailed,
@@ -613,11 +608,45 @@ func (d *Daemon) Start() error {
 	d.syncStartedAt.Store(&syncStartedAt)
 	d.syncMgr.Start(d.ctx)
 
+	if !d.fullSync {
+		go d.checkpointRefreshLoop()
+	}
+
 	if err := d.SetExplorerAddr(d.explorerAddr); err != nil {
 		log.Printf("Explorer error: %v", err)
 	}
 
 	return nil
+}
+
+func (d *Daemon) checkpointRefreshLoop() {
+	ticker := time.NewTicker(checkpointRefreshInterval)
+	defer ticker.Stop()
+	for {
+		d.refreshCheckpoints()
+		select {
+		case <-d.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (d *Daemon) refreshCheckpoints() {
+	if d.saveCheckpoints.Load() || d.checkpointsFile == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(d.ctx, 30*time.Second)
+	defer cancel()
+	res, err := refreshCheckpointsFile(ctx, d.checkpointsFile)
+	if err != nil {
+		log.Printf("Checkpoints refresh failed: %v", err)
+		return
+	}
+	if res.replaced {
+		d.chain.SetTrustedCheckpoints(res.checkpoints, res.maxHeight)
+		log.Printf("Checkpoints updated from %s (%d entries, max %d, old file saved as %s.bak)", checkpointsURL(), len(res.checkpoints), res.maxHeight, d.checkpointsFile)
+	}
 }
 
 // Stop gracefully shuts down the daemon

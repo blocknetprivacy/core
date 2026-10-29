@@ -203,6 +203,9 @@ func (c *CLI) Run() error {
 	c.printLogo()
 	fmt.Printf("  %s\n  %s\n\n", c.errorHead("Network upgrade notice"), networkUpgradeNotice)
 	height := c.daemon.Chain().Height()
+	if notice := updateNotice(height); notice != "" {
+		fmt.Printf("  %s\n  %s\n\n", c.errorHead("Update notice"), notice)
+	}
 
 	c.mu.RLock()
 	w := c.wallet

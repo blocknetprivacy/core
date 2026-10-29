@@ -126,17 +126,19 @@ func main() {
 	p2pPort := MainnetP2PPort
 	peerIDPort := MainnetPeerIDPort
 	fallbackSeeds := DefaultSeedNodes
+	seedHosts := DefaultSeedHosts
 	if *testnet {
 		p2pPort = TestnetP2PPort
 		peerIDPort = TestnetPeerIDPort
 		fallbackSeeds = DefaultTestnetSeedNodes
+		seedHosts = DefaultTestnetSeedHosts
 	}
 	// Seed lookups wait up to 3s on the slowest host, so they run alongside
 	// chain loading and are only awaited before P2P dialing, after the API is
 	// already serving.
 	seedsResolved := make(chan []string, 1)
 	go func() {
-		seedNodes := ResolveSeedNodes(DefaultSeedHosts, p2pPort, peerIDPort)
+		seedNodes := ResolveSeedNodes(seedHosts, p2pPort, peerIDPort)
 		if len(seedNodes) == 0 {
 			seedNodes = fallbackSeeds
 		}

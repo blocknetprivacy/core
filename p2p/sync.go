@@ -143,6 +143,66 @@ type SyncManager struct {
 	// peers spam status updates.
 	statusSyncCh          chan struct{}
 	statusSyncMinInterval time.Duration
+
+	resendMu       sync.Mutex
+	resends        map[peer.ID]map[uint64]*rangeResend
+	resendsPruneAt time.Time
+}
+
+const (
+	rangeResendWindow     = 30 * time.Minute
+	rangeResendLimit      = 10
+	rangeResendMaxPerPeer = 1024
+)
+
+type rangeResend struct {
+	count int
+	first time.Time
+}
+
+func (sm *SyncManager) rangeResendAllowed(pid peer.ID, start uint64, now time.Time) bool {
+	if sm.node != nil && sm.node.IsWhitelisted(pid) {
+		return true
+	}
+	sm.resendMu.Lock()
+	defer sm.resendMu.Unlock()
+	r := sm.resends[pid][start]
+	return r == nil || now.Sub(r.first) > rangeResendWindow || r.count < rangeResendLimit
+}
+
+func (sm *SyncManager) recordRangeSent(pid peer.ID, start uint64, now time.Time) {
+	sm.resendMu.Lock()
+	defer sm.resendMu.Unlock()
+	if sm.resends == nil {
+		sm.resends = make(map[peer.ID]map[uint64]*rangeResend)
+	}
+	if now.After(sm.resendsPruneAt) {
+		for p, byStart := range sm.resends {
+			for h, r := range byStart {
+				if now.Sub(r.first) > rangeResendWindow {
+					delete(byStart, h)
+				}
+			}
+			if len(byStart) == 0 {
+				delete(sm.resends, p)
+			}
+		}
+		sm.resendsPruneAt = now.Add(time.Minute)
+	}
+	byStart := sm.resends[pid]
+	if byStart == nil || len(byStart) >= rangeResendMaxPerPeer {
+		byStart = make(map[uint64]*rangeResend)
+		sm.resends[pid] = byStart
+	}
+	r := byStart[start]
+	if r == nil || now.Sub(r.first) > rangeResendWindow {
+		byStart[start] = &rangeResend{count: 1, first: now}
+		return
+	}
+	r.count++
+	if r.count == rangeResendLimit {
+		log.Printf("[sync] peer %s got blocks from %d %d times in %s; sending it empty replies for that range", pid, start, r.count, rangeResendWindow)
+	}
 }
 
 func (sm *SyncManager) penalizeInvalidBlockPeer(pid peer.ID, reason string) {
@@ -360,6 +420,12 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 		req.MaxBlocks = int(available)
 	}
 
+	from := s.Conn().RemotePeer()
+	if !sm.rangeResendAllowed(from, req.StartHeight, time.Now()) {
+		_ = writeMessage(s, SyncMsgBlocks, []byte("[]"))
+		return
+	}
+
 	blocks, err := sm.getBlocksByHeight(req.StartHeight, req.MaxBlocks)
 	if err != nil {
 		return
@@ -369,6 +435,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 	blocksData, _ := json.Marshal(blocks)
 	if err := writeMessage(s, SyncMsgBlocks, blocksData); err != nil {
 		return
+	}
+	if len(blocks) > 0 {
+		sm.recordRangeSent(from, req.StartHeight, time.Now())
 	}
 }
 
@@ -591,6 +660,7 @@ collectStatuses:
 		}
 	}
 
+	cryptoShuffle(syncPeers)
 	go sm.parallelSyncFrom(syncPeers, targetHeight)
 }
 

@@ -20,17 +20,28 @@ const (
 	TestnetPeerIDPort = 38081
 )
 
-var DefaultSeedHosts = []string{
-	"explorer.blocknetcrypto.com",
-	"bnt-0.blocknetcrypto.com",
-	"bnt-1.blocknetcrypto.com",
-	"toxicrainbows.com",
+type SeedHost struct {
+	Host   string
+	PeerID string
 }
 
-// ResolveSeedNodes fetches peer IDs from seed nodes' HTTP endpoints
-// and builds full multiaddrs. Accepts IPs or hostnames.
+var DefaultSeedHosts = []SeedHost{
+	{"explorer.blocknetcrypto.com", "12D3KooWQUNGJrsU5nRXNk45FT3ZumdtWC9Sg9Xt2AgU3XkP382R"},
+	{"bnt-0.blocknetcrypto.com", "12D3KooWSQTy8rav5nmapgxomAMpSrigJTUXHmjH25dtHhGU3BAM"},
+	{"blocknet.id", "12D3KooWLRJWWeBK3Fcd4zuw2GAC3SQEbMXpMFYedAkSWCShPeeM"},
+	{"toxicrainbows.com", "12D3KooWQLYYe5jVgeQ8qrqtZitD8r7HmdPvyM2n4RQ6wRMeZuk7"},
+}
+
+var DefaultTestnetSeedHosts = []SeedHost{
+	{"explorer.blocknetcrypto.com", "12D3KooWCEsiN7zKfWWq1rWVC9bseiDtnA1ohykXqJmmBvkQs7Sd"},
+	{"bnt-0.blocknetcrypto.com", "12D3KooWRowneDC78ZuMJEZiZ39x39yPZweh3CGKgo49C6KacL2H"},
+}
+
+// ResolveSeedNodes checks which seed hosts are up through their HTTP peer ID
+// endpoints and builds full multiaddrs from the pinned peer IDs. A host that
+// reports a different peer ID is skipped. Accepts IPs or hostnames.
 // Fetches run in parallel with a 3s timeout.
-func ResolveSeedNodes(hosts []string, p2pPort, peerIDPort int) []string {
+func ResolveSeedNodes(hosts []SeedHost, p2pPort, peerIDPort int) []string {
 	type result struct {
 		addr string
 	}
@@ -38,8 +49,8 @@ func ResolveSeedNodes(hosts []string, p2pPort, peerIDPort int) []string {
 	ch := make(chan result, len(hosts))
 	client := &http.Client{Timeout: 3 * time.Second}
 
-	for _, host := range hosts {
-		go func(host string) {
+	for _, seed := range hosts {
+		go func(host, pinned string) {
 			url := fmt.Sprintf("http://%s:%d/", host, peerIDPort)
 			resp, err := client.Get(url)
 			if err != nil {
@@ -57,12 +68,17 @@ func ResolveSeedNodes(hosts []string, p2pPort, peerIDPort int) []string {
 				ch <- result{}
 				return
 			}
+			if peerID != pinned {
+				log.Printf("Seed %s reported peer ID %s, expected %s; skipping it", host, peerID, pinned)
+				ch <- result{}
+				return
+			}
 			proto := "dns4"
 			if net.ParseIP(host) != nil {
 				proto = "ip4"
 			}
-			ch <- result{fmt.Sprintf("/%s/%s/tcp/%d/p2p/%s", proto, host, p2pPort, peerID)}
-		}(host)
+			ch <- result{fmt.Sprintf("/%s/%s/tcp/%d/p2p/%s", proto, host, p2pPort, pinned)}
+		}(seed.Host, seed.PeerID)
 	}
 
 	var seeds []string
