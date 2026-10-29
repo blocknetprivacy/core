@@ -1,9 +1,9 @@
-//! Scratch memory for the reference Argon2 implementation.
+//! Scratch memory for the fixed Argon2id kernel.
 //!
 //! Cache at most one idle arena (2 GiB at production parameters). Concurrent
 //! callers still own separate arenas; surplus arenas are released on return.
 
-use argon2::Block;
+use blocknet_pow_kernel::PowBlock as Block;
 use std::sync::Mutex;
 
 pub(crate) struct MemoryPool {
@@ -108,7 +108,7 @@ impl Mapping {
             return None;
         }
         // SAFETY: request a fresh private, zero-filled mapping. mmap's page
-        // alignment satisfies argon2::Block's 64-byte alignment; zero words
+        // alignment satisfies PowBlock's 64/128-byte alignment; zero words
         // are a valid Block, exactly as constructed by Block::default().
         let raw = unsafe {
             libc::mmap(
@@ -166,6 +166,7 @@ impl Drop for Mapping {
 mod tests {
     use super::*;
     use argon2::{Algorithm, Argon2, Params, Version};
+    use blocknet_pow_kernel::{CpuKernel, FixedArgon2id};
 
     #[test]
     fn reuse_and_concurrent_checkouts_keep_only_one_idle_arena() {
@@ -185,12 +186,13 @@ mod tests {
 
     fn check_reference(mut memory: Memory, kib: u32) {
         let params = Params::new(kib, 1, 1, Some(32)).unwrap();
-        let hasher = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        let reference = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+        let hasher = FixedArgon2id::with_kernel(kib, CpuKernel::preferred_for_verification()).unwrap();
         for header in [b"12345678".as_slice(), b"different_block_header".as_slice()] {
             for nonce in [0u64, 1, u64::MAX, 0] {
                 let mut expected = [0u8; 32];
                 let mut actual = [0u8; 32];
-                hasher
+                reference
                     .hash_password_into(&nonce.to_le_bytes(), header, &mut expected)
                     .unwrap();
                 hasher
@@ -226,10 +228,13 @@ mod tests {
                     let mut memory = pool.checkout().unwrap();
                     barrier.wait();
                     let params = Params::new(4096, 1, 1, Some(32)).unwrap();
-                    let hasher = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+                    let reference = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+                    let hasher = FixedArgon2id::with_kernel(
+                        4096, CpuKernel::preferred_for_verification(),
+                    ).unwrap();
                     let mut expected = [0u8; 32];
                     let mut actual = [0u8; 32];
-                    hasher
+                    reference
                         .hash_password_into(&nonce.to_le_bytes(), b"test_header", &mut expected)
                         .unwrap();
                     hasher
