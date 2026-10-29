@@ -812,7 +812,11 @@ func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
 	for _, view := range pageViews {
 		pageTxIDs = append(pageTxIDs, view.record.TxID)
 	}
-	txStates := s.walletSendChainStates(pageTxIDs, chainHeight)
+	txStates, err := s.walletSendChainStates(pageTxIDs, chainHeight)
+	if err != nil {
+		writeInternal(w, r, http.StatusInternalServerError, "unable to read transaction status", err)
+		return
+	}
 
 	sends := make([]sendEntry, 0, end-start)
 	for _, view := range pageViews {
@@ -3242,34 +3246,32 @@ type walletSendChainState struct {
 	inMempool     bool
 }
 
-func (s *APIServer) walletSendChainStates(txIDs [][32]byte, chainHeight uint64) map[[32]byte]walletSendChainState {
+func (s *APIServer) walletSendChainStates(txIDs [][32]byte, chainHeight uint64) (map[[32]byte]walletSendChainState, error) {
 	states := make(map[[32]byte]walletSendChainState, len(txIDs))
-	pending := make(map[[32]byte]struct{}, len(txIDs))
-
-	for _, txID := range txIDs {
-		if s.daemon.Mempool().HasTransaction(txID) {
-			states[txID] = walletSendChainState{chainState: "mempool", inMempool: true}
-			continue
+	pending := make([][32]byte, 0, len(txIDs))
+	for _, id := range txIDs {
+		if s.daemon.Mempool().HasTransaction(id) {
+			states[id] = walletSendChainState{chainState: "mempool", inMempool: true}
+		} else {
+			pending = append(pending, id)
 		}
-		pending[txID] = struct{}{}
 	}
-
-	for txID, height := range s.daemon.Chain().FindTxHeights(pending) {
-		confirmations := uint64(0)
-		if chainHeight >= height {
-			confirmations = chainHeight - height + 1
+	confirmed := map[[32]byte]uint64{}
+	if storage := s.daemon.Chain().Storage(); storage != nil && len(pending) > 0 {
+		var err error
+		confirmed, err = storage.CanonicalTransactionHeights(pending)
+		if err != nil {
+			return nil, err
 		}
-		states[txID] = walletSendChainState{
-			chainState:    "confirmed",
-			confirmations: confirmations,
+	}
+	for _, id := range pending {
+		if height, ok := confirmed[id]; ok && height <= chainHeight {
+			states[id] = walletSendChainState{chainState: "confirmed", confirmations: chainHeight - height + 1}
+		} else {
+			states[id] = walletSendChainState{chainState: "not_found"}
 		}
-		delete(pending, txID)
 	}
-
-	for txID := range pending {
-		states[txID] = walletSendChainState{chainState: "not_found"}
-	}
-	return states
+	return states, nil
 }
 
 // createTxBuilder creates a transaction builder wired to the daemon (same as CLI).
