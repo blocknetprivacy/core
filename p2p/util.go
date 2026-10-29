@@ -12,8 +12,10 @@ const (
 	// MaxMessageSize is the maximum size of a single message (16 MB)
 	MaxMessageSize = 16 * 1024 * 1024
 
-	// Stream-level payload hard caps.
-	MaxBlockStreamPayloadSize     = 2 * 1024 * 1024
+	// Stream-level payload hard caps. New blocks are announced as JSON, which
+	// writes each byte array as decimal numbers, so a block at the 1 MiB
+	// consensus limit can encode to about 4 MiB.
+	MaxBlockStreamPayloadSize     = 6 * 1024 * 1024
 	MaxTxStreamPayloadSize        = 1 * 1024 * 1024
 	MaxDandelionStreamPayloadSize = MaxTxStreamPayloadSize
 
