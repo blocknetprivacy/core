@@ -157,7 +157,7 @@ func (e *Explorer) handleBlockData(w http.ResponseWriter, r *http.Request) {
 		"block_time":    blockTime,
 		"difficulty":    b.Header.Difficulty,
 		"nonce":         b.Header.Nonce,
-		"reward":        GetBlockReward(height),
+		"reward":        coinbaseReward(b),
 		"fees":          blockFees(b),
 		"inputs":        ins,
 		"outputs":       outs,

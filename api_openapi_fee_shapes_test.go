@@ -226,3 +226,20 @@ func TestOpenAPIFeeAndBumpExamplesUseDocumentedFields(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenAPIBlockShapeMatchesHandler(t *testing.T) {
+	doc := loadOpenAPIDoc(t)
+	f := newBumpFixture(t, 30_000_000)
+	block := f.d.chain.GetBlockByHeight(0)
+	if block == nil {
+		t.Fatal("no genesis block")
+	}
+	out := blockToJSON(block, f.d.chain.Height())
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	_ = json.Unmarshal(raw, &got)
+	checkShape(t, doc, "Block", got)
+}

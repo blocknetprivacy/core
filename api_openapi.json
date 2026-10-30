@@ -321,7 +321,8 @@
                     }
                   ],
                   "confirmations": 1,
-                  "reward": 72325093035
+                  "reward": 72325093035,
+                  "fees": 0
                 }
               }
             }
@@ -3789,7 +3790,7 @@
         "operationId": "getBlockTemplate",
         "tags": ["Mining"],
         "summary": "Get block template for pool mining",
-        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce. PoW hash = Argon2id(password = nonce as 8 bytes little-endian, salt = header_base bytes), 32-byte output. The `block` field is the raw consensus form (PascalCase header keys, byte arrays as integer arrays), not the `GET /api/block` summary. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Its compact-submission lease expires at `template_expires_at_unix_ms`; clients may extend a live, current-tip lease with `POST /api/mining/renewtemplate`. The daemon retains at most 512 live leases for one tip and returns 503 rather than evicting a lease before its advertised expiry. Without `address`, requires a loaded wallet (for coinbase keys) but not an unlocked one; with `address`, no wallet is needed, so a pool gets templates as soon as a restarted daemon is serving.",
+        "description": "Returns a complete block template ready for proof-of-work solving. Includes a pre-built coinbase transaction (paying to the loaded wallet by default, or to the optional `address` override), selected mempool transactions, and the computed merkle root. The `target` field (hex) is the PoW target that the Argon2id hash must be less than. The `header_base` field (hex) is the 92-byte serialized header without the nonce. PoW hash = Argon2id(password = nonce as 8 bytes little-endian, salt = header_base bytes), 32-byte output. The `block` field is the raw consensus form (PascalCase header keys, byte arrays as integer arrays), not the `GET /api/block` summary. The `template_id` field identifies this template and can be used with compact submit payloads (`template_id` + `nonce`) via `POST /api/mining/submitblock`. Its compact-submission lease expires at `template_expires_at_unix_ms`; clients may extend a live, current-tip lease with `POST /api/mining/renewtemplate`. The daemon retains at most 512 live leases for one tip and returns 503 rather than evicting a lease before its advertised expiry. Without `address`, requires a loaded wallet (for coinbase keys) but not an unlocked one; with `address`, no wallet is needed, so a pool gets templates as soon as a restarted daemon is serving. From the Faraday height (103680) the coinbase pays the block reward plus the fees of the transactions in the template; before it, the block reward only.",
         "parameters": [
           {
             "name": "address",
@@ -4134,7 +4135,7 @@
         "operationId": "getEvents",
         "tags": ["Events"],
         "summary": "Real-time event stream (SSE)",
-        "description": "Server-Sent Events stream for real-time updates. On connection, emits a `connected` event with current chain state. Then streams `new_block` for every new block added to the chain and `mined_block` for every block accepted through `POST /api/mining/submitblock` or the built-in miner. Sends SSE comment keepalives every 30s. Write timeout is disabled for this long-lived connection.",
+        "description": "Server-Sent Events stream for real-time updates. On connection, emits a `connected` event with current chain state. Then streams `new_block` for every new block added to the chain and `mined_block` for every block accepted through `POST /api/mining/submitblock` or the built-in miner. Sends SSE comment keepalives every 30s. Write timeout is disabled for this long-lived connection. The `reward` in `mined_block` is what the block's coinbase pays: the block reward, plus the block's fees from the Faraday height (103680).",
         "responses": {
           "200": {
             "description": "SSE event stream (long-lived connection)",
@@ -4348,7 +4349,14 @@
             "description": "Transaction summaries (first tx is coinbase for height > 0)"
           },
           "confirmations": { "type": "integer", "description": "Confirmations since this block (chain_height - block_height + 1)" },
-          "reward": { "type": "integer", "description": "Block reward in atomic units (smooth exponential decay to 2.0 BNT tail)" }
+          "reward": {
+            "type": "integer",
+            "description": "What this block's coinbase pays the miner, in atomic units. Before the Faraday height (103680) this is the block reward (smooth exponential decay to a 2.0 BNT tail); from that height on it is the block reward plus fees."
+          },
+          "fees": {
+            "type": "integer",
+            "description": "Sum of the transaction fees in this block, in atomic units. From the Faraday height (103680) the coinbase claims them; before it they are burned."
+          }
         },
         "example": {
           "height": 14207,

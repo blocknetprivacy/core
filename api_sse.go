@@ -80,7 +80,7 @@ func (s *APIServer) handleEvents(w http.ResponseWriter, r *http.Request) {
 			if err := s.sendSSE(w, flusher, "mined_block", map[string]any{
 				"height": block.Header.Height,
 				"hash":   fmt.Sprintf("%x", block.Hash()),
-				"reward": GetBlockReward(block.Header.Height),
+				"reward": coinbaseReward(block),
 			}); err != nil {
 				return
 			}

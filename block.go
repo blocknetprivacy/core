@@ -308,7 +308,7 @@ func ValidateBlock(block *Block, chain *Chain) error {
 			return fmt.Errorf("invalid transaction %d: %w", i, err)
 		}
 	}
-	if err := validateCoinbaseConsensus(block.Transactions[0], header.Height); err != nil {
+	if err := validateBlockCoinbase(block); err != nil {
 		return fmt.Errorf("invalid coinbase consensus commitment: %w", err)
 	}
 
@@ -526,7 +526,7 @@ func validateBlockWithContext(
 			seenKeyImages[input.KeyImage] = struct{}{}
 		}
 	}
-	if err := validateCoinbaseConsensus(block.Transactions[0], header.Height); err != nil {
+	if err := validateBlockCoinbase(block); err != nil {
 		return fmt.Errorf("invalid coinbase consensus commitment: %w", err)
 	}
 
@@ -567,7 +567,18 @@ func validateGenesisBlock(block *Block) error {
 	return nil
 }
 
-func validateCoinbaseConsensus(coinbase *Transaction, blockHeight uint64) error {
+func validateBlockCoinbase(block *Block) error {
+	if block == nil || len(block.Transactions) == 0 {
+		return fmt.Errorf("coinbase missing")
+	}
+	expected, err := blockCoinbaseAmount(block)
+	if err != nil {
+		return err
+	}
+	return validateCoinbaseConsensus(block.Transactions[0], block.Header.Height, expected)
+}
+
+func validateCoinbaseConsensus(coinbase *Transaction, blockHeight uint64, expectedReward uint64) error {
 	if coinbase == nil {
 		return fmt.Errorf("coinbase missing")
 	}
@@ -575,7 +586,6 @@ func validateCoinbaseConsensus(coinbase *Transaction, blockHeight uint64) error 
 		return fmt.Errorf("expected exactly one output, got %d", len(coinbase.Outputs))
 	}
 
-	expectedReward := GetBlockReward(blockHeight)
 	expectedBlinding := deriveCoinbaseConsensusBlinding(coinbase.TxPublicKey, blockHeight, 0)
 	expectedCommitment, err := CreatePedersenCommitmentWithBlinding(expectedReward, expectedBlinding)
 	if err != nil {

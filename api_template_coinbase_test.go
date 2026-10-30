@@ -27,7 +27,7 @@ func TestTemplateCoinbasePrebuildIsUsedOnce(t *testing.T) {
 	if got != p.coinbase {
 		t.Fatal("take did not return the prebuilt coinbase")
 	}
-	if err := validateCoinbaseConsensus(got.Tx, key.height); err != nil {
+	if err := validateCoinbaseConsensus(got.Tx, key.height, GetBlockReward(key.height)); err != nil {
 		t.Fatalf("prebuilt coinbase invalid at its height: %v", err)
 	}
 

@@ -267,7 +267,7 @@ func TestCoinbaseConsensusRejectsNonEmptyMemoPayload(t *testing.T) {
 	}
 	cb.Tx.Outputs[0].EncryptedMemo = enc
 
-	err = validateCoinbaseConsensus(cb.Tx, 1)
+	err = validateCoinbaseConsensus(cb.Tx, 1, GetBlockReward(1))
 	if err == nil {
 		t.Fatal("expected coinbase with non-empty memo payload to be rejected")
 	}

@@ -427,7 +427,7 @@ func (e *Explorer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		"MapJSON":       e.chainMapJSON(),
 		"LatestTxs":     e.latestTransfers(explorerIndexBlockRows),
 		"Reward":        fmt.Sprintf("%.2f", float64(GetBlockReward(height))/100_000_000),
-		"FaradayHeight": networkUpgradeHeight,
+		"FaradayHeight": params.FaradayHeight,
 		"FaradayLeft":   faradayBlocksLeft(height),
 		"UpgradeDate":   networkUpgradeDate,
 	}
@@ -530,7 +530,7 @@ func (e *Explorer) handleBlock(w http.ResponseWriter, r *http.Request) {
 		"Ts":            block.Header.Timestamp,
 		"Confirmations": confirmations,
 		"Final":         confirmations > uint64(MaxReorgDepth),
-		"Reward":        float64(GetBlockReward(block.Header.Height)) / 100_000_000,
+		"Reward":        float64(coinbaseReward(block)) / 100_000_000,
 		"IsGenesis":     block.Header.Height == 0,
 		"GenesisMsg":    genesisMsg,
 		"BlockTime":     blockTime,

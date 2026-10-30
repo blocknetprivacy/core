@@ -2875,6 +2875,20 @@ func (s *APIServer) handleBlockTemplate(w http.ResponseWriter, r *http.Request) 
 	txs, mempoolGeneration := s.daemon.Mempool().GetTransactionsForBlockSnapshot(blockSpaceForTransactions(coinbase.Tx), 1000)
 	txs = s.daemon.Mempool().KeepSpendableOnChain(txs)
 
+	// From the Faraday height the coinbase also pays the fees of the
+	// transactions in the block, so it is built again for this selection.
+	if coinbaseClaimsFees(tp.Height) && len(txs) > 0 {
+		space := blockSpaceForTransactions(coinbase.Tx)
+		coinbase, err = createBlockCoinbase(recipientSpendPub, recipientViewPub, tp.Height, txs)
+		if err == nil && blockSpaceForTransactions(coinbase.Tx) != space {
+			err = fmt.Errorf("coinbase size changed with the fee amount")
+		}
+		if err != nil {
+			writeInternal(w, r, http.StatusInternalServerError, "internal error", err)
+			return
+		}
+	}
+
 	// Build transaction list (coinbase first)
 	allTxs := make([]*Transaction, 0, len(txs)+1)
 	allTxs = append(allTxs, coinbase.Tx)
@@ -3349,7 +3363,8 @@ func blockToJSON(block *Block, chainHeight uint64) map[string]any {
 		"tx_count":      len(block.Transactions),
 		"transactions":  txs,
 		"confirmations": confirmations,
-		"reward":        GetBlockReward(block.Header.Height),
+		"reward":        coinbaseReward(block),
+		"fees":          blockFees(block),
 	}
 }
 
