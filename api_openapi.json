@@ -1763,6 +1763,30 @@
                   "key_too_long": {
                     "summary": "Idempotency key over 128 chars",
                     "value": { "error": "idempotency key too long" }
+                  },
+                  "bad_fee": {
+                    "summary": "Bad extra_fee_per_byte",
+                    "value": {
+                      "error": "extra_fee_per_byte must be a whole number, 0 or more"
+                    }
+                  },
+                  "fee_too_large": {
+                    "summary": "Fee math would overflow",
+                    "value": {
+                      "error": "extra_fee_per_byte is too large"
+                    }
+                  },
+                  "insufficient_fee": {
+                    "summary": "Not enough funds once the fee is added",
+                    "value": {
+                      "error": "insufficient funds: 25 BNT to send plus a fee of about 0.0024465 BNT (50 per byte) needs 25.0024465 BNT, and 25.001 BNT is spendable"
+                    }
+                  },
+                  "too_many_coins": {
+                    "summary": "Needs more than 256 inputs",
+                    "value": {
+                      "error": "this send needs more than 256 coins in one transaction. Lower the amount or the fee priority"
+                    }
                   }
                 }
               }
@@ -2065,6 +2089,18 @@
                   "bad_split": {
                     "summary": "change_split above 4",
                     "value": { "error": "change_split must be 1-4" }
+                  },
+                  "bad_fee": {
+                    "summary": "Bad extra_fee_per_byte",
+                    "value": {
+                      "error": "extra_fee_per_byte must be a whole number, 0 or more"
+                    }
+                  },
+                  "fee_too_large": {
+                    "summary": "Fee math would overflow",
+                    "value": {
+                      "error": "extra_fee_per_byte is too large"
+                    }
                   }
                 }
               }
@@ -2158,32 +2194,40 @@
           "Wallet"
         ],
         "summary": "Speed up a pending send (replace-by-fee)",
-        "description": "Rebuilds a pending send of this wallet at a higher fee and replaces it in the mempool. The new transaction spends the same coins with the same ring members, pays the same recipients, and may add coins when the change cannot cover the higher fee. The fee rate is at least the old rate plus base_fee_per_byte, even if extra_fee_per_byte asks for less. Nodes that do not support replacement keep the old transaction. Supports dry_run and an Idempotency-Key header.",
+        "description": "Rebuilds a pending send of this wallet at a higher fee and replaces it in the mempool. The new transaction spends the same coins with the same ring members, pays the same recipients and memos, and may add coins when the change cannot cover the higher fee. The fee rate is at least the old rate (rounded up) plus base_fee_per_byte, even if extra_fee_per_byte asks for less; fee_per_byte in the response is the rate used. The old send record gets replaced_by and a new record gets replaces; GET /api/wallet/sends shows only the newest with a bumps count. A send to a $handle can be bumped only if the wallet saved the address the handle resolved to. Nodes that do not support replacement keep the old transaction. Requires an unlocked full wallet.",
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. If the node stopped while the request was running, its outcome is unknown: the key shows state `accepted` in the status route and returns 409 with an interrupted message until it expires."
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "required": [
-                  "txid"
-                ],
-                "properties": {
-                  "txid": {
-                    "type": "string",
-                    "pattern": "^[A-Fa-f0-9]{64}$",
-                    "description": "The pending send to speed up (its newest txid)"
-                  },
-                  "extra_fee_per_byte": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "default": 0,
-                    "description": "Atomic units per byte added to base_fee_per_byte, as for /api/wallet/send"
-                  },
-                  "dry_run": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Preview the new fee and the cost of the bump without sending"
+                "$ref": "#/components/schemas/BumpRequest"
+              },
+              "examples": {
+                "preview": {
+                  "summary": "Preview a bump to fast",
+                  "value": {
+                    "txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+                    "extra_fee_per_byte": 10,
+                    "dry_run": true
+                  }
+                },
+                "send": {
+                  "summary": "Send the bump",
+                  "value": {
+                    "txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+                    "extra_fee_per_byte": 10
                   }
                 }
               }
@@ -2192,46 +2236,38 @@
         },
         "responses": {
           "200": {
-            "description": "Bump sent (or dry-run preview)",
+            "description": "Bump sent, or a dry-run preview",
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "properties": {
-                    "txid": {
-                      "type": "string",
-                      "description": "The new transaction. Absent in dry_run mode."
-                    },
-                    "old_txid": {
-                      "type": "string",
-                      "description": "The transaction that was replaced"
-                    },
-                    "fee": {
-                      "type": "integer",
-                      "description": "New fee in atomic units"
-                    },
-                    "fee_per_byte": {
-                      "type": "integer",
-                      "description": "New fee rate in atomic units per byte"
-                    },
-                    "old_fee": {
-                      "type": "integer",
-                      "description": "Fee of the replaced transaction"
-                    },
-                    "bump_cost": {
-                      "type": "integer",
-                      "description": "fee minus old_fee"
-                    },
-                    "change": {
-                      "type": "integer",
-                      "description": "Change returned to the wallet"
-                    },
-                    "input_count": {
-                      "type": "integer",
-                      "description": "Number of coins spent, including any added"
-                    },
-                    "dry_run": {
-                      "type": "boolean"
+                  "$ref": "#/components/schemas/BumpResponse"
+                },
+                "examples": {
+                  "preview": {
+                    "summary": "Dry run",
+                    "value": {
+                      "old_txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+                      "fee": 97860,
+                      "fee_per_byte": 20,
+                      "old_fee": 48930,
+                      "bump_cost": 48930,
+                      "change": 499902140,
+                      "input_count": 1,
+                      "dry_run": true
+                    }
+                  },
+                  "sent": {
+                    "summary": "Bump sent",
+                    "value": {
+                      "txid": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
+                      "old_txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+                      "fee": 97860,
+                      "fee_per_byte": 20,
+                      "old_fee": 48930,
+                      "bump_cost": 48930,
+                      "change": 499902140,
+                      "input_count": 1,
+                      "dry_run": false
                     }
                   }
                 }
@@ -2239,16 +2275,214 @@
             }
           },
           "400": {
-            "description": "Bad txid, bad extra_fee_per_byte, or not enough funds for the higher fee"
+            "description": "Invalid request, or not enough funds for the higher fee",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "bad_txid": {
+                    "summary": "Malformed txid",
+                    "value": {
+                      "error": "txid must be 64 hex characters"
+                    }
+                  },
+                  "bad_fee": {
+                    "summary": "Bad extra_fee_per_byte",
+                    "value": {
+                      "error": "extra_fee_per_byte must be a whole number, 0 or more"
+                    }
+                  },
+                  "fee_too_large": {
+                    "summary": "Fee math would overflow",
+                    "value": {
+                      "error": "extra_fee_per_byte is too large"
+                    }
+                  },
+                  "insufficient": {
+                    "summary": "Not enough funds",
+                    "value": {
+                      "error": "insufficient funds: 25 BNT to send plus a fee of about 0.0024465 BNT (50 per byte) needs 25.0024465 BNT, and 25.001 BNT is spendable"
+                    }
+                  },
+                  "too_many_coins": {
+                    "summary": "Needs more than 256 inputs",
+                    "value": {
+                      "error": "this send needs more than 256 coins in one transaction. Lower the amount or the fee priority"
+                    }
+                  },
+                  "key_too_long": {
+                    "summary": "Idempotency key over 128 chars",
+                    "value": {
+                      "error": "idempotency key too long"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Wallet locked or view-only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "locked": {
+                    "summary": "Locked",
+                    "value": {
+                      "error": "wallet is locked"
+                    }
+                  },
+                  "view_only": {
+                    "summary": "View-only",
+                    "value": {
+                      "error": "view-only wallet cannot send"
+                    }
+                  }
+                }
+              }
+            }
           },
           "404": {
-            "description": "This wallet has no send with that txid"
+            "description": "This wallet has no send with that txid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "unknown": {
+                    "summary": "Unknown txid",
+                    "value": {
+                      "error": "this wallet has no send with that txid"
+                    }
+                  }
+                }
+              }
+            }
           },
           "409": {
-            "description": "The send cannot be sped up: it is not in the mempool, it was already sped up, or it went to a handle with no saved address"
+            "description": "The send cannot be bumped, or an idempotency conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "not_pending": {
+                    "summary": "Not in the mempool",
+                    "value": {
+                      "error": "this send is not in the mempool, so it cannot be sped up. It may have confirmed or dropped out"
+                    }
+                  },
+                  "already_bumped": {
+                    "summary": "Bumped before",
+                    "value": {
+                      "error": "this send was already sped up; speed up its newest txid c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5 instead"
+                    }
+                  },
+                  "handle": {
+                    "summary": "Handle without a saved address",
+                    "value": {
+                      "error": "this send went to a handle and has no saved address, so it cannot be sped up"
+                    }
+                  },
+                  "coins_missing": {
+                    "summary": "Wallet lost track of the coins",
+                    "value": {
+                      "error": "the wallet cannot find the coins this send spent, so it cannot be sped up"
+                    }
+                  },
+                  "replacement_refused": {
+                    "summary": "Mempool refused the replacement",
+                    "value": {
+                      "error": "mempool rejected: double-spend: key image already in mempool (tx 5d0dd597...); a replacement needs a fee rate of at least 20 per byte, this one pays 15"
+                    }
+                  },
+                  "mismatch": {
+                    "summary": "Same key, different payload",
+                    "value": {
+                      "error": "idempotency key reuse with different request"
+                    }
+                  },
+                  "inflight": {
+                    "summary": "Same key still running",
+                    "value": {
+                      "error": "idempotency key in progress"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The bump was built but the mempool rejected it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "full": {
+                    "summary": "Mempool full",
+                    "value": {
+                      "error": "mempool rejected: mempool full"
+                    }
+                  }
+                }
+              }
+            }
           },
           "429": {
-            "description": "Send rate limit exceeded or send busy"
+            "description": "Rate limited (shares the send limit: about 1 per 2 s per IP, burst 2, one at a time)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "rate": {
+                    "summary": "Per-IP rate limit",
+                    "value": {
+                      "error": "send rate limit exceeded"
+                    }
+                  },
+                  "busy": {
+                    "summary": "Another send is running",
+                    "value": {
+                      "error": "send busy, retry later"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Transaction build or broadcast failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "build": {
+                    "summary": "Build failed",
+                    "value": {
+                      "error": "internal error"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "$ref": "#/components/responses/NoWallet"
           }
         },
         "security": [
@@ -4557,7 +4791,7 @@
         "properties": {
           "txid": {
             "type": "string",
-            "description": "Transaction hash (64 hex chars)"
+            "description": "Transaction hash (64 hex chars). For a bumped send this is the newest txid; if an older version confirmed instead (or is the one still in the mempool), it is that older txid."
           },
           "timestamp": {
             "type": "integer",
@@ -5197,6 +5431,71 @@
           "hash_count": 8532,
           "blocks_found": 12,
           "started_at": "2026-02-06T14:00:00Z"
+        }
+      },
+      "BumpRequest": {
+        "type": "object",
+        "required": [
+          "txid"
+        ],
+        "properties": {
+          "txid": {
+            "type": "string",
+            "pattern": "^[A-Fa-f0-9]{64}$",
+            "description": "The pending send to speed up (its newest txid)"
+          },
+          "extra_fee_per_byte": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Atomic units per byte added to base_fee_per_byte, as for /api/wallet/send. The rate used is never below the minimum for a bump."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "default": false,
+            "description": "Build the bump and report its fee without sending it"
+          }
+        }
+      },
+      "BumpResponse": {
+        "type": "object",
+        "properties": {
+          "txid": {
+            "type": "string",
+            "description": "The new transaction (64 hex chars). Absent when dry_run is true."
+          },
+          "old_txid": {
+            "type": "string",
+            "description": "The transaction that is replaced"
+          },
+          "fee": {
+            "type": "integer",
+            "description": "New fee in atomic units"
+          },
+          "fee_per_byte": {
+            "type": "integer",
+            "description": "Fee rate used, in atomic units per byte"
+          },
+          "old_fee": {
+            "type": "integer",
+            "description": "Fee of the replaced transaction"
+          },
+          "bump_cost": {
+            "type": "integer",
+            "description": "fee minus old_fee"
+          },
+          "change": {
+            "type": "integer",
+            "description": "Change returned to the wallet in atomic units"
+          },
+          "input_count": {
+            "type": "integer",
+            "description": "Number of coins spent, including any coins added"
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "Whether this was a preview"
+          }
         }
       }
     },
