@@ -73,31 +73,39 @@ func addFundedWalletOutput(t *testing.T, w *wallet.Wallet, amount uint64, txidSe
 
 func seedCanonicalSpendableOutput(t *testing.T, chain *Chain, storage *Storage, w *wallet.Wallet, amount uint64) {
 	t.Helper()
+	seedCanonicalSpendableOutputs(t, chain, storage, w, amount)
+}
+
+func seedCanonicalSpendableOutputs(t *testing.T, chain *Chain, storage *Storage, w *wallet.Wallet, amounts ...uint64) {
+	t.Helper()
 
 	genesis := chain.GetBlockByHeight(0)
 	if genesis == nil {
 		t.Fatal("expected genesis block")
 	}
 
-	realKP, err := GenerateRistrettoKeypair()
-	if err != nil {
-		t.Fatalf("failed to generate real input keypair: %v", err)
-	}
-	realCommit, err := CreatePedersenCommitment(amount)
-	if err != nil {
-		t.Fatalf("failed to create real input commitment: %v", err)
-	}
-
 	var outputs []TxOutput
 	var newOutputs []*UTXO
-
-	var realMemo [wallet.MemoSize]byte
-	realMemo[0] = 0x01
-	outputs = append(outputs, TxOutput{
-		PublicKey:     realKP.PublicKey,
-		Commitment:    realCommit.Commitment,
-		EncryptedMemo: realMemo,
-	})
+	realKPs := make([]*RistrettoKeypair, len(amounts))
+	realCommits := make([]*PedersenCommitment, len(amounts))
+	for i, amount := range amounts {
+		realKP, err := GenerateRistrettoKeypair()
+		if err != nil {
+			t.Fatalf("failed to generate real input keypair: %v", err)
+		}
+		realCommit, err := CreatePedersenCommitment(amount)
+		if err != nil {
+			t.Fatalf("failed to create real input commitment: %v", err)
+		}
+		realKPs[i], realCommits[i] = realKP, realCommit
+		var realMemo [wallet.MemoSize]byte
+		realMemo[0] = 0x01
+		outputs = append(outputs, TxOutput{
+			PublicKey:     realKP.PublicKey,
+			Commitment:    realCommit.Commitment,
+			EncryptedMemo: realMemo,
+		})
+	}
 
 	for i := 0; i < RingSize*3; i++ {
 		kp, err := GenerateRistrettoKeypair()
@@ -155,18 +163,20 @@ func seedCanonicalSpendableOutput(t *testing.T, chain *Chain, storage *Storage, 
 		t.Fatalf("failed to commit funding block: %v", err)
 	}
 
-	w.AddOutput(&wallet.OwnedOutput{
-		TxID:           txid,
-		OutputIndex:    0,
-		Amount:         amount,
-		Blinding:       realCommit.Blinding,
-		OneTimePrivKey: realKP.PrivateKey,
-		OneTimePubKey:  realKP.PublicKey,
-		Commitment:     realCommit.Commitment,
-		BlockHeight:    1,
-		IsCoinbase:     false,
-		Spent:          false,
-	})
+	for i, amount := range amounts {
+		w.AddOutput(&wallet.OwnedOutput{
+			TxID:           txid,
+			OutputIndex:    i,
+			Amount:         amount,
+			Blinding:       realCommits[i].Blinding,
+			OneTimePrivKey: realKPs[i].PrivateKey,
+			OneTimePubKey:  realKPs[i].PublicKey,
+			Commitment:     realCommits[i].Commitment,
+			BlockHeight:    1,
+			IsCoinbase:     false,
+			Spent:          false,
+		})
+	}
 }
 
 func TestHandleSendIdempotencyKeyReplayAndMismatch(t *testing.T) {

@@ -59,7 +59,11 @@ func (c *CLI) walletLoaded(w *wallet.Wallet) bool {
 func (c *CLI) scanWalletStep(w *wallet.Wallet, sc *wallet.Scanner) bool {
 	c.walletScanMu.Lock()
 	defer c.walletScanMu.Unlock()
-	return c.walletLoaded(w) && syncWalletStep(c.daemon.Chain(), c.daemon.Mempool(), w, sc)
+	if !c.walletLoaded(w) {
+		return false
+	}
+	restorePendingSends(c.daemon.SubmitTransaction, c.daemon.Mempool().HasTransaction, w)
+	return syncWalletStep(c.daemon.Chain(), c.daemon.Mempool(), w, sc)
 }
 
 // rewindScannedWallet serializes the initial reorg check with scanning and unload.

@@ -480,7 +480,7 @@
         "operationId": "getMempool",
         "tags": ["Blockchain"],
         "summary": "Mempool statistics",
-        "description": "Returns mempool transaction count, total size in bytes, and fee statistics (min, max, average) in atomic units.",
+        "description": "Returns mempool transaction count, total size in bytes, fee statistics (min, max, average) in atomic units, and the base fee rate and minimum fee for wallet sends.",
         "responses": {
           "200": {
             "description": "Mempool stats",
@@ -495,7 +495,9 @@
                   "generation": 42,
                   "min_fee": 10000,
                   "max_fee": 25000,
-                  "avg_fee": 14600.0
+                  "avg_fee": 14600.0,
+                  "base_fee_per_byte": 10,
+                  "min_tx_fee": 1000
                 }
               }
             }
@@ -1683,7 +1685,7 @@
         "operationId": "sendFunds",
         "tags": ["Wallet"],
         "summary": "Send funds",
-        "description": "Builds a privacy-preserving transaction with one or more recipients using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_fee, fee_per_byte * tx_size). Note: multi-recipient transactions link all recipients within the same transaction from a graph-analysis perspective. Requires unlocked full wallet (not view-only).",
+        "description": "Builds a privacy-preserving transaction with one or more recipients using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * tx_size), using the values from GET /api/mempool. Note: multi-recipient transactions link all recipients within the same transaction from a graph-analysis perspective. Requires unlocked full wallet (not view-only).",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -2147,6 +2149,113 @@
           },
           "503": { "$ref": "#/components/responses/NoWallet" }
         }
+      }
+    },
+    "/api/wallet/send/bump": {
+      "post": {
+        "operationId": "bumpSend",
+        "tags": [
+          "Wallet"
+        ],
+        "summary": "Speed up a pending send (replace-by-fee)",
+        "description": "Rebuilds a pending send of this wallet at a higher fee and replaces it in the mempool. The new transaction spends the same coins with the same ring members, pays the same recipients, and may add coins when the change cannot cover the higher fee. The fee rate is at least the old rate plus base_fee_per_byte, even if extra_fee_per_byte asks for less. Nodes that do not support replacement keep the old transaction. Supports dry_run and an Idempotency-Key header.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "txid"
+                ],
+                "properties": {
+                  "txid": {
+                    "type": "string",
+                    "pattern": "^[A-Fa-f0-9]{64}$",
+                    "description": "The pending send to speed up (its newest txid)"
+                  },
+                  "extra_fee_per_byte": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "default": 0,
+                    "description": "Atomic units per byte added to base_fee_per_byte, as for /api/wallet/send"
+                  },
+                  "dry_run": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Preview the new fee and the cost of the bump without sending"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bump sent (or dry-run preview)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "txid": {
+                      "type": "string",
+                      "description": "The new transaction. Absent in dry_run mode."
+                    },
+                    "old_txid": {
+                      "type": "string",
+                      "description": "The transaction that was replaced"
+                    },
+                    "fee": {
+                      "type": "integer",
+                      "description": "New fee in atomic units"
+                    },
+                    "fee_per_byte": {
+                      "type": "integer",
+                      "description": "New fee rate in atomic units per byte"
+                    },
+                    "old_fee": {
+                      "type": "integer",
+                      "description": "Fee of the replaced transaction"
+                    },
+                    "bump_cost": {
+                      "type": "integer",
+                      "description": "fee minus old_fee"
+                    },
+                    "change": {
+                      "type": "integer",
+                      "description": "Change returned to the wallet"
+                    },
+                    "input_count": {
+                      "type": "integer",
+                      "description": "Number of coins spent, including any added"
+                    },
+                    "dry_run": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad txid, bad extra_fee_per_byte, or not enough funds for the higher fee"
+          },
+          "404": {
+            "description": "This wallet has no send with that txid"
+          },
+          "409": {
+            "description": "The send cannot be sped up: it is not in the mempool, it was already sped up, or it went to a handle with no saved address"
+          },
+          "429": {
+            "description": "Send rate limit exceeded or send busy"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/wallet/send/advanced/status": {
@@ -4216,7 +4325,9 @@
           "generation": { "type": "integer", "format": "int64", "description": "Monotonic content generation; changes whenever transactions are added or removed" },
           "min_fee": { "type": "integer", "description": "Lowest fee in the mempool (atomic units, 0 when empty)" },
           "max_fee": { "type": "integer", "description": "Highest fee in the mempool (atomic units, 0 when empty)" },
-          "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" }
+          "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" },
+          "base_fee_per_byte": { "type": "integer", "description": "Base fee rate this node charges for wallet sends, in atomic units per byte. extra_fee_per_byte is added to it." },
+          "min_tx_fee": { "type": "integer", "description": "Lowest fee a wallet send pays, in atomic units, whatever its size" }
         },
         "example": {
           "count": 5,
@@ -4224,7 +4335,9 @@
           "generation": 17,
           "min_fee": 10000,
           "max_fee": 25000,
-          "avg_fee": 14600.0
+          "avg_fee": 14600.0,
+          "base_fee_per_byte": 10,
+          "min_tx_fee": 1000
         }
       },
       "StatsResponse": {
@@ -4479,7 +4592,8 @@
             "type": "array",
             "items": { "$ref": "#/components/schemas/WalletSendHistoryRecipient" },
             "description": "Recipient metadata recorded locally by the sending wallet"
-          }
+          },
+          "bumps": { "type": "integer", "description": "How many times this send was sped up. Omitted when 0." }
         },
         "example": {
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
@@ -4708,6 +4822,12 @@
             "items": { "$ref": "#/components/schemas/SendRecipient" },
             "description": "One or more recipients. Total amount must not exceed spendable balance."
           },
+          "extra_fee_per_byte": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Atomic units per byte added to the base fee rate (base_fee_per_byte from GET /api/mempool). The fee is max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size). There is no upper limit; a value so large that the fee overflows is rejected. Miners fill blocks by fee rate, highest first, so a higher value confirms sooner when blocks are full."
+          },
           "dry_run": {
             "type": "boolean",
             "default": false,
@@ -4729,6 +4849,7 @@
         "properties": {
           "txid": { "type": "string", "description": "Transaction hash (64 hex chars). Absent when dry_run is true." },
           "fee": { "type": "integer", "description": "Fee paid (or estimated) in atomic units" },
+          "fee_per_byte": { "type": "integer", "description": "Fee rate used, in atomic units per byte: base_fee_per_byte + extra_fee_per_byte" },
           "change": { "type": "integer", "description": "Change returned to wallet in atomic units" },
           "dry_run": { "type": "boolean", "description": "Whether this was a dry run (fee preview only)" },
           "input_total": { "type": "integer", "description": "Total value of selected inputs in atomic units. Present when dry_run is true." },
@@ -4839,6 +4960,12 @@
             },
             "description": "Specific outputs to use as transaction inputs. No automatic selection is performed. Each output must be unspent, mature, unreserved, and not have its key image in the mempool."
           },
+          "extra_fee_per_byte": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0,
+            "description": "Atomic units per byte added to the base fee rate (base_fee_per_byte from GET /api/mempool). The fee is max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size). There is no upper limit; a value so large that the fee overflows is rejected. Miners fill blocks by fee rate, highest first, so a higher value confirms sooner when blocks are full."
+          },
           "dry_run": {
             "type": "boolean",
             "default": false,
@@ -4873,7 +5000,11 @@
           },
           "fee": {
             "type": "integer",
-            "description": "Fee in atomic units (computed as max(min_fee, fee_per_byte * estimated_size))"
+            "description": "Fee in atomic units (computed as max(min_tx_fee, fee_per_byte * estimated_size))"
+          },
+          "fee_per_byte": {
+            "type": "integer",
+            "description": "Fee rate used, in atomic units per byte: base_fee_per_byte + extra_fee_per_byte"
           },
           "change": {
             "type": "integer",

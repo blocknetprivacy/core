@@ -1,6 +1,11 @@
 package main
 
-import "blocknet/wallet"
+import (
+	"strings"
+	"time"
+
+	"blocknet/wallet"
+)
 
 func walletSyncHashKnown(hash [32]byte) bool {
 	return hash != ([32]byte{})
@@ -58,6 +63,27 @@ func rewindWalletToCanonicalTip(w *wallet.Wallet, chain *Chain) int {
 // It returns false when w is already at the tip (or the next block is not
 // available). Callers hold CLI.walletScanMu so that the live block loop and a
 // catch-up scan advance one shared cursor; each step re-reads w's tip.
+func restorePendingSends(submit func([]byte) error, inMempool func([32]byte) bool, w *wallet.Wallet) int {
+	restored := 0
+	for _, p := range w.PendingRawSends() {
+		if inMempool(p.TxID) {
+			continue
+		}
+		if time.Since(time.Unix(p.Timestamp, 0)) > DefaultMempoolConfig().ExpirationTime {
+			w.ClearRawSend(p.TxID)
+			continue
+		}
+		if err := submit(p.RawTx); err != nil {
+			if msg := err.Error(); !strings.Contains(msg, "mempool full") && !strings.Contains(msg, "size limit") {
+				w.ClearRawSend(p.TxID)
+			}
+			continue
+		}
+		restored++
+	}
+	return restored
+}
+
 func syncWalletStep(chain *Chain, mempool *Mempool, w *wallet.Wallet, sc *wallet.Scanner) bool {
 	walletHeight, walletHash := w.SyncedBlock()
 	if walletHeight >= chain.Height() {

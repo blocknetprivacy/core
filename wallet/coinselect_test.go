@@ -70,15 +70,15 @@ func TestSelectInputsLimitsAndSpentOutputs(t *testing.T) {
 	if _, err := SelectInputs([]*OwnedOutput{{Amount: 100, Spent: true}, {Amount: 1}}, 2); !errors.Is(err, ErrInsufficientFunds) {
 		t.Fatalf("spent balance must be excluded: %v", err)
 	}
-	available := make([]*OwnedOutput, maxSelectedInputs+1)
+	available := make([]*OwnedOutput, MaxSelectedInputs+1)
 	for i := range available {
 		available[i] = &OwnedOutput{Amount: 1}
 	}
-	selected, err := SelectInputs(available, maxSelectedInputs)
-	if err != nil || len(selected) != maxSelectedInputs {
+	selected, err := SelectInputs(available, MaxSelectedInputs)
+	if err != nil || len(selected) != MaxSelectedInputs {
 		t.Fatalf("at input cap: selected %d inputs, err=%v", len(selected), err)
 	}
-	if _, err := SelectInputs(available, maxSelectedInputs+1); !errors.Is(err, ErrInputLimitExceeded) {
+	if _, err := SelectInputs(available, MaxSelectedInputs+1); !errors.Is(err, ErrInputLimitExceeded) {
 		t.Fatalf("above input cap: %v", err)
 	}
 }

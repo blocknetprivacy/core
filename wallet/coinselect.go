@@ -13,7 +13,7 @@ var (
 	ErrInputLimitExceeded = errors.New("input limit exceeded")
 )
 
-const maxSelectedInputs = 256
+const MaxSelectedInputs = 256
 
 // SelectInputs covers the target with the fewest inputs, then tries to reduce
 // change without increasing that count. Equal-amount candidates are randomized.
@@ -61,7 +61,7 @@ func SelectInputs(available []*OwnedOutput, targetAmount uint64) ([]*OwnedOutput
 
 	// Largest-first establishes the minimum count. The mixed strategy swaps
 	// individual inputs to reduce change without adding more inputs.
-	selected := selectMixed(spendable, targetAmount, maxSelectedInputs)
+	selected := selectMixed(spendable, targetAmount, MaxSelectedInputs)
 	if selected != nil {
 		return selected, nil
 	}

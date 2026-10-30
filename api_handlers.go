@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -152,7 +153,11 @@ func (s *APIServer) handleTx(w http.ResponseWriter, r *http.Request) {
 // handleMempool returns mempool stats.
 // GET /api/mempool
 func (s *APIServer) handleMempool(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.daemon.Mempool().Stats())
+	writeJSON(w, http.StatusOK, struct {
+		MempoolStats
+		BaseFeePerByte uint64 `json:"base_fee_per_byte"`
+		MinTxFee       uint64 `json:"min_tx_fee"`
+	}{s.daemon.Mempool().Stats(), sendFeePerByte, sendMinFee})
 }
 
 // handleMempoolTxs returns all mempool transactions as full tx objects.
@@ -761,6 +766,7 @@ func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
 		Fee            uint64               `json:"fee"`
 		TotalAmount    uint64               `json:"total_amount"`
 		Recipients     []sendRecipientEntry `json:"recipients"`
+		Bumps          int                  `json:"bumps,omitempty"`
 	}
 
 	type sendRecordView struct {
@@ -771,8 +777,26 @@ func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
 	records := s.wallet.SendRecords()
 	views := make([]sendRecordView, 0, len(records))
 	seen := make(map[[32]byte]struct{}, len(records))
+	byTxID := make(map[[32]byte]*wallet.SendRecord, len(records))
 	for _, record := range records {
-		if record == nil {
+		if record != nil {
+			byTxID[record.TxID] = record
+		}
+	}
+	bumpChain := func(record *wallet.SendRecord) [][32]byte {
+		chain := [][32]byte{record.TxID}
+		for cur := record; cur.Replaces != nil && len(chain) <= len(records); {
+			chain = append(chain, *cur.Replaces)
+			prev, ok := byTxID[*cur.Replaces]
+			if !ok {
+				break
+			}
+			cur = prev
+		}
+		return chain
+	}
+	for _, record := range records {
+		if record == nil || record.ReplacedBy != nil {
 			continue
 		}
 		if _, ok := seen[record.TxID]; ok {
@@ -813,8 +837,11 @@ func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
 	chainHeight := s.daemon.Chain().Height()
 	pageViews := views[start:end]
 	pageTxIDs := make([][32]byte, 0, len(pageViews))
+	chains := make(map[[32]byte][][32]byte, len(pageViews))
 	for _, view := range pageViews {
-		pageTxIDs = append(pageTxIDs, view.record.TxID)
+		chain := bumpChain(view.record)
+		chains[view.record.TxID] = chain
+		pageTxIDs = append(pageTxIDs, chain...)
 	}
 	txStates, err := s.walletSendChainStates(pageTxIDs, chainHeight)
 	if err != nil {
@@ -825,7 +852,18 @@ func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
 	sends := make([]sendEntry, 0, end-start)
 	for _, view := range pageViews {
 		record := view.record
+		txid := view.txid
 		txState := txStates[record.TxID]
+		chain := chains[record.TxID]
+		if txState.chainState == "not_found" {
+			for _, older := range chain[1:] {
+				if st := txStates[older]; st.chainState != "not_found" {
+					txState = st
+					txid = fmt.Sprintf("%x", older)
+					break
+				}
+			}
+		}
 
 		rawRecipients := record.GetRecipients()
 		recipients := make([]sendRecipientEntry, 0, len(rawRecipients))
@@ -841,7 +879,8 @@ func (s *APIServer) handleSends(w http.ResponseWriter, r *http.Request) {
 		}
 
 		sends = append(sends, sendEntry{
-			TxID:           view.txid,
+			TxID:           txid,
+			Bumps:          len(chain) - 1,
 			Timestamp:      record.Timestamp,
 			RecordedHeight: record.BlockHeight,
 			ChainState:     txState.chainState,
@@ -1022,6 +1061,43 @@ type validatedRecipient struct {
 
 const maxChangeSplit = 4
 
+const maxSendFeeRate = math.MaxUint64 / MaxBlockSize
+
+func (s *APIServer) sendFundsError(err error, height, totalSend, fee, feeRate uint64) (string, bool) {
+	if errors.Is(err, wallet.ErrInputLimitExceeded) {
+		return fmt.Sprintf("this send needs more than %d coins in one transaction. Lower the amount or the fee priority", wallet.MaxSelectedInputs), true
+	}
+	if !errors.Is(err, wallet.ErrInsufficientFunds) && !errors.Is(err, wallet.ErrNoSpendableOutputs) &&
+		!strings.Contains(err.Error(), "insufficient funds") {
+		return "", false
+	}
+	spendable := formatAmount(s.wallet.SpendableBalance(height))
+	msg := fmt.Sprintf("insufficient funds: %s to send plus the fee at %d per byte is more than the %s that is spendable",
+		formatAmount(totalSend), feeRate, spendable)
+	if need, ok := wallet.AddU64(totalSend, fee); ok && fee > 0 {
+		msg = fmt.Sprintf("insufficient funds: %s to send plus a fee of about %s (%d per byte) needs %s, and %s is spendable",
+			formatAmount(totalSend), formatAmount(fee), feeRate, formatAmount(need), spendable)
+	}
+	if pending := s.wallet.PendingBalance(height); pending > 0 {
+		msg += fmt.Sprintf(" (%s more is still confirming)", formatAmount(pending))
+	}
+	return msg, true
+}
+
+func sendFeeRate(raw json.RawMessage) (uint64, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return sendFeePerByte, nil
+	}
+	extra, err := strconv.ParseUint(string(raw), 10, 64)
+	if err != nil && !errors.Is(err, strconv.ErrRange) {
+		return 0, fmt.Errorf("extra_fee_per_byte must be a whole number, 0 or more")
+	}
+	if err != nil || extra > maxSendFeeRate-sendFeePerByte {
+		return 0, fmt.Errorf("extra_fee_per_byte is too large")
+	}
+	return sendFeePerByte + extra, nil
+}
+
 // validateRecipients resolves addresses, parses memos,
 // and returns wallet.Recipient values ready for the builder.
 func (s *APIServer) validateRecipients(raw []recipientRequest) ([]validatedRecipient, uint64, error) {
@@ -1119,6 +1195,9 @@ func buildSendRecipients(validated []validatedRecipient) []wallet.SendRecipient 
 			Address: v.RawAddress,
 			Amount:  v.Amount,
 			Memo:    v.Memo,
+		}
+		if v.ResolvedInfo != nil {
+			out[i].ResolvedAddress = v.ResolvedInfo.Address
 		}
 	}
 	return out
@@ -1266,11 +1345,17 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Recipients []recipientRequest `json:"recipients"`
-		DryRun     bool               `json:"dry_run"`
+		Recipients      []recipientRequest `json:"recipients"`
+		DryRun          bool               `json:"dry_run"`
+		ExtraFeePerByte json.RawMessage    `json:"extra_fee_per_byte"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	feeRate, err := sendFeeRate(req.ExtraFeePerByte)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1296,7 +1381,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 
 	if req.DryRun {
 		fee := sendMinFee
-		for i := 0; i < 4; i++ {
+		for i := 0; i < 16; i++ {
 			need, ok := wallet.AddU64(totalSend, fee)
 			if !ok {
 				writeError(w, http.StatusBadRequest, "send amount + fee overflows")
@@ -1304,7 +1389,11 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 			}
 			lease, inputs, err := s.wallet.ReserveMatureInputs(height, need, 2*time.Second)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient funds: %v", err))
+				if msg, ok := s.sendFundsError(err, height, totalSend, fee, feeRate); ok {
+					writeError(w, http.StatusBadRequest, msg)
+				} else {
+					writeError(w, http.StatusBadRequest, fmt.Sprintf("insufficient funds: %v", err))
+				}
 				return
 			}
 			s.wallet.ReleaseInputLease(lease)
@@ -1323,28 +1412,34 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 				outputCount = len(validated)
 			}
 			estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
-			requiredFee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+			requiredFee := max(sendMinFee, uint64(estimatedSize)*feeRate)
 			if requiredFee <= fee {
 				change := inputTotal - totalSend - fee
 				writeJSON(w, http.StatusOK, map[string]any{
-					"dry_run":     true,
-					"fee":         fee,
-					"change":      change,
-					"input_total": inputTotal,
-					"input_count": len(inputs),
-					"recipients":  buildRecipientResults(validated),
+					"dry_run":      true,
+					"fee":          fee,
+					"fee_per_byte": feeRate,
+					"change":       change,
+					"input_total":  inputTotal,
+					"input_count":  len(inputs),
+					"recipients":   buildRecipientResults(validated),
 				})
 				return
 			}
 			fee = requiredFee
 		}
-		writeError(w, http.StatusBadRequest, "fee estimation did not converge")
+		msg, _ := s.sendFundsError(wallet.ErrInsufficientFunds, height, totalSend, fee, feeRate)
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
 	builder := s.createTxBuilder()
-	result, err := builder.Transfer(toWalletRecipients(validated), sendFeePerByte, height)
+	result, err := builder.Transfer(toWalletRecipients(validated), feeRate, height)
 	if err != nil {
+		if msg, ok := s.sendFundsError(err, height, totalSend, 0, feeRate); ok {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
 		writeSendError(w, r, err)
 		return
 	}
@@ -1365,6 +1460,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		Recipients:  buildSendRecipients(validated),
 		Fee:         result.Fee,
 		BlockHeight: height,
+		RawTx:       result.TxData,
 	})
 	if result.Change > 0 {
 		s.wallet.AddPendingCredit(result.TxID, result.Change)
@@ -1374,11 +1470,12 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]any{
-		"txid":       fmt.Sprintf("%x", result.TxID),
-		"fee":        result.Fee,
-		"change":     result.Change,
-		"dry_run":    false,
-		"recipients": buildRecipientResults(validated),
+		"txid":         fmt.Sprintf("%x", result.TxID),
+		"fee":          result.Fee,
+		"fee_per_byte": feeRate,
+		"change":       result.Change,
+		"dry_run":      false,
+		"recipients":   buildRecipientResults(validated),
 	}
 	respBody, err := encodeJSONResponse(resp)
 	if err != nil {
@@ -1473,16 +1570,23 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Recipients  []recipientRequest `json:"recipients"`
-		DryRun      bool               `json:"dry_run"`
-		ChangeSplit int                `json:"change_split"`
-		Inputs      []struct {
+		Recipients      []recipientRequest `json:"recipients"`
+		DryRun          bool               `json:"dry_run"`
+		ChangeSplit     int                `json:"change_split"`
+		ExtraFeePerByte json.RawMessage    `json:"extra_fee_per_byte"`
+		Inputs          []struct {
 			TxID        string `json:"txid"`
 			OutputIndex int    `json:"output_index"`
 		} `json:"inputs"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+
+	feeRate, err := sendFeeRate(req.ExtraFeePerByte)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1553,7 +1657,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	if req.DryRun {
 		outputCount := len(validated) + changeSplit
 		estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
-		fee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+		fee := max(sendMinFee, uint64(estimatedSize)*feeRate)
 
 		need, ok := wallet.AddU64(totalSend, fee)
 		if !ok || inputTotal < need {
@@ -1567,6 +1671,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"dry_run":      true,
 			"fee":          fee,
+			"fee_per_byte": feeRate,
 			"change":       change,
 			"change_split": int(min(uint64(changeSplit), change)),
 			"input_total":  inputTotal,
@@ -1578,7 +1683,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 
 	releaseLease = false
 	builder := s.createTxBuilder()
-	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit, height)
+	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), feeRate, changeSplit, height)
 	if err != nil {
 		writeSendError(w, r, err)
 		return
@@ -1600,6 +1705,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 		Recipients:  buildSendRecipients(validated),
 		Fee:         result.Fee,
 		BlockHeight: height,
+		RawTx:       result.TxData,
 	})
 	if result.Change > 0 {
 		s.wallet.AddPendingCredit(result.TxID, result.Change)
@@ -1611,6 +1717,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"txid":         fmt.Sprintf("%x", result.TxID),
 		"fee":          result.Fee,
+		"fee_per_byte": feeRate,
 		"change":       result.Change,
 		"change_split": result.ChangeOutputs,
 		"input_total":  inputTotal,
@@ -3287,6 +3394,10 @@ func (s *APIServer) walletSendChainStates(txIDs [][32]byte, chainHeight uint64) 
 
 // createTxBuilder creates a transaction builder wired to the daemon (same as CLI).
 func (s *APIServer) createTxBuilder() *wallet.Builder {
+	return s.createTxBuilderWith(nil)
+}
+
+func (s *APIServer) createTxBuilderWith(adjust func(*wallet.TransferConfig)) *wallet.Builder {
 	cfg := wallet.TransferConfig{
 		SelectRingMembers: func(realPubKey, realCommitment [32]byte) (keys, commitments [][32]byte, secretIndex int, err error) {
 			ringData, err := s.daemon.Chain().SelectRingMembersWithCommitments(realPubKey, realCommitment)
@@ -3348,5 +3459,8 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		Parallelism: runtime.GOMAXPROCS(0),
 	}
 
+	if adjust != nil {
+		adjust(&cfg)
+	}
 	return wallet.NewBuilder(s.wallet, cfg)
 }

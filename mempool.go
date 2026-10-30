@@ -24,15 +24,18 @@ type MempoolConfig struct {
 
 	// ExpirationTime is how long a tx stays in mempool
 	ExpirationTime time.Duration
+
+	ReplaceRateStep uint64
 }
 
 // DefaultMempoolConfig returns sensible defaults
 func DefaultMempoolConfig() MempoolConfig {
 	return MempoolConfig{
-		MaxSize:        5000,
-		MaxSizeBytes:   100 * 1024 * 1024, // 100 MB
-		MinFeeRate:     1,                 // 1 unit per byte
-		ExpirationTime: 24 * time.Hour,
+		MaxSize:         5000,
+		MaxSizeBytes:    100 * 1024 * 1024, // 100 MB
+		MinFeeRate:      1,                 // 1 unit per byte
+		ExpirationTime:  24 * time.Hour,
+		ReplaceRateStep: sendFeePerByte,
 	}
 }
 
@@ -124,28 +127,40 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 		}
 	}
 
-	for _, input := range parsedTx.Inputs {
-		if existingTxID, exists := m.txByImage[input.KeyImage]; exists {
-			return fmt.Errorf("double-spend: key image already in mempool (tx %x...)", existingTxID[:8])
-		}
+	replaced, err := m.replacementTarget(parsedTx, feeRate, size)
+	if err != nil {
+		return err
 	}
 
 	if feeRate < m.config.MinFeeRate {
 		return fmt.Errorf("fee rate too low: %d < %d", feeRate, m.config.MinFeeRate)
 	}
 
-	if len(m.txByID) >= m.config.MaxSize {
+	freed := 0
+	if replaced != nil {
+		freed = replaced.Size
+	}
+	if replaced == nil && len(m.txByID) >= m.config.MaxSize {
 		if !m.evictLowest(feeRate) {
 			return fmt.Errorf("mempool full")
 		}
 	}
 
-	if m.totalSize+size > m.config.MaxSizeBytes {
-		for m.totalSize+size > m.config.MaxSizeBytes && len(m.priorityQueue) > 0 {
+	if m.totalSize-freed+size > m.config.MaxSizeBytes {
+		for m.totalSize-freed+size > m.config.MaxSizeBytes && len(m.priorityQueue) > 0 {
 			if !m.evictLowest(feeRate) {
 				return fmt.Errorf("mempool size limit exceeded")
 			}
+			if replaced != nil {
+				if _, still := m.txByID[replaced.TxID]; !still {
+					freed = 0
+				}
+			}
 		}
+	}
+
+	if replaced != nil {
+		m.removeTxByID(replaced.TxID)
 	}
 
 	entry := &MempoolEntry{
@@ -166,6 +181,42 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 	m.generation++
 
 	return nil
+}
+
+func (m *Mempool) replacementTarget(tx *Transaction, feeRate uint64, size int) (*MempoolEntry, error) {
+	var oldID [32]byte
+	conflicts := 0
+	for _, input := range tx.Inputs {
+		id, exists := m.txByImage[input.KeyImage]
+		if !exists || (conflicts > 0 && id == oldID) {
+			continue
+		}
+		oldID = id
+		conflicts++
+	}
+	if conflicts == 0 {
+		return nil, nil
+	}
+	if conflicts > 1 {
+		return nil, fmt.Errorf("double-spend: key images already in mempool in %d transactions; a replacement may replace only one", conflicts)
+	}
+	old := m.txByID[oldID]
+	newImages := make(map[[32]byte]struct{}, len(tx.Inputs))
+	for _, input := range tx.Inputs {
+		newImages[input.KeyImage] = struct{}{}
+	}
+	for _, input := range old.Tx.Inputs {
+		if _, ok := newImages[input.KeyImage]; !ok {
+			return nil, fmt.Errorf("double-spend: key image already in mempool (tx %x...); a replacement must spend every coin of the transaction it replaces", oldID[:8])
+		}
+	}
+	if needRate := old.FeeRate + m.config.ReplaceRateStep; feeRate < needRate {
+		return nil, fmt.Errorf("double-spend: key image already in mempool (tx %x...); a replacement needs a fee rate of at least %d per byte, this one pays %d", oldID[:8], needRate, feeRate)
+	}
+	if needFee := old.Fee + m.config.ReplaceRateStep*uint64(size); tx.Fee < needFee {
+		return nil, fmt.Errorf("double-spend: key image already in mempool (tx %x...); a replacement needs a fee of at least %d, this one pays %d", oldID[:8], needFee, tx.Fee)
+	}
+	return old, nil
 }
 
 // evictLowest removes the transaction paying the lowest fee rate (the oldest
@@ -242,6 +293,20 @@ func (m *Mempool) GetTransaction(txID [32]byte) (*Transaction, bool) {
 		return nil, false
 	}
 	return entry.Tx, true
+}
+
+func (m *Mempool) GetEntry(txID [32]byte) (tx *Transaction, fee uint64, size int, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entry, exists := m.txByID[txID]
+	if !exists {
+		return nil, 0, 0, false
+	}
+	return entry.Tx, entry.Fee, entry.Size, true
+}
+
+func (m *Mempool) ReplaceRateStep() uint64 {
+	return m.config.ReplaceRateStep
 }
 
 // HasTransaction checks if a transaction is in the mempool

@@ -279,9 +279,10 @@ type OwnedOutput struct {
 
 // SendRecipient stores per-recipient details in a send record.
 type SendRecipient struct {
-	Address string `json:"address"`
-	Amount  uint64 `json:"amount"`
-	Memo    []byte `json:"memo,omitempty"`
+	Address         string `json:"address"`
+	ResolvedAddress string `json:"resolved_address,omitempty"`
+	Amount          uint64 `json:"amount"`
+	Memo            []byte `json:"memo,omitempty"`
 }
 
 // SendRecord tracks outgoing transaction details.
@@ -300,6 +301,16 @@ type SendRecord struct {
 	Recipient string `json:"recipient,omitempty"`
 	Amount    uint64 `json:"amount,omitempty"`
 	Memo      []byte `json:"memo,omitempty"`
+
+	ReplacedBy *[32]byte `json:"replaced_by,omitempty"`
+	Replaces   *[32]byte `json:"replaces,omitempty"`
+	RawTx      []byte    `json:"raw_tx,omitempty"`
+}
+
+type PendingRawSend struct {
+	TxID      [32]byte
+	RawTx     []byte
+	Timestamp int64
 }
 
 // GetRecipients returns the recipients list, synthesizing from legacy fields
@@ -1045,17 +1056,13 @@ func (w *Wallet) ReconcileUnconfirmedSpends(isTxAlive func([32]byte) bool) int {
 		}
 	}
 
-	if len(deadTxIDs) > 0 && len(w.data.PendingCredits) > 0 {
-		dead := make(map[[32]byte]struct{}, len(deadTxIDs))
-		for _, id := range deadTxIDs {
-			dead[id] = struct{}{}
-		}
+	if len(w.data.PendingCredits) > 0 {
 		kept := w.data.PendingCredits[:0]
 		for _, pc := range w.data.PendingCredits {
 			if pc == nil {
 				continue
 			}
-			if _, ok := dead[pc.TxID]; !ok {
+			if isTxAlive(pc.TxID) {
 				kept = append(kept, pc)
 			}
 		}
@@ -1565,6 +1572,101 @@ func (w *Wallet) Diagnostics() WalletDiagnostics {
 		AddressFormat: addrFmt,
 		FileSizeBytes: w.enc.fileSize,
 		SyncedHeight:  w.data.SyncedHeight,
+	}
+}
+
+func (w *Wallet) UnconfirmedSpendsOf(txID [32]byte) []*OwnedOutput {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var outs []*OwnedOutput
+	for _, out := range w.data.Outputs {
+		if out != nil && out.Spent && out.SpentTxID == txID {
+			c := *out
+			outs = append(outs, &c)
+		}
+	}
+	return outs
+}
+
+func (w *Wallet) PendingRawSends() []PendingRawSend {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	var out []PendingRawSend
+	for _, record := range w.data.SendHistory {
+		if record != nil && len(record.RawTx) > 0 && record.ReplacedBy == nil {
+			out = append(out, PendingRawSend{TxID: record.TxID, RawTx: append([]byte(nil), record.RawTx...), Timestamp: record.Timestamp})
+		}
+	}
+	return out
+}
+
+func (w *Wallet) ClearRawSend(txID [32]byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, record := range w.data.SendHistory {
+		if record != nil && record.TxID == txID {
+			record.RawTx = nil
+		}
+	}
+}
+
+func (w *Wallet) ReplaceSend(oldTxID, newTxID [32]byte, fee uint64, inputs [][32]byte, change uint64, rawTx []byte) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	spent := make(map[[32]byte]struct{}, len(inputs))
+	for _, pub := range inputs {
+		spent[pub] = struct{}{}
+	}
+	for _, out := range w.data.Outputs {
+		if out == nil {
+			continue
+		}
+		if _, ok := spent[out.OneTimePubKey]; !ok {
+			continue
+		}
+		if out.Spent && out.SpentTxID != oldTxID {
+			continue
+		}
+		out.Spent = true
+		out.SpentHeight = 0
+		out.SpentTxID = newTxID
+		if w.inputReservations != nil {
+			delete(w.inputReservations, reservedOutpoint{TxID: out.TxID, OutputIndex: out.OutputIndex})
+		}
+	}
+
+	kept := w.data.PendingCredits[:0]
+	for _, pc := range w.data.PendingCredits {
+		if pc != nil && pc.TxID != oldTxID {
+			kept = append(kept, pc)
+		}
+	}
+	w.data.PendingCredits = kept
+	if change > 0 {
+		w.data.PendingCredits = append(w.data.PendingCredits, &PendingCredit{TxID: newTxID, Amount: change, AddedAt: time.Now().Unix()})
+	}
+	if len(w.data.PendingCredits) == 0 {
+		w.data.PendingCredits = nil
+	}
+
+	for _, record := range w.data.SendHistory {
+		if record == nil || record.TxID != oldTxID || record.ReplacedBy != nil {
+			continue
+		}
+		next := *record
+		next.TxID = newTxID
+		next.Fee = fee
+		next.RawTx = append([]byte(nil), rawTx...)
+		next.Recipients = append([]SendRecipient(nil), record.Recipients...)
+		next.Memo = append([]byte(nil), record.Memo...)
+		replacedBy, replaces := newTxID, oldTxID
+		next.ReplacedBy = nil
+		next.Replaces = &replaces
+		record.ReplacedBy = &replacedBy
+		record.RawTx = nil
+		w.data.SendHistory = append(w.data.SendHistory, &next)
+		return
 	}
 }
 
