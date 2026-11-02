@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"sync"
@@ -44,7 +45,8 @@ const (
 	syncHedgePeers     = 3
 	syncGiveUpAfter    = 2 * time.Minute
 	// syncClaimGiveUpAfter ends a run following work only a minority of peers
-	// advertise, when no blocks arrive. Those blocks should arrive in seconds.
+	// advertise, when no block data arrives at all. A transfer still sending
+	// data gets the full syncGiveUpAfter.
 	syncClaimGiveUpAfter = 30 * time.Second
 	// syncClaimCooldown is how long a peer's status is ignored after it
 	// advertised more work and did not deliver it.
@@ -113,6 +115,8 @@ type SyncManager struct {
 	mu sync.RWMutex
 
 	fetchEWMA atomic.Int64
+	// lastBlockDataAt is the UnixNano time block data last arrived from a peer.
+	lastBlockDataAt atomic.Int64
 
 	node *Node
 
@@ -691,6 +695,38 @@ collectStatuses:
 	go sm.parallelSyncFrom(syncPeers, targetHeight, corroborated)
 }
 
+// syncStalled reports whether a run should give up. Any run gets syncGiveUpAfter
+// between processed blocks. An unverified run also ends after claimGiveUpAfter
+// with no block data at all, so a peer sending nothing is dropped quickly while a
+// slow transfer of a large batch isn't mistaken for one.
+func (sm *SyncManager) syncStalled(lastProgress, now time.Time) bool {
+	if now.Sub(lastProgress) > syncGiveUpAfter {
+		return true
+	}
+	if !sm.syncRunUnverified() {
+		return false
+	}
+	lastActivity := lastProgress
+	if at := time.Unix(0, sm.lastBlockDataAt.Load()); at.After(lastActivity) {
+		lastActivity = at
+	}
+	return now.Sub(lastActivity) > sm.claimGiveUpAfter
+}
+
+// blockDataReader records when bytes of a block response arrive.
+type blockDataReader struct {
+	r  io.Reader
+	at *atomic.Int64
+}
+
+func (b blockDataReader) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if n > 0 {
+		b.at.Store(time.Now().UnixNano())
+	}
+	return n, err
+}
+
 // claimRunsPaused reports whether minority claims are waiting out a failed run.
 func (sm *SyncManager) claimRunsPaused(now time.Time) bool {
 	sm.mu.RLock()
@@ -934,11 +970,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 				case <-ctx.Done():
 					return
 				case <-stall.C:
-					giveUpAfter := syncGiveUpAfter
-					if sm.syncRunUnverified() {
-						giveUpAfter = sm.claimGiveUpAfter
-					}
-					if time.Since(lastProgress) > giveUpAfter {
+					if sm.syncStalled(lastProgress, time.Now()) {
 						return
 					}
 					if hedging.CompareAndSwap(false, true) {
@@ -1531,7 +1563,7 @@ func (sm *SyncManager) fetchBlocksByHeightCtx(parent context.Context, p peer.ID,
 		return nil, err
 	}
 
-	msgType, data, err := readSyncMessage(s)
+	msgType, data, err := readMessageWithLimit(blockDataReader{r: s, at: &sm.lastBlockDataAt}, syncMessageMaxSize)
 	if err != nil {
 		return nil, err
 	}

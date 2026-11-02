@@ -1,6 +1,7 @@
 package p2p
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"sync/atomic"
@@ -276,5 +277,87 @@ func TestClaimOvertakenByGossipDoesNotCoolDownThePeer(t *testing.T) {
 	waitForCondition(t, "the run to end", func() bool { return !sm.IsSyncing() })
 	if sm.claimCoolingDown(claimer) {
 		t.Fatal("peer whose claim came true was cooled down")
+	}
+}
+
+func TestSlowTransferIsNotTreatedAsASilentPeer(t *testing.T) {
+	local := mustNewTestNode(t)
+	defer func() { _ = local.Stop() }()
+	nodes := connectedTestNodes(t, local, 3)
+	claimer := nodes[0]
+
+	// One response delivered over several times claimGiveUpAfter.
+	serveChain(claimer, claimStatus(13, 130), func(s network.Stream, req BlocksByHeightRequest) {
+		if req.StartHeight != 11 {
+			holdOpen(s)
+			return
+		}
+		payload, _ := json.Marshal([][]byte{bytes.Repeat([]byte("b"), 3000)})
+		var msg bytes.Buffer
+		_ = writeMessage(&msg, SyncMsgBlocks, payload)
+		for msg.Len() > 0 {
+			if _, err := s.Write(msg.Next(200)); err != nil {
+				return
+			}
+			time.Sleep(60 * time.Millisecond)
+		}
+	})
+	serveChain(nodes[1], claimStatus(10, 100), nil)
+	serveChain(nodes[2], claimStatus(10, 100), nil)
+
+	var height atomic.Uint64
+	height.Store(10)
+	sm := newClaimTestManager(t, local, SyncConfig{
+		GetStatus:        func() ChainStatus { return claimStatus(height.Load(), 100) },
+		ProcessBlock:     func([]byte) error { height.Store(11); return nil },
+		IsOrphanError:    func(error) bool { return false },
+		IsDuplicateError: func(error) bool { return false },
+	})
+
+	// The give-up check runs on the hedge timer; keep it at its shortest so it
+	// fires during the transfer.
+	sm.fetchEWMA.Store(int64(time.Millisecond))
+	started := time.Now()
+	sm.checkSync()
+	waitForCondition(t, "the slow block to arrive", func() bool { return height.Load() == 11 })
+	if elapsed := time.Since(started); elapsed <= syncHedgeMin {
+		t.Fatalf("transfer took %s; it must outlast the first give-up check at %s", elapsed, syncHedgeMin)
+	}
+	if sm.claimCoolingDown(claimer) {
+		t.Fatal("a peer still sending data was cooled down")
+	}
+	sm.cancel()
+	waitForCondition(t, "the canceled run to end", func() bool { return !sm.IsSyncing() })
+}
+
+func TestSyncStalled(t *testing.T) {
+	sm := newFarBehindTestManager(100)
+	sm.claimGiveUpAfter = 30 * time.Second
+	now := time.Now()
+	dataAt := func(ago time.Duration) { sm.lastBlockDataAt.Store(now.Add(-ago).UnixNano()) }
+
+	sm.syncClaimUnverified = true
+	dataAt(time.Hour)
+	if !sm.syncStalled(now.Add(-31*time.Second), now) {
+		t.Fatal("an unverified run with no data must give up after claimGiveUpAfter")
+	}
+	if sm.syncStalled(now.Add(-29*time.Second), now) {
+		t.Fatal("an unverified run gave up early")
+	}
+	dataAt(time.Second)
+	if sm.syncStalled(now.Add(-31*time.Second), now) {
+		t.Fatal("an unverified run still receiving data must continue")
+	}
+	if !sm.syncStalled(now.Add(-syncGiveUpAfter-time.Second), now) {
+		t.Fatal("data must not extend a run past syncGiveUpAfter")
+	}
+
+	sm.syncClaimUnverified = false
+	dataAt(time.Hour)
+	if sm.syncStalled(now.Add(-31*time.Second), now) {
+		t.Fatal("a corroborated run must keep syncGiveUpAfter")
+	}
+	if !sm.syncStalled(now.Add(-syncGiveUpAfter-time.Second), now) {
+		t.Fatal("a corroborated run must still give up")
 	}
 }
