@@ -494,6 +494,7 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 		_, err := DeserializeTx(data)
 		return err == nil
 	})
+	node.SetStemRelayFilter(isRelayableStemTx)
 
 	// Store explorer config
 	d.explorerAddr = cfg.ExplorerAddr
@@ -755,28 +756,31 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 	d.miner.NotifyNewBlock()
 }
 
-// handleTx processes a transaction from a peer (fluff phase)
-func (d *Daemon) handleTx(from peer.ID, data []byte) {
+// handleTx processes a transaction that reached fluff phase and reports whether
+// it is in the mempool, which is what lets it be relayed. A rejection doesn't
+// penalize the sender: older relays forward transactions without validating them,
+// and a tx can also fail only because this node is behind or just saw a conflict.
+// The router limits how many rejected transactions it takes from one peer.
+func (d *Daemon) handleTx(_ peer.ID, data []byte) bool {
 	tx, err := DeserializeTx(data)
 	if err != nil {
-		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, "malformed transaction payload")
-		return
+		return false
 	}
 	txID, err := tx.TxID()
 	if err != nil {
-		d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, "invalid transaction id")
-		return
+		return false
 	}
 	if d.mempool.HasTransaction(txID) {
-		return
+		return true
 	}
+	return d.mempool.AddTransaction(tx, data) == nil
+}
 
-	if err := d.mempool.AddTransaction(tx, data); err != nil {
-		if shouldPenalizeTxGossipRejection(err) {
-			d.penalizeInvalidGossipPeer(from, p2p.ScorePenaltyMisbehave, fmt.Sprintf("invalid transaction: %v", err))
-		}
-		return
-	}
+// isRelayableStemTx reports whether a stem payload could enter a mempool: one with
+// no inputs never can, so it stops here instead of continuing along the stem.
+func isRelayableStemTx(data []byte) bool {
+	tx, err := DeserializeTx(data)
+	return err == nil && !tx.IsCoinbase()
 }
 
 func validateBlockCheapPrefilters(block *Block) error {
@@ -823,16 +827,6 @@ func validateBlockCheapPrefilters(block *Block) error {
 		}
 	}
 	return nil
-}
-
-func shouldPenalizeTxGossipRejection(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "validation failed:") ||
-		strings.Contains(msg, "coinbase transaction cannot be added to mempool") ||
-		strings.Contains(msg, "double-spend: key image already in mempool")
 }
 
 func (d *Daemon) penalizeInvalidGossipPeer(pid peer.ID, penalty int, reason string) {

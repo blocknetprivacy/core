@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestHandleTxPenalizesMalformedPayload(t *testing.T) {
+func TestHandleTxDoesNotBanForMalformedPayload(t *testing.T) {
 	chain, _, cleanup := mustCreateTestChain(t)
 	defer cleanup()
 	mustAddGenesisBlock(t, chain)
@@ -20,9 +20,12 @@ func TestHandleTxPenalizesMalformedPayload(t *testing.T) {
 		node:    receiver,
 	}
 
-	d.handleTx(sender.PeerID(), []byte("not-a-valid-serialized-tx"))
-
-	assertPeerPenalized(t, receiver, sender.PeerID(), 1)
+	if d.handleTx(sender.PeerID(), []byte("not-a-valid-serialized-tx")) {
+		t.Fatal("a malformed payload must not be relayed")
+	}
+	if receiver.IsBanned(sender.PeerID()) {
+		t.Fatal("a relay may have forwarded this payload in good faith")
+	}
 }
 
 func TestHandleBlockPenalizesCheapPrefilterFailure(t *testing.T) {
