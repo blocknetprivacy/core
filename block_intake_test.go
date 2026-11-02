@@ -100,6 +100,9 @@ func TestTemplateStaysWithinTheBlockSizeLimit(t *testing.T) {
 	mustAddGenesisBlock(t, chain)
 	daemon, do, stop := intakeTemplateServer(t, chain)
 	defer stop()
+	// The filler transactions aren't real spends; this test is about size.
+	daemon.mempool.isKeyImageSpent = func([32]byte) bool { return false }
+	daemon.mempool.isCanonicalRingMember = func(_, _ [32]byte) bool { return true }
 
 	target := MaxBlockSize - 1000
 	total := 0

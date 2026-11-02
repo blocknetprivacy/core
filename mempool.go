@@ -5,6 +5,7 @@ import (
 	"container/heap"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -113,6 +114,14 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 
 	if _, exists := m.txByID[txID]; exists {
 		return nil
+	}
+
+	// A block can commit while validation runs without the lock, and
+	// OnBlockConnected won't see a transaction that isn't in the pool yet.
+	for _, input := range parsedTx.Inputs {
+		if m.isKeyImageSpent(input.KeyImage) {
+			return fmt.Errorf("validation failed: key image already spent on chain")
+		}
 	}
 
 	for _, input := range parsedTx.Inputs {
@@ -306,6 +315,55 @@ func (m *Mempool) GetTransactionsForBlockSnapshot(maxSize int, maxCount int) ([]
 	}
 
 	return result, m.generation
+}
+
+// spendableOnChain reports whether the chain's current state would still accept
+// this transaction's key images and ring members. Those are the admission checks
+// a tip change or reorg can invalidate.
+func (m *Mempool) spendableOnChain(tx *Transaction) bool {
+	for _, input := range tx.Inputs {
+		if m.isKeyImageSpent(input.KeyImage) {
+			return false
+		}
+		for j := range input.RingMembers {
+			if j >= len(input.RingCommitments) || !m.isCanonicalRingMember(input.RingMembers[j], input.RingCommitments[j]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// KeepSpendableOnChain returns the transactions the chain would still accept and
+// removes the rest from the mempool, so one bad entry can't make every block
+// built from a template invalid.
+func (m *Mempool) KeepSpendableOnChain(txs []*Transaction) []*Transaction {
+	kept := txs[:0:0]
+	for _, tx := range txs {
+		if m.spendableOnChain(tx) {
+			kept = append(kept, tx)
+			continue
+		}
+		txID, err := tx.TxID()
+		if err != nil {
+			continue
+		}
+		log.Printf("[mempool] removing %x: no longer valid on the current chain", txID[:8])
+		m.RemoveTransaction(txID)
+	}
+	return kept
+}
+
+// RemoveUnspendableOnChain rechecks every entry against the current chain. It
+// runs after a reorg, which can remove the outputs a ring refers to.
+func (m *Mempool) RemoveUnspendableOnChain() {
+	m.mu.RLock()
+	txs := make([]*Transaction, 0, len(m.txByID))
+	for _, entry := range m.txByID {
+		txs = append(txs, entry.Tx)
+	}
+	m.mu.RUnlock()
+	m.KeepSpendableOnChain(txs)
 }
 
 // Size returns the number of transactions in mempool
