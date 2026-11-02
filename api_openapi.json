@@ -1603,7 +1603,7 @@
         "operationId": "getOutputs",
         "tags": ["Wallet"],
         "summary": "All wallet outputs with full detail",
-        "description": "Returns every output owned by the wallet with computed status (spent/unspent/pending), confirmations, type, cryptographic keys, and summary counts. Sorted ascending by block height, then txid, then output index. Requires unlocked wallet.",
+        "description": "Returns every output owned by the wallet with computed status (spent/unspent/pending/unspendable), confirmations, type, cryptographic keys, and summary counts. Sorted ascending by block height, then txid, then output index. Requires unlocked wallet.",
         "responses": {
           "200": {
             "description": "Comprehensive output listing",
@@ -1618,6 +1618,7 @@
                     "spent": { "type": "integer", "description": "Number of spent outputs" },
                     "unspent": { "type": "integer", "description": "Number of mature unspent outputs" },
                     "pending": { "type": "integer", "description": "Number of immature (not yet spendable) outputs" },
+                    "unspendable": { "type": "integer", "description": "Number of outputs that share a one-time key with a larger output" },
                     "outputs": {
                       "type": "array",
                       "items": { "$ref": "#/components/schemas/OutputDetail" }
@@ -4365,6 +4366,7 @@
           "is_coinbase": { "type": "boolean", "description": "True if this is a mining reward output" },
           "spent": { "type": "boolean", "description": "True if already used as an input" },
           "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent, 0 means unspent)" },
+          "unspendable": { "type": "boolean", "description": "True if this output shares a one-time key with a larger output, so it can never be spent and is not counted in balances. Omitted otherwise." },
           "memo_hex": {
             "type": "string",
             "pattern": "^(?:[A-Fa-f0-9]{2})*$",
@@ -4387,7 +4389,7 @@
           "txid": { "type": "string", "description": "Transaction hash (hex)" },
           "output_index": { "type": "integer", "description": "Output position within the transaction" },
           "amount": { "type": "integer", "description": "Amount in atomic units" },
-          "status": { "type": "string", "enum": ["spent", "unspent", "pending"], "description": "Computed status: spent (already used), unspent (mature, spendable), pending (immature, awaiting confirmations)" },
+          "status": { "type": "string", "enum": ["spent", "unspent", "pending", "unspendable"], "description": "Computed status: spent (already used), unspent (mature, spendable), pending (immature, awaiting confirmations), unspendable (shares a one-time key with a larger output, not counted in balances)" },
           "type": { "type": "string", "enum": ["coinbase", "regular"], "description": "Output type: coinbase (mining reward) or regular (transfer)" },
           "confirmations": { "type": "integer", "description": "Number of confirmations (chain_height - block_height)" },
           "block_height": { "type": "integer", "description": "Block height where this output was confirmed" },
