@@ -79,7 +79,7 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 	t.Run("invalid_not_rewarded_and_penalized", func(t *testing.T) {
 		// Ensure score record exists via the invalid-path penalty creation.
 		processMode = "invalid"
-		smA.parallelSyncFrom(peers, h1)
+		smA.parallelSyncFrom(peers, h1, true)
 
 		deadline := time.Now().Add(2 * time.Second)
 		for time.Now().Before(deadline) {
@@ -102,7 +102,7 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 		}
 
 		processMode = "accept"
-		smA.parallelSyncFrom(peers, h1)
+		smA.parallelSyncFrom(peers, h1, true)
 
 		after := a.pex.GetPeerScore(b.PeerID())
 		if after != before+ScoreRewardGood {
@@ -117,7 +117,7 @@ func TestSyncRewardsPeerOnlyAfterAccepted_NotOnInvalidOrDuplicate(t *testing.T) 
 		}
 
 		processMode = "duplicate"
-		smA.parallelSyncFrom(peers, h1)
+		smA.parallelSyncFrom(peers, h1, true)
 
 		after := a.pex.GetPeerScore(b.PeerID())
 		if after != before {
