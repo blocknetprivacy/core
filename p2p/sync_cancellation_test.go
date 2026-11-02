@@ -35,7 +35,7 @@ func TestParallelSyncCancellationInterruptsOpenBlockRead(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sm.parallelSyncFrom([]PeerStatus{{Peer: b.PeerID(), Status: testChainStatus(1)}}, 1)
+		sm.parallelSyncFrom([]PeerStatus{{Peer: b.PeerID(), Status: testChainStatus(1)}}, 1, true)
 	}()
 	select {
 	case <-requested:
@@ -89,7 +89,7 @@ func TestParallelSyncOnlyFetchesMempoolAfterReachingTarget(t *testing.T) {
 				ProcessTx:  func([]byte) error { return nil },
 			})
 			sm.ctx = ctx
-			sm.parallelSyncFrom([]PeerStatus{{Peer: b.PeerID(), Status: testChainStatus(1)}}, 1)
+			sm.parallelSyncFrom([]PeerStatus{{Peer: b.PeerID(), Status: testChainStatus(1)}}, 1, true)
 			want := int32(0)
 			if complete {
 				want = 1

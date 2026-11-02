@@ -30,7 +30,7 @@ func TestParallelSyncFromTargetBelowOurHeightDoesNotPanic(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sm.parallelSyncFrom(peers, 990)
+		sm.parallelSyncFrom(peers, 990, true)
 	}()
 	select {
 	case <-done:
@@ -62,7 +62,7 @@ func TestParallelSyncFromPenalizesTimedOutPeerOncePerSync(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sm.parallelSyncFrom(peers, 2000)
+		sm.parallelSyncFrom(peers, 2000, true)
 	}()
 
 	time.Sleep(1500 * time.Millisecond)
@@ -111,7 +111,7 @@ func TestParallelSyncFromKeepsOneHedgeInFlight(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		sm.parallelSyncFrom(peers, 100)
+		sm.parallelSyncFrom(peers, 100, true)
 	}()
 
 	time.Sleep(3 * time.Second)
