@@ -914,9 +914,17 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 	// Signal downloaders to stop
 	cancel()
 	downloadWg.Wait()
+	<-processorDone
+
+	finalHeight := sm.getStatus().Height
+	if finalHeight < targetHeight && sm.ctx.Err() == nil {
+		log.Printf("[sync] incomplete block sync: local=%d target=%d next=%d peers=%d elapsed=%s",
+			finalHeight, targetHeight, nextHeight, len(peers), time.Since(sm.syncStartTime).Round(time.Millisecond))
+	}
 
 	// After syncing blocks, request mempool — try each sync peer until one succeeds.
-	if len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
+	// An incomplete run must retry block sync without waiting on mempool peers.
+	if finalHeight >= targetHeight && sm.ctx.Err() == nil && len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
 		var mempoolOK bool
 		for _, ps := range peers {
 			if err := sm.fetchAndProcessMempool(ps.Peer); err != nil {
@@ -932,7 +940,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64)
 
 	// If we didn't reach target, immediately re-check instead of waiting
 	// for the 30s periodic tick. Covers transient peer failures.
-	finalHeight := sm.getStatus().Height
+	finalHeight = sm.getStatus().Height
 	if finalHeight < targetHeight && sm.ctx != nil && sm.ctx.Err() == nil {
 		go func() {
 			select {
@@ -979,7 +987,7 @@ func (sm *SyncManager) hedgeFetch(ctx context.Context, peers []PeerStatus, from,
 	count := int(min(targetHeight-from+1, uint64(MaxBlocksPerRequest)))
 	go func() {
 		defer done()
-		blocks, p := sm.fetchBlocksFromAnyPeer(peers, from, count)
+		blocks, p := sm.fetchBlocksFromAnyPeerCtx(ctx, peers, from, count)
 		if len(blocks) > count {
 			blocks = blocks[:count]
 		}
@@ -1033,8 +1041,11 @@ func (sm *SyncManager) downloader(ctx context.Context, p peer.ID, workChan <-cha
 			}
 
 			fetchStart := time.Now()
-			blocks, err := sm.fetchBlocksByHeight(p, start, batchSize)
+			blocks, err := sm.fetchBlocksByHeightCtx(ctx, p, start, batchSize)
 			if err != nil || len(blocks) == 0 {
+				if ctx.Err() != nil {
+					return
+				}
 				if err != nil {
 					penalizeTimeout(p)
 				}
@@ -1344,6 +1355,12 @@ func (sm *SyncManager) FetchBlocks(ctx context.Context, p peer.ID, hashes [][32]
 // block range and returns the first successful batch. This ensures a single
 // slow or dead peer can't stall the sync.
 func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight uint64, count int) ([][]byte, peer.ID) {
+	return sm.fetchBlocksFromAnyPeerCtx(sm.ctx, peers, startHeight, count)
+}
+
+func (sm *SyncManager) fetchBlocksFromAnyPeerCtx(parent context.Context, peers []PeerStatus, startHeight uint64, count int) ([][]byte, peer.ID) {
+	ctx, cancel := context.WithCancel(parent)
+	defer cancel()
 	type result struct {
 		blocks [][]byte
 		peer   peer.ID
@@ -1352,7 +1369,7 @@ func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight ui
 	ch := make(chan result, len(peers))
 	for _, ps := range peers {
 		go func(p peer.ID) {
-			blocks, err := sm.fetchBlocksByHeight(p, startHeight, count)
+			blocks, err := sm.fetchBlocksByHeightCtx(ctx, p, startHeight, count)
 			if err != nil || len(blocks) == 0 {
 				ch <- result{}
 			} else {
@@ -1367,7 +1384,7 @@ func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight ui
 			if len(r.blocks) > 0 {
 				return r.blocks, r.peer
 			}
-		case <-sm.ctx.Done():
+		case <-ctx.Done():
 			return nil, ""
 		}
 	}
@@ -1377,7 +1394,11 @@ func (sm *SyncManager) fetchBlocksFromAnyPeer(peers []PeerStatus, startHeight ui
 
 // fetchBlocksByHeight requests blocks by height range (internal for sync)
 func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max int) ([][]byte, error) {
-	ctx, cancel := context.WithTimeout(sm.ctx, 120*time.Second)
+	return sm.fetchBlocksByHeightCtx(sm.ctx, p, startHeight, max)
+}
+
+func (sm *SyncManager) fetchBlocksByHeightCtx(parent context.Context, p peer.ID, startHeight uint64, max int) ([][]byte, error) {
+	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
 	defer cancel()
 
 	s, err := sm.node.host.NewStream(ctx, p, protocolID(params.ProtocolSync))
@@ -1385,6 +1406,10 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 		return nil, err
 	}
 	defer s.Close()
+	// NewStream's context only bounds opening the stream. Reset it as well to
+	// interrupt an outstanding read when this sync run or hedge is canceled.
+	stopReset := context.AfterFunc(ctx, func() { _ = s.Reset() })
+	defer stopReset()
 	if err := s.SetDeadline(time.Now().Add(120 * time.Second)); err != nil {
 		return nil, err
 	}
