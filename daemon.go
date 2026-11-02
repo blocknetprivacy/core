@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -787,6 +788,11 @@ func validateBlockCheapPrefilters(block *Block) error {
 	if block == nil {
 		return fmt.Errorf("nil block")
 	}
+	// A JSON null decodes to a nil entry, so this must come before anything that
+	// reads the transactions.
+	if slices.Contains(block.Transactions, nil) {
+		return fmt.Errorf("block contains a null transaction")
+	}
 	if block.Header.Version == 0 {
 		return fmt.Errorf("invalid block version")
 	}
@@ -810,9 +816,6 @@ func validateBlockCheapPrefilters(block *Block) error {
 	// silently defaults to all-zero bytes. Reject that at the cheap prefilter
 	// boundary so we don't waste expensive validation on policy-invalid blocks.
 	for ti, tx := range block.Transactions {
-		if tx == nil {
-			return fmt.Errorf("nil transaction at index %d", ti)
-		}
 		for oi, out := range tx.Outputs {
 			allZero := true
 			for _, b := range out.EncryptedMemo[:] {
