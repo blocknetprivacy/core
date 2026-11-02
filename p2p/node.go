@@ -80,7 +80,7 @@ type Node struct {
 
 	// Handlers for received messages
 	onBlock func(from peer.ID, data []byte)
-	onTx    func(from peer.ID, data []byte)
+	onTx    func(from peer.ID, data []byte) bool
 
 	// Pending identity after rotation (applied on restart)
 	pendingKey crypto.PrivKey
@@ -408,7 +408,7 @@ func (n *Node) SetBlockHandler(handler func(from peer.ID, data []byte)) {
 }
 
 // SetTxHandler sets the callback for received transactions
-func (n *Node) SetTxHandler(handler func(from peer.ID, data []byte)) {
+func (n *Node) SetTxHandler(handler func(from peer.ID, data []byte) bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.onTx = handler
@@ -421,6 +421,12 @@ func (n *Node) SetTxHandler(handler func(from peer.ID, data []byte)) {
 // Invalid stem payloads are rejected before cache/relay in Dandelion.
 func (n *Node) SetStemSanityValidator(validator func(data []byte) bool) {
 	n.dandel.SetStemSanityValidator(validator)
+}
+
+// SetStemRelayFilter sets a check that drops stem payloads without penalizing
+// the sender.
+func (n *Node) SetStemRelayFilter(filter func(data []byte) bool) {
+	n.dandel.SetStemRelayFilter(filter)
 }
 
 // BroadcastBlock sends a block to all connected peers

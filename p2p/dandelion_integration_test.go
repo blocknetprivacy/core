@@ -98,8 +98,9 @@ func TestHandleFluffTx_UsesCanonicalFluffSemanticsAndCacheCap(t *testing.T) {
 	n.dandel.txCacheSize = 2
 
 	callbacks := 0
-	n.SetTxHandler(func(from peer.ID, data []byte) {
+	n.SetTxHandler(func(from peer.ID, data []byte) bool {
 		callbacks++
+		return true
 	})
 
 	n.dandel.HandleFluffTx(peer.ID("12D3KooWFluffPeer00000001"), []byte("tx-1"))

@@ -36,6 +36,16 @@ const (
 	// EmbargoTimeout is how long to wait for tx to return before fluffing
 	// If we haven't seen our tx back in this time, assume stem failed
 	EmbargoTimeout = 45 * time.Second
+
+	// txRejectWindow and txRejectLimit bound the validation spent on one peer's
+	// rejected transactions. Once a peer reaches the limit its new transactions
+	// are ignored until the window ends. The connection stays up: relays on older
+	// software forward transactions they never validated, and blocks must keep
+	// flowing over those links.
+	txRejectWindow = 10 * time.Minute
+	txRejectLimit  = 32
+	// maxTxRejectPeers bounds the tracking map against peer ID churn.
+	maxTxRejectPeers = 4096
 )
 
 // TxState tracks the state of a transaction in Dandelion
@@ -57,6 +67,12 @@ type txRecord struct {
 	fromPeer  peer.ID // Who sent it to us (for stem routing)
 }
 
+// txRejects counts one peer's rejected transactions in the current window.
+type txRejects struct {
+	count      int
+	windowEnds time.Time
+}
+
 // DandelionRouter implements Dandelion++ transaction routing
 type DandelionRouter struct {
 	mu sync.RWMutex
@@ -71,12 +87,17 @@ type DandelionRouter struct {
 	// Transaction tracking
 	txCache     map[[32]byte]*txRecord
 	txCacheSize int
+	txRejects   map[peer.ID]*txRejects
 
-	// Handler for fluffed transactions
-	onTx func(from peer.ID, data []byte)
+	// Handler for fluffed transactions. It reports whether the transaction was
+	// accepted; only accepted transactions are relayed.
+	onTx func(from peer.ID, data []byte) bool
 	// Lightweight stem-phase transaction sanity check callback.
 	// If unset, no extra stem validation is performed.
 	stemSanityCheck func(data []byte) bool
+	// Drops stem payloads that can't be relayed, without blaming the sender.
+	// If unset, every payload that passes stemSanityCheck continues.
+	stemRelayFilter func(data []byte) bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -88,6 +109,7 @@ func NewDandelionRouter(node *Node) *DandelionRouter {
 		node:        node,
 		txCache:     make(map[[32]byte]*txRecord),
 		txCacheSize: 10000, // Track last 10k transactions
+		txRejects:   make(map[peer.ID]*txRejects),
 	}
 }
 
@@ -110,8 +132,9 @@ func (d *DandelionRouter) Stop() {
 	}
 }
 
-// SetTxHandler sets the callback for transactions that reach fluff phase
-func (d *DandelionRouter) SetTxHandler(handler func(from peer.ID, data []byte)) {
+// SetTxHandler sets the callback for transactions that reach fluff phase. It
+// reports whether the transaction was accepted and may be relayed.
+func (d *DandelionRouter) SetTxHandler(handler func(from peer.ID, data []byte) bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.onTx = handler
@@ -123,6 +146,15 @@ func (d *DandelionRouter) SetStemSanityValidator(validator func(data []byte) boo
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.stemSanityCheck = validator
+}
+
+// SetStemRelayFilter sets a check for stem payloads a well-behaved older relay
+// may still forward. Returning false drops the payload without penalizing the
+// sender.
+func (d *DandelionRouter) SetStemRelayFilter(filter func(data []byte) bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.stemRelayFilter = filter
 }
 
 // BroadcastTx starts the Dandelion++ process for a local transaction
@@ -175,9 +207,13 @@ func (d *DandelionRouter) HandleStemStream(s network.Stream) {
 	fromPeer := s.Conn().RemotePeer()
 	d.mu.RLock()
 	stemSanityCheck := d.stemSanityCheck
+	stemRelayFilter := d.stemRelayFilter
 	d.mu.RUnlock()
 	if stemSanityCheck != nil && !stemSanityCheck(data) {
 		d.node.PenalizePeer(fromPeer, ScorePenaltyInvalid, "invalid stem tx payload")
+		return
+	}
+	if stemRelayFilter != nil && !stemRelayFilter(data) {
 		return
 	}
 
@@ -233,28 +269,30 @@ func (d *DandelionRouter) handleStemTx(from peer.ID, data []byte) {
 	}
 }
 
-// fluffTx broadcasts a transaction to all peers (fluff phase)
+// fluffTx validates a transaction leaving stem phase and, if it is accepted,
+// broadcasts it to all peers (fluff phase).
 func (d *DandelionRouter) fluffTx(rec *txRecord) {
-	// Call tx handler first (local processing)
-	if d.onTx != nil {
-		// Don't hold lock during callback
-		handler := d.onTx
-		data := rec.data
-		go handler(d.node.PeerID(), data)
-	}
+	d.mu.RLock()
+	handler := d.onTx
+	d.mu.RUnlock()
 
-	// Broadcast to all connected peers
-	peers := d.node.host.Network().Peers()
+	self := d.node.PeerID()
 	data := rec.data
+	from := rec.fromPeer
 
-	for _, p := range peers {
-		// Don't send back to sender (if from remote peer)
-		if p == rec.fromPeer && rec.fromPeer != d.node.PeerID() {
-			continue
+	go func() {
+		if handler != nil && !handler(self, data) {
+			return
 		}
+		for _, p := range d.node.host.Network().Peers() {
+			// Don't send back to sender (if from remote peer)
+			if p == from && from != self {
+				continue
+			}
 
-		d.node.sendToPeerAsync(p, protocolID(params.ProtocolTx), data)
-	}
+			d.node.sendToPeerAsync(p, protocolID(params.ProtocolTx), data)
+		}
+	}()
 }
 
 // sendStem sends a transaction to a stem peer
@@ -455,6 +493,12 @@ func (d *DandelionRouter) HandleFluffTx(from peer.ID, data []byte) {
 		return
 	}
 
+	// Left out of the cache so the same transaction from another peer still counts.
+	if d.txRejectLimitReachedLocked(from, time.Now()) {
+		d.mu.Unlock()
+		return
+	}
+
 	// New transaction in fluff phase
 	rec := &txRecord{
 		hash:      hash,
@@ -469,13 +513,58 @@ func (d *DandelionRouter) HandleFluffTx(from peer.ID, data []byte) {
 	handler := d.onTx
 	d.mu.Unlock()
 
-	// Process transaction
-	if handler != nil {
-		handler(from, data)
+	// Only an accepted transaction moves on.
+	if handler != nil && !handler(from, data) {
+		d.noteTxRejected(from, time.Now())
+		return
 	}
 
 	// Rebroadcast to peers (except sender)
 	d.rebroadcast(from, data)
+}
+
+// txRejectLimitReachedLocked reports whether a peer has used up its rejected
+// transactions for the current window. Caller must hold d.mu.
+func (d *DandelionRouter) txRejectLimitReachedLocked(p peer.ID, now time.Time) bool {
+	rejects, ok := d.txRejects[p]
+	if !ok {
+		return false
+	}
+	if !now.Before(rejects.windowEnds) {
+		delete(d.txRejects, p)
+		return false
+	}
+	return rejects.count >= txRejectLimit
+}
+
+// noteTxRejected counts a rejected transaction against the peer that sent it.
+func (d *DandelionRouter) noteTxRejected(p peer.ID, now time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	rejects, ok := d.txRejects[p]
+	if !ok || !now.Before(rejects.windowEnds) {
+		if !ok && len(d.txRejects) >= maxTxRejectPeers {
+			d.dropExpiredTxRejectsLocked(now)
+		}
+		rejects = &txRejects{windowEnds: now.Add(txRejectWindow)}
+		d.txRejects[p] = rejects
+	}
+	rejects.count++
+}
+
+// dropExpiredTxRejectsLocked makes room in the tracking map, removing ended
+// windows and then, if peer ID churn filled it with live ones, all of them.
+// Caller must hold d.mu.
+func (d *DandelionRouter) dropExpiredTxRejectsLocked(now time.Time) {
+	for p, rejects := range d.txRejects {
+		if !now.Before(rejects.windowEnds) {
+			delete(d.txRejects, p)
+		}
+	}
+	if len(d.txRejects) >= maxTxRejectPeers {
+		clear(d.txRejects)
+	}
 }
 
 // enforceTxCacheLimitLocked evicts oldest entries until cache is within limit.
