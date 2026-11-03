@@ -1421,6 +1421,7 @@ type tipSnapshot struct {
 	bestHash       [32]byte
 	totalWork      uint64
 	nextDifficulty uint64
+	tipDifficulty  uint64
 }
 
 func (c *Chain) publishTipLocked() {
@@ -1432,7 +1433,38 @@ func (c *Chain) publishTipLocked() {
 		bestHash:       c.bestHash,
 		totalWork:      c.totalWork,
 		nextDifficulty: c.nextDifficultyLocked(),
+		tipDifficulty:  c.lookupTipDifficultyLocked(),
 	})
+}
+
+// lookupTipDifficultyLocked reads the tip block without touching the cache, so a
+// read lock is enough.
+func (c *Chain) lookupTipDifficultyLocked() uint64 {
+	tip := c.blocks[c.bestHash]
+	if tip == nil {
+		tip, _ = c.storage.GetBlock(c.bestHash)
+	}
+	if tip == nil {
+		return 0
+	}
+	return tip.Header.Difficulty
+}
+
+// tipDifficultyLocked returns the difficulty of the current tip block.
+func (c *Chain) tipDifficultyLocked() uint64 {
+	if s := c.tipSnap.Load(); s != nil && s.bestHash == c.bestHash {
+		return s.tipDifficulty
+	}
+	return c.lookupTipDifficultyLocked()
+}
+
+// TipDifficultyFast returns the difficulty of the current tip block without
+// taking a lock, or 0 before the chain has a tip.
+func (c *Chain) TipDifficultyFast() uint64 {
+	if s := c.tipSnap.Load(); s != nil {
+		return s.tipDifficulty
+	}
+	return 0
 }
 
 // TipFast returns the chain tip without taking any lock.
@@ -1898,8 +1930,8 @@ func (c *Chain) ProcessPreverifiedBlock(block *Block, preverification BlockPreve
 	c.workAt[hash] = blockWork
 	c.cacheTrimLocked()
 
-	// Does this create a heavier chain?
-	if blockWork > c.totalWork {
+	// Does this create a branch we should follow?
+	if params.PrefersBranch(c.totalWork, c.height, c.tipDifficultyLocked(), blockWork, block.Header.Height) {
 		if err := c.reorganizeTo(hash); err != nil {
 			// Reorg failed - remove from memory
 			c.cacheForgetLocked(hash)

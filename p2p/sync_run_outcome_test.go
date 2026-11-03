@@ -94,6 +94,7 @@ type outcomeChain struct {
 	mu      sync.Mutex
 	height  uint64
 	work    uint64
+	tipDiff uint64
 	failAt  uint64
 	process time.Duration
 }
@@ -101,7 +102,9 @@ type outcomeChain struct {
 func (c *outcomeChain) status() ChainStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return outcomeStatus(c.height, c.work)
+	s := outcomeStatus(c.height, c.work)
+	s.TipDifficulty = c.tipDiff
+	return s
 }
 
 func (c *outcomeChain) processBlock(data []byte) error {
@@ -240,7 +243,7 @@ func TestOnlyAskedPeersCanCoolDown(t *testing.T) {
 		{Peer: a, Status: outcomeStatus(500, 5000)},
 		{Peer: b, Status: outcomeStatus(500, 5000)},
 		{Peer: c, Status: outcomeStatus(100, 1000)},
-	}, asked, 1000)
+	}, asked, outcomeStatus(100, 1000))
 	if len(got) != 1 || got[0].Peer != a {
 		t.Fatalf("got %v, want only the asked peer whose claim went unmet", got)
 	}
@@ -514,4 +517,40 @@ func TestBlocksPastTheDialedMedianKeepTheNodeBehind(t *testing.T) {
 	}
 	sm.cancel()
 	waitOutcome(t, "the canceled run to end", 5*time.Second, func() bool { return !sm.IsSyncing() })
+}
+
+func TestSameLengthClaimWithinTheMarginIsMet(t *testing.T) {
+	final := outcomeStatus(100, 1000)
+	final.TipDifficulty = 10
+	slight, heavier, longer := peer.ID("slightly-heavier"), peer.ID("much-heavier"), peer.ID("longer")
+	got := unmetClaims([]PeerStatus{
+		{Peer: slight, Status: outcomeStatus(100, 1003)},
+		{Peer: heavier, Status: outcomeStatus(100, 1006)},
+		{Peer: longer, Status: outcomeStatus(101, 1001)},
+	}, nil, final)
+	if len(got) != 2 || got[0].Peer != heavier || got[1].Peer != longer {
+		t.Fatalf("got %v, want the claims that would still replace our chain", got)
+	}
+}
+
+func TestSlightlyHeavierSameLengthPeersStartNoRun(t *testing.T) {
+	local := mustNewTestNode(t)
+	defer func() { _ = local.Stop() }()
+	peers := startOutcomePeers(t, local, 3, outcomeStatus(10, 103))
+	chain := &outcomeChain{height: 10, work: 100, tipDiff: 10}
+	sm := newOutcomeManager(t, local, chain, 300*time.Millisecond)
+
+	sm.checkSync()
+	if sm.IsSyncing() || !sm.PeerTipChecked() {
+		t.Fatal("a same-length chain within the margin should count as current")
+	}
+	for _, p := range peers {
+		if n := p.requests.Load(); n != 0 {
+			t.Fatalf("asked a peer for blocks %d times", n)
+		}
+	}
+
+	startOutcomePeers(t, local, 3, outcomeStatus(11, 103))
+	sm.checkSync()
+	waitOutcome(t, "a run toward the longer chain", 5*time.Second, sm.IsSyncing)
 }

@@ -884,12 +884,13 @@ func (d *Daemon) getChainStatus() p2p.ChainStatus {
 	}
 
 	return p2p.ChainStatus{
-		BestHash:  bestHash,
-		Height:    height,
-		TotalWork: totalWork,
-		Version:   1,
-		NetworkID: params.NetworkID,
-		ChainID:   params.ChainID,
+		BestHash:      bestHash,
+		Height:        height,
+		TotalWork:     totalWork,
+		Version:       1,
+		NetworkID:     params.NetworkID,
+		ChainID:       params.ChainID,
+		TipDifficulty: d.chain.TipDifficultyFast(),
 	}
 }
 
