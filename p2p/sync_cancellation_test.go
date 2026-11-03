@@ -94,6 +94,14 @@ func TestParallelSyncOnlyFetchesMempoolAfterReachingTarget(t *testing.T) {
 			if complete {
 				want = 1
 			}
+			// The fetch runs outside the sync run, so give it a moment either way.
+			deadline := time.Now().Add(2 * time.Second)
+			for mempoolRequests.Load() != want && time.Now().Before(deadline) {
+				time.Sleep(10 * time.Millisecond)
+			}
+			if !complete {
+				time.Sleep(100 * time.Millisecond)
+			}
 			if got := mempoolRequests.Load(); got != want {
 				t.Fatalf("mempool requests = %d, want %d", got, want)
 			}

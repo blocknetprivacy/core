@@ -17,6 +17,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -52,6 +53,12 @@ type NodeConfig struct {
 	// SeedMode allows startup even when other seeds are unreachable
 	SeedMode bool
 }
+
+const (
+	// maxInboundStreamsPerPeer is far above what an honest peer holds at once.
+	maxInboundStreamsPerPeer = 64
+	chosenPeerProtectTag     = "chosen"
+)
 
 // DefaultNodeConfig returns sensible defaults
 func DefaultNodeConfig() NodeConfig {
@@ -115,16 +122,71 @@ func (n *Node) BanPeer(pid peer.ID, reason string) {
 	n.pex.BanPeer(pid, reason, BanDurationMedium)
 }
 
+// newResourceManager keeps libp2p's scaled defaults except for the streams one peer
+// may hold. Those defaults grow with host memory, which would let a single
+// connection fill the limits shared with every other peer.
+func newResourceManager() (network.ResourceManager, error) {
+	limits := rcmgr.DefaultLimits
+	libp2p.SetDefaultServiceLimits(&limits)
+	overrides := rcmgr.PartialLimitConfig{
+		PeerDefault: rcmgr.ResourceLimits{
+			StreamsInbound: rcmgr.LimitVal(maxInboundStreamsPerPeer),
+			Streams:        rcmgr.LimitVal(2 * maxInboundStreamsPerPeer),
+		},
+	}
+	return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(overrides.Build(limits.AutoScale())))
+}
+
+// protectChosenPeer keeps peers we dialed, and seeds, through connection trimming:
+// anyone can connect to us, so these links are the ones an attacker can't replace.
+func (n *Node) protectChosenPeer(c network.Conn) {
+	if n.host == nil {
+		return
+	}
+	pid := c.RemotePeer()
+	seed := n.pex != nil && n.pex.isSeed(pid)
+	if !seed && (c.Stat().Direction != network.DirOutbound || n.outboundPeerCount() > n.config.MaxOutbound) {
+		return
+	}
+	n.host.ConnManager().Protect(pid, chosenPeerProtectTag)
+}
+
+func (n *Node) releaseChosenPeer(c network.Conn) {
+	if n.host == nil {
+		return
+	}
+	pid := c.RemotePeer()
+	if len(n.host.Network().ConnsToPeer(pid)) == 0 {
+		n.host.ConnManager().Unprotect(pid, chosenPeerProtectTag)
+	}
+}
+
+// outboundPeerCount returns how many peers we hold a connection to that we dialed.
+func (n *Node) outboundPeerCount() int {
+	count := 0
+	for _, pid := range n.host.Network().Peers() {
+		if n.isDialedPeer(pid) {
+			count++
+		}
+	}
+	return count
+}
+
 // IsTrustedBlockSource reports whether a peer's block announcements deserve
 // priority: we dialed it, it is a seed or whitelisted, or it delivered a block we
 // accepted. Anyone else can connect for free.
 func (n *Node) IsTrustedBlockSource(pid peer.ID) bool {
+	return n.isDialedPeer(pid) || (n.pex != nil && n.pex.isTrustedBlockSource(pid))
+}
+
+// isDialedPeer reports whether we hold a connection to this peer that we dialed.
+func (n *Node) isDialedPeer(pid peer.ID) bool {
 	for _, c := range n.host.Network().ConnsToPeer(pid) {
 		if c.Stat().Direction == network.DirOutbound {
 			return true
 		}
 	}
-	return n.pex != nil && n.pex.isTrustedBlockSource(pid)
+	return false
 }
 
 // PenalizePeer reduces a peer's reputation score
@@ -192,9 +254,10 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 	}
 
 	// Create connection manager with limits
+	highWater := cfg.MaxInbound + cfg.MaxOutbound
 	connMgr, err := connmgr.NewConnManager(
-		cfg.MaxOutbound,                // low water
-		cfg.MaxInbound+cfg.MaxOutbound, // high water
+		max(cfg.MaxOutbound, highWater*3/4), // low water: trim a little, not most peers
+		highWater,
 		connmgr.WithGracePeriod(time.Minute),
 	)
 	if err != nil {
@@ -221,9 +284,16 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 		return node.IsBanned(pid)
 	})
 
+	resourceManager, err := newResourceManager()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to create resource manager: %w", err)
+	}
+
 	// Create libp2p host with banned-peer admission gating enabled.
 	h, err := libp2p.New(
 		libp2p.Identity(privKey),
+		libp2p.ResourceManager(resourceManager),
 		libp2p.ListenAddrs(listenAddrs...),
 		libp2p.ConnectionManager(connMgr),
 		libp2p.ConnectionGater(banGater),
@@ -241,10 +311,14 @@ func NewNode(cfg NodeConfig) (*Node, error) {
 	}
 
 	node.host = h
+	h.Network().Notify(&network.NotifyBundle{
+		ConnectedF:    func(_ network.Network, c network.Conn) { node.protectChosenPeer(c) },
+		DisconnectedF: func(_ network.Network, c network.Conn) { node.releaseChosenPeer(c) },
+	})
 
 	// Set up identity rotation callback
 	identity.SetRotationCallback(func(newKey crypto.PrivKey, newID peer.ID) {
-		
+
 		node.mu.Lock()
 		node.pendingKey = newKey
 		node.pendingID = newID

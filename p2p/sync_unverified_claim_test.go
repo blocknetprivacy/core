@@ -126,8 +126,9 @@ func TestUndeliveredMinorityClaimEndsAndCoolsDownThePeer(t *testing.T) {
 	if !sm.claimCoolingDown(claimer) {
 		t.Fatal("peer that did not deliver its claim was not cooled down")
 	}
-	if got, want := local.pex.GetPeerScore(claimer.PeerID()), 50+ScorePenaltyTimeout; got != want {
-		t.Fatalf("peer score = %d, want %d", got, want)
+	// A cooldown costs no score: honest peers can stall too, and repeats would ban them.
+	if got := local.pex.GetPeerScore(claimer.PeerID()); got != -1 && got < peerStartingScore {
+		t.Fatalf("peer score = %d", got)
 	}
 
 	seen := requests.Load()
@@ -139,29 +140,27 @@ func TestUndeliveredMinorityClaimEndsAndCoolsDownThePeer(t *testing.T) {
 
 	sm.mu.Lock()
 	sm.claimCooldowns[claimer.PeerID()] = time.Now().Add(-time.Second)
-	sm.claimRunsResumeAt = time.Time{}
 	sm.mu.Unlock()
 	sm.checkSync()
 	waitForCondition(t, "a run after the cooldown ended", func() bool { return requests.Load() > seen })
 	waitForCondition(t, "the second run to give up", func() bool { return !sm.IsSyncing() })
 }
 
-func TestFreshPeerCannotRestartAClaimRunImmediately(t *testing.T) {
+func TestFailedClaimDoesNotHoldUpAnHonestPeer(t *testing.T) {
 	local := mustNewTestNode(t)
 	defer func() { _ = local.Stop() }()
 	nodes := connectedTestNodes(t, local, 3)
-	first := nodes[0]
 
-	serveChain(first, claimStatus(13, 130), func(s network.Stream, _ BlocksByHeightRequest) { holdOpen(s) })
+	serveChain(nodes[0], claimStatus(13, 130), func(s network.Stream, _ BlocksByHeightRequest) { holdOpen(s) })
 	serveChain(nodes[1], claimStatus(10, 100), nil)
 	serveChain(nodes[2], claimStatus(10, 100), nil)
-
 	sm := newClaimTestManager(t, local, SyncConfig{GetStatus: func() ChainStatus { return claimStatus(10, 100) }})
 	sm.checkSync()
 	waitForCondition(t, "the sync run to start", sm.IsSyncing)
 	waitForCondition(t, "the run to give up", func() bool { return !sm.IsSyncing() })
 
-	// A new identity making the same claim must wait out the spacing too.
+	// A new identity's claim starts right away, because a claim costs nothing
+	// while it can't stop templates or crowd out honest peers.
 	second := connectedTestNodes(t, local, 1)[0]
 	var requests atomic.Int32
 	serveChain(second, claimStatus(13, 130), func(s network.Stream, _ BlocksByHeightRequest) {
@@ -169,61 +168,155 @@ func TestFreshPeerCannotRestartAClaimRunImmediately(t *testing.T) {
 		holdOpen(s)
 	})
 	sm.checkSync()
-	time.Sleep(100 * time.Millisecond)
-	if sm.IsSyncing() || requests.Load() != 0 {
-		t.Fatal("a new peer's claim started a run during the spacing")
+	waitForCondition(t, "the new peer's run", func() bool { return requests.Load() > 0 })
+	if sm.IsSyncingFarBehind(0) {
+		t.Fatal("a claim must not stop template serving")
 	}
-
-	sm.mu.Lock()
-	sm.claimRunsResumeAt = time.Time{}
-	sm.mu.Unlock()
-	sm.checkSync()
-	waitForCondition(t, "a run after the spacing ended", func() bool { return requests.Load() > 0 })
 	waitForCondition(t, "the second run to give up", func() bool { return !sm.IsSyncing() })
 }
 
-func TestCorroboratedClaimCountsAsBehindImmediately(t *testing.T) {
+func TestHonestPeerDeliversPastAFalseClaim(t *testing.T) {
 	local := mustNewTestNode(t)
 	defer func() { _ = local.Stop() }()
-	nodes := connectedTestNodes(t, local, 3)
+	nodes := connectedTestNodes(t, local, 5)
+	liar, honest := nodes[0], nodes[1]
 
-	requested := make(chan struct{}, 8)
-	claim := func(s network.Stream, _ BlocksByHeightRequest) {
-		requested <- struct{}{}
-		holdOpen(s)
+	// The liar claims the most work, and never answers.
+	serveChain(liar, claimStatus(500, 5000), func(s network.Stream, _ BlocksByHeightRequest) { holdOpen(s) })
+	serveChain(honest, claimStatus(11, 110), func(s network.Stream, req BlocksByHeightRequest) {
+		blocks := [][]byte{}
+		if req.StartHeight == 11 {
+			blocks = append(blocks, []byte("block-11"))
+		}
+		payload, _ := json.Marshal(blocks)
+		_ = writeMessage(s, SyncMsgBlocks, payload)
+	})
+	for _, n := range nodes[2:] {
+		serveChain(n, claimStatus(10, 100), nil)
 	}
+
+	var height atomic.Uint64
+	height.Store(10)
+	sm := newClaimTestManager(t, local, SyncConfig{
+		GetStatus: func() ChainStatus {
+			h := height.Load()
+			return claimStatus(h, h*10)
+		},
+		ProcessBlock:     func([]byte) error { height.Store(11); return nil },
+		IsOrphanError:    func(error) bool { return false },
+		IsDuplicateError: func(error) bool { return false },
+	})
+	sm.fetchEWMA.Store(int64(time.Millisecond))
+	// Long enough for a hedged request, which reaches the honest peer if the first
+	// batch happened to go to the liar. In production the limit is many hedges long.
+	sm.claimGiveUpAfter = 3 * time.Second
+
+	started := time.Now()
+	sm.checkSync()
+	waitForCondition(t, "the honest peer's block", func() bool { return height.Load() == 11 })
+	// Within the first run, not after the false claim fails and a retry follows.
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("the honest block took %s", elapsed)
+	}
+	waitForCondition(t, "the run to give up on the false claim", func() bool { return !sm.IsSyncing() })
+	if !sm.claimCoolingDown(liar) {
+		t.Fatal("the peer that claimed and never delivered should cool down")
+	}
+	if sm.claimCoolingDown(honest) {
+		t.Fatal("the peer that delivered must not cool down")
+	}
+}
+
+// inboundTestNodes connects peers that dialed us: anyone can be one of these.
+func inboundTestNodes(t *testing.T, local *Node, count int) []*Node {
+	t.Helper()
+	nodes := make([]*Node, count)
+	for i := range nodes {
+		nodes[i] = mustNewTestNode(t)
+		t.Cleanup(func() { _ = nodes[i].Stop() })
+		mustConnectNodes(t, nodes[i], local)
+	}
+	return nodes
+}
+
+func TestInboundMajorityClaimDoesNotCountAsBehind(t *testing.T) {
+	local := mustNewTestNode(t)
+	defer func() { _ = local.Stop() }()
+	nodes := inboundTestNodes(t, local, 3)
+
+	claim := func(s network.Stream, _ BlocksByHeightRequest) { holdOpen(s) }
 	serveChain(nodes[0], claimStatus(13, 130), claim)
 	serveChain(nodes[1], claimStatus(13, 130), claim)
 	serveChain(nodes[2], claimStatus(10, 100), nil)
 
 	sm := newClaimTestManager(t, local, SyncConfig{GetStatus: func() ChainStatus { return claimStatus(10, 100) }})
-	// A claim most peers make isn't held back by a recent failed minority run.
-	sm.claimRunsResumeAt = time.Now().Add(time.Hour)
-
 	sm.checkSync()
 	waitForCondition(t, "the sync run to start", sm.IsSyncing)
-	if !sm.IsSyncingFarBehind(2) {
-		t.Fatal("a majority claim must count as behind immediately")
+	if sm.IsSyncingFarBehind(2) {
+		t.Fatal("peers anyone can fake must not stop template serving")
 	}
-	<-requested
-	time.Sleep(2 * sm.claimGiveUpAfter)
-	if !sm.IsSyncing() || !sm.IsSyncingFarBehind(2) {
-		t.Fatal("a majority claim must keep the full give-up time")
+	waitForCondition(t, "the run to give up", func() bool { return !sm.IsSyncing() })
+}
+
+func TestDialedMajorityCountsAsBehindFromTheStart(t *testing.T) {
+	local := mustNewTestNode(t)
+	defer func() { _ = local.Stop() }()
+	nodes := connectedTestNodes(t, local, 3)
+
+	claim := func(s network.Stream, _ BlocksByHeightRequest) { holdOpen(s) }
+	serveChain(nodes[0], claimStatus(5000, 50000), claim)
+	serveChain(nodes[1], claimStatus(5000, 50000), claim)
+	serveChain(nodes[2], claimStatus(10, 100), nil)
+
+	sm := newClaimTestManager(t, local, SyncConfig{GetStatus: func() ChainStatus { return claimStatus(10, 100) }})
+	sm.checkSync()
+	waitForCondition(t, "the sync run to start", sm.IsSyncing)
+	if !sm.IsSyncingFarBehind(4989) || sm.IsSyncingFarBehind(4990) {
+		t.Fatal("the node should count as 4990 blocks behind")
+	}
+	if !sm.IsSyncingFarBehind(2) {
+		t.Fatal("a node most of its chosen peers are ahead of must stop serving templates")
+	}
+	// Peers we chose get the full limit, and no cooldown, however quiet they are.
+	time.Sleep(4 * sm.claimGiveUpAfter)
+	if !sm.IsSyncing() {
+		t.Fatal("a corroborated run ended at the short limit")
 	}
 	sm.cancel()
 	waitForCondition(t, "the canceled run to end", func() bool { return !sm.IsSyncing() })
 	if sm.claimCoolingDown(nodes[0]) || sm.claimCoolingDown(nodes[1]) {
-		t.Fatal("peers in a majority claim must not be cooled down")
+		t.Fatal("peers most of our chosen peers agree with must not cool down")
 	}
 }
 
-func TestDeliveredBlockVerifiesAClaim(t *testing.T) {
+func TestLowHeightClaimIsCooledDown(t *testing.T) {
 	local := mustNewTestNode(t)
 	defer func() { _ = local.Stop() }()
 	nodes := connectedTestNodes(t, local, 3)
 	claimer := nodes[0]
 
-	serveChain(claimer, claimStatus(13, 130), func(s network.Stream, req BlocksByHeightRequest) {
+	// More work at a height below ours, with nothing behind it.
+	serveChain(claimer, claimStatus(5, 900), func(s network.Stream, _ BlocksByHeightRequest) { holdOpen(s) })
+	serveChain(nodes[1], claimStatus(100, 500), nil)
+	serveChain(nodes[2], claimStatus(100, 500), nil)
+
+	sm := newClaimTestManager(t, local, SyncConfig{GetStatus: func() ChainStatus { return claimStatus(100, 500) }})
+	sm.checkSync()
+	waitForCondition(t, "the sync run to start", sm.IsSyncing)
+	waitForCondition(t, "the run to give up", func() bool { return !sm.IsSyncing() })
+	if !sm.claimCoolingDown(claimer) {
+		t.Fatal("a claim at a low height that delivers nothing should cool down")
+	}
+}
+
+func TestOneRealBlockDoesNotProveAClaim(t *testing.T) {
+	local := mustNewTestNode(t)
+	defer func() { _ = local.Stop() }()
+	nodes := connectedTestNodes(t, local, 3)
+	liar := nodes[0]
+
+	// One real block, then nothing, behind a claim of a far higher tip.
+	serveChain(liar, claimStatus(99999, 999990), func(s network.Stream, req BlocksByHeightRequest) {
 		if req.StartHeight != 11 {
 			holdOpen(s)
 			return
@@ -237,18 +330,59 @@ func TestDeliveredBlockVerifiesAClaim(t *testing.T) {
 	var height atomic.Uint64
 	height.Store(10)
 	sm := newClaimTestManager(t, local, SyncConfig{
-		GetStatus:        func() ChainStatus { return claimStatus(height.Load(), 100) },
+		GetStatus: func() ChainStatus {
+			h := height.Load()
+			return claimStatus(h, h*10)
+		},
 		ProcessBlock:     func([]byte) error { height.Store(11); return nil },
+		IsOrphanError:    func(error) bool { return false },
+		IsDuplicateError: func(error) bool { return false },
+	})
+	sm.fetchEWMA.Store(int64(time.Millisecond))
+
+	sm.checkSync()
+	waitForCondition(t, "the delivered block", func() bool { return height.Load() == 11 })
+	if sm.IsSyncing() && sm.IsSyncingFarBehind(2) {
+		t.Fatal("one real block must not stop template serving")
+	}
+	waitForCondition(t, "the run to give up", func() bool { return !sm.IsSyncing() })
+	if !sm.claimCoolingDown(liar) {
+		t.Fatal("a peer whose own claim went unmet should cool down, delivered block or not")
+	}
+}
+
+func TestDeliveredBlocksProveAClaim(t *testing.T) {
+	local := mustNewTestNode(t)
+	defer func() { _ = local.Stop() }()
+	nodes := connectedTestNodes(t, local, 3)
+	claimer := nodes[0]
+
+	serveChain(claimer, claimStatus(20, 200), func(s network.Stream, req BlocksByHeightRequest) {
+		if req.StartHeight != 11 {
+			holdOpen(s)
+			return
+		}
+		payload, _ := json.Marshal([][]byte{[]byte("a"), []byte("b"), []byte("c")})
+		_ = writeMessage(s, SyncMsgBlocks, payload)
+	})
+	serveChain(nodes[1], claimStatus(10, 100), nil)
+	serveChain(nodes[2], claimStatus(10, 100), nil)
+
+	var height atomic.Uint64
+	height.Store(10)
+	sm := newClaimTestManager(t, local, SyncConfig{
+		GetStatus:        func() ChainStatus { return claimStatus(height.Load(), height.Load()*10) },
+		ProcessBlock:     func([]byte) error { height.Add(1); return nil },
 		IsOrphanError:    func(error) bool { return false },
 		IsDuplicateError: func(error) bool { return false },
 	})
 
 	sm.checkSync()
-	waitForCondition(t, "the delivered block to verify the claim", func() bool {
-		return sm.IsSyncing() && !sm.syncRunUnverified() && height.Load() == 11
+	waitForCondition(t, "three delivered blocks to prove the claim", func() bool {
+		return sm.IsSyncing() && !sm.syncRunUnverified() && height.Load() == 13
 	})
-	if !sm.IsSyncingFarBehind(1) || sm.IsSyncingFarBehind(2) {
-		t.Fatal("a verified claim must count the two blocks still missing")
+	if !sm.IsSyncingFarBehind(2) {
+		t.Fatal("seven blocks still missing should count as behind")
 	}
 	sm.cancel()
 	waitForCondition(t, "the canceled run to end", func() bool { return !sm.IsSyncing() })
@@ -336,28 +470,34 @@ func TestSyncStalled(t *testing.T) {
 	now := time.Now()
 	dataAt := func(ago time.Duration) { sm.lastBlockDataAt.Store(now.Add(-ago).UnixNano()) }
 
-	sm.syncClaimUnverified = true
 	dataAt(time.Hour)
 	if !sm.syncStalled(now.Add(-31*time.Second), now) {
-		t.Fatal("an unverified run with no data must give up after claimGiveUpAfter")
+		t.Fatal("a run with no data must give up after claimGiveUpAfter")
 	}
 	if sm.syncStalled(now.Add(-29*time.Second), now) {
-		t.Fatal("an unverified run gave up early")
+		t.Fatal("a run gave up early")
 	}
 	dataAt(time.Second)
 	if sm.syncStalled(now.Add(-31*time.Second), now) {
-		t.Fatal("an unverified run still receiving data must continue")
+		t.Fatal("a run still receiving data must continue")
 	}
 	if !sm.syncStalled(now.Add(-syncGiveUpAfter-time.Second), now) {
 		t.Fatal("data must not extend a run past syncGiveUpAfter")
 	}
 
-	sm.syncClaimUnverified = false
+	sm.syncRunCorroborated = true
+	sm.syncBehindTarget = 5000 // The local chain is at 100.
 	dataAt(time.Hour)
 	if sm.syncStalled(now.Add(-31*time.Second), now) {
 		t.Fatal("a corroborated run must keep syncGiveUpAfter")
 	}
 	if !sm.syncStalled(now.Add(-syncGiveUpAfter-time.Second), now) {
 		t.Fatal("a corroborated run must still give up")
+	}
+
+	// Past what dialed peers claim, a stranger's higher claim gets the short limit.
+	sm.syncBehindTarget = 100
+	if !sm.syncStalled(now.Add(-31*time.Second), now) {
+		t.Fatal("a run past the height dialed peers claim must give up quickly")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,12 +49,34 @@ const (
 	// advertise, when no block data arrives at all. A transfer still sending
 	// data gets the full syncGiveUpAfter.
 	syncClaimGiveUpAfter = 30 * time.Second
-	// syncClaimCooldown is how long a peer's status is ignored after it
-	// advertised more work and did not deliver it.
-	syncClaimCooldown = 10 * time.Minute
-	// syncClaimRunSpacing is how long after such a run fails before any other
-	// minority claim may start one, so claims can't occupy the only sync run.
-	syncClaimRunSpacing = 2 * time.Minute
+	// syncClaimCooldown is how long a peer's status is ignored after a run we asked
+	// it to serve ran out of data short of what it advertised. It's short because
+	// honest peers can stall too, and false claimers change identity anyway.
+	syncClaimCooldown = 2 * time.Minute
+	// syncBehindProofBlocks is how many blocks above the tip a run must deliver
+	// before peers we didn't choose can mark the node as behind. It exceeds the
+	// template tolerance, so one real block can't stop templates.
+	syncBehindProofBlocks = 3
+	// defaultSyncRunTimeLimit ends a run however it's going. The next run picks up
+	// where it stopped.
+	defaultSyncRunTimeLimit = 10 * time.Minute
+	// syncForkFetchDepth is how far back a run looks when a peer claims more work
+	// at or below our height, which only a heavier fork can justify.
+	syncForkFetchDepth = 50
+	// syncMempoolPeers is how many peers a finished run asks for their mempool.
+	syncMempoolPeers = 3
+	// minBlockDataBytes is about the size of the smallest possible block.
+	minBlockDataBytes = 1024
+	// syncMaxConcurrentServes and syncMaxServesPerPeer bound block and mempool
+	// responses in progress, so one peer can't take them all.
+	syncMaxConcurrentServes = 64
+	syncMaxServesPerPeer    = 6
+	// syncServeReservedShare is one over the part of those slots kept for peers we
+	// dialed or that have delivered a block.
+	syncServeReservedShare = 4
+	// syncMinDialedQuorum is how many dialed peers must answer before they can mark
+	// the node as behind: one or two can be wrong, or be the attacker.
+	syncMinDialedQuorum = 3
 )
 
 const (
@@ -115,6 +138,14 @@ type SyncManager struct {
 	mu sync.RWMutex
 
 	fetchEWMA atomic.Int64
+	// mempoolSyncing keeps one background mempool fetch at a time.
+	mempoolSyncing atomic.Bool
+	// serveSlots holds one entry per large response being served.
+	serveSlots   chan struct{}
+	serveMu      sync.Mutex
+	servesByPeer map[peer.ID]int
+	// runAsked records the peers the current run has requested blocks from.
+	runAsked atomic.Pointer[sync.Map]
 	// lastBlockDataAt is the UnixNano time block data last arrived from a peer.
 	lastBlockDataAt atomic.Int64
 
@@ -165,9 +196,18 @@ type SyncManager struct {
 	// syncClaimUnverified marks a run whose target rests only on a status from
 	// a minority of peers. It clears when a block above the local tip arrives.
 	syncClaimUnverified bool
-	claimGiveUpAfter    time.Duration
-	claimCooldowns      map[peer.ID]time.Time
-	claimRunsResumeAt   time.Time
+	// syncRunTimeLimit overrides defaultSyncRunTimeLimit.
+	syncRunTimeLimit time.Duration
+	// syncRunCorroborated marks a run most peers we dialed agree with.
+	syncRunCorroborated bool
+	// syncBehindTarget is the height this node counts as being behind, once proven.
+	syncBehindTarget uint64
+	// recheckAfterRun records a sync check that arrived during a run.
+	recheckAfterRun bool
+	// pauseCorroboration makes the next run prove itself.
+	pauseCorroboration bool
+	claimGiveUpAfter   time.Duration
+	claimCooldowns     map[peer.ID]time.Time
 }
 
 const (
@@ -283,6 +323,8 @@ func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 		// Debounce status-triggered sync checks; periodic syncLoop still runs.
 		statusSyncMinInterval: 2 * time.Second,
 		claimGiveUpAfter:      syncClaimGiveUpAfter,
+		serveSlots:            make(chan struct{}, syncMaxConcurrentServes),
+		servesByPeer:          make(map[peer.ID]int),
 	}
 	if cfg.FetchBlocksByHash != nil {
 		sm.fetchBlocksByHash = cfg.FetchBlocksByHash
@@ -329,14 +371,62 @@ func (sm *SyncManager) HandleStream(s network.Stream) {
 	case SyncMsgGetHeaders:
 		sm.handleGetHeaders(s, data)
 	case SyncMsgGetBlocks:
-		sm.handleGetBlocks(s, data)
+		if release, ok := sm.acquireServeSlot(s.Conn().RemotePeer()); ok {
+			defer release()
+			sm.handleGetBlocks(s, data)
+		}
 	case SyncMsgGetBlocksByHeight:
+		release, ok := sm.acquireServeSlot(s.Conn().RemotePeer())
+		if !ok {
+			// An empty answer tells an honest peer to ask elsewhere, at no cost.
+			_ = writeMessage(s, SyncMsgBlocks, []byte("[]"))
+			return
+		}
+		defer release()
 		sm.handleGetBlocksByHeight(s, data)
 	case SyncMsgNewBlock:
 		sm.handleNewBlock(s.Conn().RemotePeer(), data)
 	case SyncMsgGetMempool:
-		sm.handleGetMempool(s)
+		if release, ok := sm.acquireServeSlot(s.Conn().RemotePeer()); ok {
+			defer release()
+			sm.handleGetMempool(s)
+		}
 	}
+}
+
+// acquireServeSlot bounds how many large responses are built and sent at once, in
+// total and per peer, and keeps a share for trusted peers, so requests for old
+// blocks can't use up memory or starve other peers. A request past the limit is
+// refused.
+func (sm *SyncManager) acquireServeSlot(pid peer.ID) (func(), bool) {
+	if sm.serveSlots == nil {
+		return func() {}, true
+	}
+	trusted := sm.node != nil && sm.node.host != nil && sm.node.IsTrustedBlockSource(pid)
+	sm.serveMu.Lock()
+	defer sm.serveMu.Unlock()
+	if sm.servesByPeer[pid] >= syncMaxServesPerPeer {
+		return nil, false
+	}
+	// Peers without a track record can't take the last slots, so a few free
+	// connections can't starve the peers we chose.
+	if !trusted && len(sm.serveSlots) >= cap(sm.serveSlots)-cap(sm.serveSlots)/syncServeReservedShare {
+		return nil, false
+	}
+	select {
+	case sm.serveSlots <- struct{}{}:
+	default:
+		return nil, false
+	}
+	sm.servesByPeer[pid]++
+	return func() {
+		sm.serveMu.Lock()
+		defer sm.serveMu.Unlock()
+		<-sm.serveSlots
+		if sm.servesByPeer[pid]--; sm.servesByPeer[pid] <= 0 {
+			delete(sm.servesByPeer, pid)
+		}
+	}, true
 }
 
 // handleStatus processes a status message
@@ -618,12 +708,14 @@ func (sm *SyncManager) statusSyncLoop() {
 
 // checkSync checks if we're behind and need to sync
 func (sm *SyncManager) checkSync() {
-	sm.mu.RLock()
+	sm.mu.Lock()
 	if sm.syncing {
-		sm.mu.RUnlock()
+		// Don't lose the request: whatever prompted it may be missed by this run.
+		sm.recheckAfterRun = true
+		sm.mu.Unlock()
 		return
 	}
-	sm.mu.RUnlock()
+	sm.mu.Unlock()
 
 	peers := sm.node.Peers()
 	if len(peers) == 0 {
@@ -667,7 +759,7 @@ collectStatuses:
 
 	// Peers that recently failed to deliver the work they advertised don't
 	// count; they can't start another run until their cooldown ends.
-	responded := len(peerStatuses)
+	responded := peerStatuses
 	peerStatuses = sm.withoutCooledDownPeers(peerStatuses, time.Now())
 
 	// Find peers with the most work
@@ -709,24 +801,104 @@ collectStatuses:
 		}
 	}
 
-	corroborated := len(syncPeers)*2 > responded
-	if !corroborated && sm.claimRunsPaused(time.Now()) {
-		return
+	// Status messages prove nothing, so every peer ahead of us takes part: a false
+	// claim at the top can't keep an honest peer with fewer blocks from serving them.
+	aheadPeers := make([]PeerStatus, 0, len(peerStatuses))
+	for _, ps := range peerStatuses {
+		if ps.Status.TotalWork > ourStatus.TotalWork {
+			aheadPeers = append(aheadPeers, ps)
+		}
 	}
+	corroborated := sm.mostDialedPeersAhead(responded, peerStatuses, ourStatus.TotalWork) && !sm.takeCorroborationPause()
 
-	cryptoShuffle(syncPeers)
-	go sm.parallelSyncFrom(syncPeers, targetHeight, corroborated)
+	// Peers we dialed first, then the most work: those are the likeliest to hold the
+	// blocks, and the first few peers get the downloaders. Shuffled beforehand so
+	// equal peers share the load.
+	cryptoShuffle(aheadPeers)
+	sort.SliceStable(aheadPeers, func(i, j int) bool {
+		di, dj := sm.isDialedPeer(aheadPeers[i].Peer), sm.isDialedPeer(aheadPeers[j].Peer)
+		if di != dj {
+			return di
+		}
+		return aheadPeers[i].Status.TotalWork > aheadPeers[j].Status.TotalWork
+	})
+	go sm.parallelSyncFrom(aheadPeers, targetHeight, corroborated)
+}
+
+func (sm *SyncManager) runTimeLimit() time.Duration {
+	if sm.syncRunTimeLimit > 0 {
+		return sm.syncRunTimeLimit
+	}
+	return defaultSyncRunTimeLimit
+}
+
+// isDialedPeer reports whether we dialed this peer.
+func (sm *SyncManager) isDialedPeer(pid peer.ID) bool {
+	return sm.node != nil && sm.node.host != nil && sm.node.isDialedPeer(pid)
+}
+
+// mostDialedPeersAhead reports whether most responding peers we dialed have more
+// work than us, and enough of them answered for that to mean something. Anyone can
+// connect to us for free, so inbound peers don't count. Peers in cooldown count as
+// answering but not as ahead.
+func (sm *SyncManager) mostDialedPeersAhead(responded, eligible []PeerStatus, ourWork uint64) bool {
+	dialed, ahead := 0, 0
+	for _, ps := range responded {
+		if sm.isDialedPeer(ps.Peer) {
+			dialed++
+		}
+	}
+	for _, ps := range eligible {
+		if sm.isDialedPeer(ps.Peer) && ps.Status.TotalWork > ourWork {
+			ahead++
+		}
+	}
+	return dialed >= syncMinDialedQuorum && ahead*2 > dialed
+}
+
+// takeCorroborationPause reports whether the last corroborated run delivered
+// nothing, and clears it: the next run then has to prove itself, which lets peers
+// that keep claiming and delivering nothing cool down.
+func (sm *SyncManager) takeCorroborationPause() bool {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	paused := sm.pauseCorroboration
+	sm.pauseCorroboration = false
+	return paused
+}
+
+// dialedPeerTarget returns the height most dialed peers in this run agree on (the
+// lower median of their claims), or the run's target if none is in it. A
+// corroborated run is only behind up to here: one far higher claim, from a stranger
+// or a dialed peer, mustn't borrow the others' credibility.
+func (sm *SyncManager) dialedPeerTarget(peers []PeerStatus, targetHeight uint64) uint64 {
+	heights := make([]uint64, 0, len(peers))
+	for _, ps := range peers {
+		if sm.isDialedPeer(ps.Peer) {
+			heights = append(heights, ps.Status.Height)
+		}
+	}
+	if len(heights) == 0 {
+		return targetHeight
+	}
+	sort.Slice(heights, func(i, j int) bool { return heights[i] < heights[j] })
+	return min(heights[(len(heights)-1)/2], targetHeight)
 }
 
 // syncStalled reports whether a run should give up. Any run gets syncGiveUpAfter
-// between processed blocks. An unverified run also ends after claimGiveUpAfter
-// with no block data at all, so a peer sending nothing is dropped quickly while a
-// slow transfer of a large batch isn't mistaken for one.
+// between processed blocks. A run most dialed peers don't back also ends after
+// claimGiveUpAfter with no block data at all, so a peer sending nothing is dropped
+// quickly while a slow transfer of a large batch isn't mistaken for one.
 func (sm *SyncManager) syncStalled(lastProgress, now time.Time) bool {
 	if now.Sub(lastProgress) > syncGiveUpAfter {
 		return true
 	}
-	if !sm.syncRunUnverified() {
+	sm.mu.RLock()
+	corroborated := sm.syncRunCorroborated
+	behindTarget := sm.syncBehindTarget
+	sm.mu.RUnlock()
+	// Dialed peers' backing only runs up to the height they claim.
+	if corroborated && sm.getStatus().Height < behindTarget {
 		return false
 	}
 	lastActivity := lastProgress
@@ -736,25 +908,21 @@ func (sm *SyncManager) syncStalled(lastProgress, now time.Time) bool {
 	return now.Sub(lastActivity) > sm.claimGiveUpAfter
 }
 
-// blockDataReader records when bytes of a block response arrive.
+// blockDataReader records when block data arrives. A reply too small to hold a
+// block doesn't count, so an empty answer can't keep a run alive.
 type blockDataReader struct {
-	r  io.Reader
-	at *atomic.Int64
+	r    io.Reader
+	at   *atomic.Int64
+	seen int
 }
 
-func (b blockDataReader) Read(p []byte) (int, error) {
+func (b *blockDataReader) Read(p []byte) (int, error) {
 	n, err := b.r.Read(p)
-	if n > 0 {
+	b.seen += n
+	if n > 0 && b.seen >= minBlockDataBytes {
 		b.at.Store(time.Now().UnixNano())
 	}
 	return n, err
-}
-
-// claimRunsPaused reports whether minority claims are waiting out a failed run.
-func (sm *SyncManager) claimRunsPaused(now time.Time) bool {
-	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	return now.Before(sm.claimRunsResumeAt)
 }
 
 // withoutCooledDownPeers drops peers whose advertised work is being ignored and
@@ -845,8 +1013,9 @@ func (sm *SyncManager) getStatusFrom(p peer.ID) (ChainStatus, error) {
 }
 
 // parallelSyncFrom performs parallel chain sync from multiple peers. corroborated
-// says most responding peers advertise the target's work. Without that, the run
-// doesn't count as being behind until a block above the local tip arrives.
+// says most peers we dialed are ahead, so the node really is behind from the start.
+// Otherwise the target is only a claim, and the run counts as being behind once it
+// has delivered syncBehindProofBlocks blocks above the local tip.
 func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64, corroborated bool) {
 	sm.mu.Lock()
 	// A peer is ahead. Mark the tip checked only under the lock that registers
@@ -864,6 +1033,13 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	sm.syncStartTime = time.Now()
 	sm.syncTarget = targetHeight
 	sm.syncClaimUnverified = !corroborated
+	sm.syncRunCorroborated = corroborated
+	sm.syncBehindTarget = targetHeight
+	if corroborated {
+		sm.syncBehindTarget = sm.dialedPeerTarget(peers, targetHeight)
+	}
+	asked := &sync.Map{}
+	sm.runAsked.Store(asked)
 	sm.downloadBuffer = make(map[uint64]DownloadedBlock) // Reset buffer
 	sm.mu.Unlock()
 
@@ -873,6 +1049,12 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 		sm.syncPeer = ""
 		sm.syncTarget = 0
 		sm.syncClaimUnverified = false
+		sm.syncRunCorroborated = false
+		sm.syncBehindTarget = 0
+		if sm.recheckAfterRun {
+			sm.recheckAfterRun = false
+			sm.requestSyncCheck()
+		}
 		sm.syncProgress = 0
 		sm.downloadBuffer = make(map[uint64]DownloadedBlock) // Clear buffer
 		sm.mu.Unlock()
@@ -880,10 +1062,22 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 
 	// Get our current height
 	ourStatus := sm.getStatus()
+	var claimedWork uint64
+	for _, ps := range peers {
+		claimedWork = max(claimedWork, ps.Status.TotalWork)
+	}
 	startHeight := computeSyncStartHeight(ourStatus.Height, targetHeight)
+	if targetHeight <= ourStatus.Height && claimedWork > ourStatus.TotalWork {
+		// More work at or below our height: only a heavier fork can justify it.
+		startHeight = 1
+		if targetHeight > syncForkFetchDepth {
+			startHeight = targetHeight - syncForkFetchDepth
+		}
+	}
 
 	sm.mu.Lock()
 	sm.syncProgress = ourStatus.Height
+	behindTarget := sm.syncBehindTarget
 	sm.mu.Unlock()
 
 	numDownloaders := min(len(peers)*syncMaxDownloaders, syncMaxDownloaders)
@@ -902,6 +1096,11 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	defer cancel()
 
 	var downloadWg sync.WaitGroup
+
+	// Written by the processor only, and read after it finishes.
+	delivered := make(map[peer.ID]struct{}) // peers whose block above our tip was accepted
+	deliveredBlocks := 0
+	ranOutOfData := false
 
 	var timedOut sync.Map
 	penalizeTimeout := func(p peer.ID) {
@@ -994,6 +1193,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 					return
 				case <-stall.C:
 					if sm.syncStalled(lastProgress, time.Now()) {
+						ranOutOfData = true
 						return
 					}
 					if hedging.CompareAndSwap(false, true) {
@@ -1024,7 +1224,16 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 			sm.mu.Lock()
 			sm.syncProgress = nextHeight
 			if accepted && nextHeight > ourStatus.Height {
-				sm.syncClaimUnverified = false
+				delivered[sourcePeer] = struct{}{}
+				deliveredBlocks++
+				if deliveredBlocks >= syncBehindProofBlocks {
+					sm.syncClaimUnverified = false
+				}
+				// Blocks arriving well past what dialed peers claim prove the higher
+				// target is real, so the node keeps counting as behind until it's reached.
+				if corroborated && nextHeight >= behindTarget+syncBehindProofBlocks {
+					sm.syncBehindTarget = targetHeight
+				}
 			}
 			delete(sm.downloadBuffer, nextHeight)
 			sm.mu.Unlock()
@@ -1047,7 +1256,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	select {
 	case <-processorDone:
 		// log.Printf("[sync] sync complete at height %d", nextHeight-1)
-	case <-time.After(10 * time.Minute):
+	case <-time.After(sm.runTimeLimit()):
 		// log.Printf("[sync] sync timeout")
 	case <-ctx.Done():
 		// log.Printf("[sync] sync cancelled")
@@ -1058,36 +1267,37 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	downloadWg.Wait()
 	<-processorDone
 
-	finalHeight := sm.getStatus().Height
-	if finalHeight < targetHeight && sm.ctx.Err() == nil {
-		unverified := sm.syncRunUnverified()
-		log.Printf("[sync] incomplete block sync: local=%d target=%d next=%d peers=%d (%s) unverified=%t elapsed=%s",
-			finalHeight, targetHeight, nextHeight, len(peers), peerIDsForLog(peers), unverified, time.Since(sm.syncStartTime).Round(time.Millisecond))
-		if unverified {
-			sm.coolDownPeers(peers, time.Now(), penalizeTimeout)
+	final := sm.getStatus()
+	claimUnmet := final.Height < targetHeight || (targetHeight <= ourStatus.Height && final.TotalWork < claimedWork)
+	if claimUnmet && sm.ctx.Err() == nil {
+		log.Printf("[sync] incomplete block sync: local=%d target=%d next=%d peers=%d (%s) delivered=%d elapsed=%s",
+			final.Height, targetHeight, nextHeight, len(peers), peerIDsForLog(peers), len(delivered), time.Since(sm.syncStartTime).Round(time.Millisecond))
+		// Only a run that ran out of data says anything about its peers: not the
+		// run's time cap, and not a rejected block, which costs only its sender.
+		// Short of what most dialed peers claim, the fault is probably ours.
+		if ranOutOfData {
+			if !corroborated || final.Height >= behindTarget {
+				now := time.Now()
+				for _, ps := range unmetClaims(peers, asked, final.TotalWork) {
+					sm.coolDownPeer(ps.Peer, now)
+				}
+			} else if len(delivered) == 0 {
+				sm.mu.Lock()
+				sm.pauseCorroboration = true
+				sm.mu.Unlock()
+			}
 		}
 	}
 
-	// After syncing blocks, request mempool — try each sync peer until one succeeds.
-	// An incomplete run must retry block sync without waiting on mempool peers.
-	if finalHeight >= targetHeight && sm.ctx.Err() == nil && len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
-		var mempoolOK bool
-		for _, ps := range peers {
-			if err := sm.fetchAndProcessMempool(ps.Peer); err != nil {
-				continue
-			}
-			mempoolOK = true
-			break
-		}
-		if !mempoolOK {
-			log.Printf("[sync] mempool sync failed from all %d peers", len(peers))
-		}
+	// Fetch the mempool outside the run: peers that never answer shouldn't hold the
+	// sync slot. An incomplete run must retry block sync instead.
+	if !claimUnmet && sm.ctx.Err() == nil && len(peers) > 0 && sm.getMempool != nil && sm.processTx != nil {
+		go sm.syncMempoolFrom(peers[:min(syncMempoolPeers, len(peers))])
 	}
 
 	// If we didn't reach target, immediately re-check instead of waiting
 	// for the 30s periodic tick. Covers transient peer failures.
-	finalHeight = sm.getStatus().Height
-	if finalHeight < targetHeight && sm.ctx != nil && sm.ctx.Err() == nil {
+	if claimUnmet && sm.ctx != nil && sm.ctx.Err() == nil {
 		go func() {
 			select {
 			case <-time.After(3 * time.Second):
@@ -1098,21 +1308,43 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	}
 }
 
-// coolDownPeers ignores these peers' advertised work for syncClaimCooldown and
-// holds off runs for any other minority claim for syncClaimRunSpacing.
-func (sm *SyncManager) coolDownPeers(peers []PeerStatus, now time.Time, penalize func(peer.ID)) {
+// unmetClaims returns the peers this run asked for blocks that advertised more work
+// than we now have. Peers it never asked have proved nothing either way.
+func unmetClaims(peers []PeerStatus, asked *sync.Map, work uint64) []PeerStatus {
+	out := make([]PeerStatus, 0, len(peers))
+	for _, ps := range peers {
+		if _, ok := asked.Load(ps.Peer); ok && ps.Status.TotalWork > work {
+			out = append(out, ps)
+		}
+	}
+	return out
+}
+
+// syncMempoolFrom fetches the mempool from the first of these peers that answers.
+func (sm *SyncManager) syncMempoolFrom(peers []PeerStatus) {
+	if !sm.mempoolSyncing.CompareAndSwap(false, true) {
+		return
+	}
+	defer sm.mempoolSyncing.Store(false)
+	for _, ps := range peers {
+		if sm.ctx.Err() != nil {
+			return
+		}
+		if err := sm.fetchAndProcessMempool(ps.Peer); err == nil {
+			return
+		}
+	}
+	log.Printf("[sync] mempool sync failed from all %d peers", len(peers))
+}
+
+// coolDownPeer ignores a peer's advertised work for syncClaimCooldown.
+func (sm *SyncManager) coolDownPeer(pid peer.ID, now time.Time) {
 	sm.mu.Lock()
+	defer sm.mu.Unlock()
 	if sm.claimCooldowns == nil {
 		sm.claimCooldowns = make(map[peer.ID]time.Time)
 	}
-	for _, ps := range peers {
-		sm.claimCooldowns[ps.Peer] = now.Add(syncClaimCooldown)
-	}
-	sm.claimRunsResumeAt = now.Add(syncClaimRunSpacing)
-	sm.mu.Unlock()
-	for _, ps := range peers {
-		penalize(ps.Peer)
-	}
+	sm.claimCooldowns[pid] = now.Add(syncClaimCooldown)
 }
 
 func (sm *SyncManager) observeFetch(d time.Duration) {
@@ -1165,6 +1397,9 @@ func (sm *SyncManager) hedgeFetch(ctx context.Context, peers []PeerStatus, from,
 }
 
 func computeSyncStartHeight(ourHeight uint64, targetHeight uint64) uint64 {
+	if targetHeight <= ourHeight {
+		return ourHeight + 1
+	}
 	startHeight := ourHeight + 1
 	// Keep existing overlap semantics for near-tip sync.
 	if gap := targetHeight - ourHeight; gap <= 50 && ourHeight > 10 {
@@ -1184,14 +1419,12 @@ func (sm *SyncManager) downloader(ctx context.Context, p peer.ID, workChan <-cha
 			case work = <-retryChan:
 			case w, ok := <-workChan:
 				if !ok {
-					select {
-					case work = <-retryChan:
-					default:
-						return
-					}
-				} else {
-					work = w
+					// Stay available for another downloader's retry until the run
+					// ends, so a lagging peer doesn't leave work waiting for a hedge.
+					workChan = nil
+					continue
 				}
+				work = w
 			case <-ctx.Done():
 				return
 			}
@@ -1561,6 +1794,9 @@ func (sm *SyncManager) fetchBlocksByHeight(p peer.ID, startHeight uint64, max in
 }
 
 func (sm *SyncManager) fetchBlocksByHeightCtx(parent context.Context, p peer.ID, startHeight uint64, max int) ([][]byte, error) {
+	if asked := sm.runAsked.Load(); asked != nil {
+		asked.Store(p, struct{}{})
+	}
 	ctx, cancel := context.WithTimeout(parent, 120*time.Second)
 	defer cancel()
 
@@ -1586,7 +1822,7 @@ func (sm *SyncManager) fetchBlocksByHeightCtx(parent context.Context, p peer.ID,
 		return nil, err
 	}
 
-	msgType, data, err := readMessageWithLimit(blockDataReader{r: s, at: &sm.lastBlockDataAt}, syncMessageMaxSize)
+	msgType, data, err := readMessageWithLimit(&blockDataReader{r: s, at: &sm.lastBlockDataAt}, syncMessageMaxSize)
 	if err != nil {
 		return nil, err
 	}
@@ -1642,13 +1878,17 @@ func (sm *SyncManager) IsSyncing() bool {
 // small overlap window and the mempool, holding IsSyncing true for many
 // seconds even though the local tip is current the whole time. Callers that
 // only need to avoid acting on a genuinely stale chain (such as mining
-// template serving) should use this instead of IsSyncing. A run following a tip
-// only a minority of peers advertise doesn't count until a block above the
-// local tip arrives: one peer's status must not stop template serving.
+// template serving) should use this instead of IsSyncing. A run most dialed peers
+// don't back counts only once it has delivered blocks above the local tip, and a
+// backed run only up to the height those peers claim: a status message alone
+// must not stop template serving.
 func (sm *SyncManager) IsSyncingFarBehind(tolerance uint64) bool {
 	sm.mu.RLock()
 	syncing := sm.syncing
-	target := sm.syncTarget
+	target := sm.syncBehindTarget
+	if target == 0 {
+		target = sm.syncTarget
+	}
 	unverified := sm.syncClaimUnverified
 	sm.mu.RUnlock()
 	if !syncing || unverified {
