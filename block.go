@@ -322,6 +322,32 @@ func validateTimestamp(header *BlockHeader, chain *Chain) error {
 	return validateTimestampWithMedian(header, medianTime)
 }
 
+// blockSpaceForTransactions is the room left in a block for mempool transactions
+// once the header and this coinbase are counted.
+func blockSpaceForTransactions(coinbase *Transaction) int {
+	return MaxBlockSize - blockHeaderSerializedSize - coinbase.Size()
+}
+
+// templateTimestamp returns now, raised if needed so a block built on prevHash
+// satisfies the timestamp rules. A parent may be stamped up to TimestampFuturLimit
+// ahead of this node's clock, and a child at or before it would be rejected.
+func (c *Chain) templateTimestamp(prevHash [32]byte, now int64) int64 {
+	ancestors, err := c.storage.GetAncestorHeaders(prevHash, 11)
+	if err != nil {
+		return now
+	}
+	getParent := func(hash [32]byte) *Block { return ancestors[hash] }
+	parent := getParent(prevHash)
+	if parent == nil {
+		return now
+	}
+	floor := parent.Header.Timestamp
+	if median, err := medianTimestampFromParent(parent, getParent, 11); err == nil && median > floor {
+		floor = median
+	}
+	return max(now, floor+1)
+}
+
 func validateTimestampWithMedian(header *BlockHeader, medianTime int64) error {
 	if header.Timestamp <= medianTime {
 		return fmt.Errorf("timestamp %d <= median %d", header.Timestamp, medianTime)
