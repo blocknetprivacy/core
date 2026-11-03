@@ -95,6 +95,15 @@ type ChainStatus struct {
 	Version   uint32   `json:"version"`
 	NetworkID string   `json:"network_id"`
 	ChainID   uint32   `json:"chain_id"`
+	// TipDifficulty is the local tip's difficulty, used for fork choice. It isn't
+	// sent to peers.
+	TipDifficulty uint64 `json:"-"`
+}
+
+// replacedBy reports whether a chain with other's work and height would replace
+// this one under the chain's fork choice.
+func (s ChainStatus) replacedBy(other ChainStatus) bool {
+	return params.PrefersBranch(s.TotalWork, s.Height, s.TipDifficulty, other.TotalWork, other.Height)
 }
 
 // HeadersRequest requests headers starting from a height
@@ -449,7 +458,7 @@ func (sm *SyncManager) handleStatus(s network.Stream, data []byte) {
 	}
 
 	// Check if we need to sync from this peer
-	if status.TotalWork > ourStatus.TotalWork {
+	if ourStatus.replacedBy(status) {
 		// Don't spawn sync goroutines per inbound status message. Instead trigger
 		// a serialized, multi-peer arbitration pass.
 		sm.requestSyncCheck()
@@ -762,54 +771,37 @@ collectStatuses:
 	responded := peerStatuses
 	peerStatuses = sm.withoutCooledDownPeers(peerStatuses, time.Now())
 
-	// Find peers with the most work
+	// Only sync from peers whose chain would replace ours under fork choice.
+	// Height alone is not sufficient: a longer chain with less work, or a
+	// same-length chain only slightly heavier, would not be adopted. Syncing
+	// toward one causes infinite sync loops: downloaded blocks land as
+	// side-chain entries, the chain never advances, and the retry fires
+	// endlessly.
+	//
+	// Status messages prove nothing, so every peer ahead of us takes part: a false
+	// claim at the top can't keep an honest peer with fewer blocks from serving them.
+	aheadPeers := make([]PeerStatus, 0, len(peerStatuses))
 	var maxWork uint64
 	for _, ps := range peerStatuses {
-		if ps.Status.TotalWork > maxWork {
-			maxWork = ps.Status.TotalWork
+		if ourStatus.replacedBy(ps.Status) {
+			aheadPeers = append(aheadPeers, ps)
+			maxWork = max(maxWork, ps.Status.TotalWork)
 		}
 	}
-
-	// Collect all peers with max work (or close to it)
-	var syncPeers []PeerStatus
-	for _, ps := range peerStatuses {
-		if ps.Status.TotalWork >= maxWork {
-			syncPeers = append(syncPeers, ps)
-		}
-	}
-
-	if len(syncPeers) == 0 {
-		return
-	}
-
-	// Only sync when peers have strictly more cumulative work.
-	// Height alone is not sufficient: a longer chain with less work should
-	// not trigger sync in a heaviest-chain protocol. Using height as a
-	// trigger causes infinite sync loops when our fork is heavier but
-	// shorter — downloaded blocks land as side-chain entries, the chain
-	// never advances, and the retry fires endlessly.
-	if maxWork <= ourStatus.TotalWork {
+	if len(aheadPeers) == 0 {
 		sm.peerTipChecked.Store(true)
 		return
 	}
 
 	// Use the highest height among max work peers as target
-	targetHeight := syncPeers[0].Status.Height
-	for _, ps := range syncPeers {
-		if ps.Status.Height > targetHeight {
+	var targetHeight uint64
+	for _, ps := range aheadPeers {
+		if ps.Status.TotalWork >= maxWork && ps.Status.Height > targetHeight {
 			targetHeight = ps.Status.Height
 		}
 	}
 
-	// Status messages prove nothing, so every peer ahead of us takes part: a false
-	// claim at the top can't keep an honest peer with fewer blocks from serving them.
-	aheadPeers := make([]PeerStatus, 0, len(peerStatuses))
-	for _, ps := range peerStatuses {
-		if ps.Status.TotalWork > ourStatus.TotalWork {
-			aheadPeers = append(aheadPeers, ps)
-		}
-	}
-	corroborated := sm.mostDialedPeersAhead(responded, peerStatuses, ourStatus.TotalWork) && !sm.takeCorroborationPause()
+	corroborated := sm.mostDialedPeersAhead(responded, peerStatuses, ourStatus) && !sm.takeCorroborationPause()
 
 	// Peers we dialed first, then the most work: those are the likeliest to hold the
 	// blocks, and the first few peers get the downloaders. Shuffled beforehand so
@@ -837,11 +829,11 @@ func (sm *SyncManager) isDialedPeer(pid peer.ID) bool {
 	return sm.node != nil && sm.node.host != nil && sm.node.isDialedPeer(pid)
 }
 
-// mostDialedPeersAhead reports whether most responding peers we dialed have more
-// work than us, and enough of them answered for that to mean something. Anyone can
-// connect to us for free, so inbound peers don't count. Peers in cooldown count as
-// answering but not as ahead.
-func (sm *SyncManager) mostDialedPeersAhead(responded, eligible []PeerStatus, ourWork uint64) bool {
+// mostDialedPeersAhead reports whether most responding peers we dialed have a chain
+// that would replace ours, and enough of them answered for that to mean something.
+// Anyone can connect to us for free, so inbound peers don't count. Peers in cooldown
+// count as answering but not as ahead.
+func (sm *SyncManager) mostDialedPeersAhead(responded, eligible []PeerStatus, our ChainStatus) bool {
 	dialed, ahead := 0, 0
 	for _, ps := range responded {
 		if sm.isDialedPeer(ps.Peer) {
@@ -849,7 +841,7 @@ func (sm *SyncManager) mostDialedPeersAhead(responded, eligible []PeerStatus, ou
 		}
 	}
 	for _, ps := range eligible {
-		if sm.isDialedPeer(ps.Peer) && ps.Status.TotalWork > ourWork {
+		if sm.isDialedPeer(ps.Peer) && our.replacedBy(ps.Status) {
 			ahead++
 		}
 	}
@@ -1268,7 +1260,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	<-processorDone
 
 	final := sm.getStatus()
-	claimUnmet := final.Height < targetHeight || (targetHeight <= ourStatus.Height && final.TotalWork < claimedWork)
+	claimUnmet := final.Height < targetHeight || (targetHeight <= ourStatus.Height && len(unmetClaims(peers, nil, final)) > 0)
 	if claimUnmet && sm.ctx.Err() == nil {
 		log.Printf("[sync] incomplete block sync: local=%d target=%d next=%d peers=%d (%s) delivered=%d elapsed=%s",
 			final.Height, targetHeight, nextHeight, len(peers), peerIDsForLog(peers), len(delivered), time.Since(sm.syncStartTime).Round(time.Millisecond))
@@ -1278,7 +1270,7 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 		if ranOutOfData {
 			if !corroborated || final.Height >= behindTarget {
 				now := time.Now()
-				for _, ps := range unmetClaims(peers, asked, final.TotalWork) {
+				for _, ps := range unmetClaims(peers, asked, final) {
 					sm.coolDownPeer(ps.Peer, now)
 				}
 			} else if len(delivered) == 0 {
@@ -1308,12 +1300,18 @@ func (sm *SyncManager) parallelSyncFrom(peers []PeerStatus, targetHeight uint64,
 	}
 }
 
-// unmetClaims returns the peers this run asked for blocks that advertised more work
-// than we now have. Peers it never asked have proved nothing either way.
-func unmetClaims(peers []PeerStatus, asked *sync.Map, work uint64) []PeerStatus {
+// unmetClaims returns the peers this run asked for blocks whose advertised chain
+// would still replace ours. Peers it never asked have proved nothing either way. A
+// nil asked counts every peer.
+func unmetClaims(peers []PeerStatus, asked *sync.Map, final ChainStatus) []PeerStatus {
 	out := make([]PeerStatus, 0, len(peers))
 	for _, ps := range peers {
-		if _, ok := asked.Load(ps.Peer); ok && ps.Status.TotalWork > work {
+		if asked != nil {
+			if _, ok := asked.Load(ps.Peer); !ok {
+				continue
+			}
+		}
+		if final.replacedBy(ps.Status) {
 			out = append(out, ps)
 		}
 	}
