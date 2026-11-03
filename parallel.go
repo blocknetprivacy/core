@@ -6,28 +6,41 @@ import (
 	"sync/atomic"
 )
 
-// forEachParallel calls fn(i) for every i in [0, n) on up to GOMAXPROCS
-// goroutines and returns once every call has finished. fn must be safe to call
-// concurrently; it runs inline when there is only one item or one CPU.
+// parallelHelpers bounds the goroutines forEachParallel adds across the whole
+// process. Its callers can be many at once (one per peer stream), and the work
+// is often a cgo call, which holds an OS thread; without a shared bound, threads
+// would multiply with the number of callers.
+var parallelHelpers = make(chan struct{}, runtime.GOMAXPROCS(0))
+
+// forEachParallel calls fn(i) for every i in [0, n) and returns once every call
+// has finished. The calling goroutine always works through the items, joined by
+// up to GOMAXPROCS-1 helpers when the process-wide helper pool has room, so it
+// never runs slower than a plain loop. fn must be safe to call concurrently.
 func forEachParallel(n int, fn func(i int)) {
-	workers := min(n, runtime.GOMAXPROCS(0))
-	if workers <= 1 {
-		for i := range n {
+	var next atomic.Int64
+	work := func() {
+		for i := int(next.Add(1) - 1); i < n; i = int(next.Add(1) - 1) {
 			fn(i)
 		}
-		return
 	}
-	var next atomic.Int64
 	var wg sync.WaitGroup
-	wg.Add(workers)
-	for range workers {
-		go func() {
-			defer wg.Done()
-			for i := int(next.Add(1) - 1); i < n; i = int(next.Add(1) - 1) {
-				fn(i)
-			}
-		}()
+helpers:
+	for range min(n, runtime.GOMAXPROCS(0)) - 1 {
+		select {
+		case parallelHelpers <- struct{}{}:
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-parallelHelpers
+					wg.Done()
+				}()
+				work()
+			}()
+		default:
+			break helpers
+		}
 	}
+	work()
 	wg.Wait()
 }
 

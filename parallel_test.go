@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestForEachParallelVisitsEveryIndexOnce(t *testing.T) {
@@ -17,6 +18,38 @@ func TestForEachParallelVisitsEveryIndexOnce(t *testing.T) {
 		}
 	}
 	forEachParallel(0, func(int) { t.Fatal("no index to visit") })
+}
+
+// With every process-wide helper busy, the caller does all the work itself
+// instead of waiting or starting more goroutines.
+func TestForEachParallelRunsInlineWhenHelpersAreBusy(t *testing.T) {
+	for range cap(parallelHelpers) {
+		parallelHelpers <- struct{}{}
+	}
+	defer func() {
+		for range cap(parallelHelpers) {
+			<-parallelHelpers
+		}
+	}()
+	var visited, inFlight, maxInFlight atomic.Int32
+	forEachParallel(64, func(int) {
+		now := inFlight.Add(1)
+		for {
+			prev := maxInFlight.Load()
+			if now <= prev || maxInFlight.CompareAndSwap(prev, now) {
+				break
+			}
+		}
+		time.Sleep(100 * time.Microsecond)
+		inFlight.Add(-1)
+		visited.Add(1)
+	})
+	if visited.Load() != 64 {
+		t.Fatalf("visited %d of 64", visited.Load())
+	}
+	if maxInFlight.Load() != 1 {
+		t.Fatalf("%d calls ran at once with no helper free", maxInFlight.Load())
+	}
 }
 
 func TestFirstErrorIsLowestIndexed(t *testing.T) {
