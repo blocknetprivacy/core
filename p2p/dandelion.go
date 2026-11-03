@@ -46,6 +46,10 @@ const (
 	txRejectLimit  = 32
 	// maxTxRejectPeers bounds the tracking map against peer ID churn.
 	maxTxRejectPeers = 4096
+
+	// maxPendingStemBytes bounds the transaction data held while waiting to fluff.
+	// Only stem records keep their data; everything else needs just the hash.
+	maxPendingStemBytes = 256 << 20
 )
 
 // TxState tracks the state of a transaction in Dandelion
@@ -88,6 +92,8 @@ type DandelionRouter struct {
 	txCache     map[[32]byte]*txRecord
 	txCacheSize int
 	txRejects   map[peer.ID]*txRejects
+	// stemBytes is the total data held by stem records.
+	stemBytes int
 
 	// Handler for fluffed transactions. It reports whether the transaction was
 	// accepted; only accepted transactions are relayed.
@@ -277,8 +283,14 @@ func (d *DandelionRouter) fluffTx(rec *txRecord) {
 	d.mu.RUnlock()
 
 	self := d.node.PeerID()
+	d.mu.Lock()
 	data := rec.data
 	from := rec.fromPeer
+	rec.data = nil // Fluffed: from here on the record only needs its hash.
+	d.mu.Unlock()
+	if len(data) == 0 {
+		return
+	}
 
 	go func() {
 		if handler != nil && !handler(self, data) {
@@ -502,7 +514,6 @@ func (d *DandelionRouter) HandleFluffTx(from peer.ID, data []byte) {
 	// New transaction in fluff phase
 	rec := &txRecord{
 		hash:      hash,
-		data:      data,
 		state:     TxStateSeen,
 		createdAt: time.Now(),
 		fromPeer:  from,
@@ -567,9 +578,38 @@ func (d *DandelionRouter) dropExpiredTxRejectsLocked(now time.Time) {
 	}
 }
 
+// trackStemBytesLocked recounts stem data and drops the oldest remote stem records
+// past the limit, so an unverified flood can't pin memory until the embargo ends.
+// Caller must hold d.mu.
+func (d *DandelionRouter) trackStemBytesLocked() {
+	total := 0
+	for _, rec := range d.txCache {
+		total += len(rec.data)
+	}
+	self := peer.ID("")
+	if d.node != nil && d.node.host != nil {
+		self = d.node.PeerID()
+	}
+	for total > maxPendingStemBytes {
+		var oldest *txRecord
+		for _, rec := range d.txCache {
+			if len(rec.data) > 0 && rec.fromPeer != self && (oldest == nil || rec.createdAt.Before(oldest.createdAt)) {
+				oldest = rec
+			}
+		}
+		if oldest == nil {
+			break
+		}
+		total -= len(oldest.data)
+		delete(d.txCache, oldest.hash)
+	}
+	d.stemBytes = total
+}
+
 // enforceTxCacheLimitLocked evicts oldest entries until cache is within limit.
 // Caller must hold d.mu.
 func (d *DandelionRouter) enforceTxCacheLimitLocked() {
+	d.trackStemBytesLocked()
 	if d.txCacheSize <= 0 {
 		return
 	}

@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"log"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"blocknet/protocol/params"
@@ -141,17 +143,19 @@ type PeerRecord struct {
 
 // Ban thresholds and durations
 const (
-	peerStartingScore      = 50  // Every peer starts here
-	ScoreThresholdBan      = 0   // Score at or below triggers ban
-	ScoreThresholdWarn     = 20  // Score below this is concerning
-	ScorePenaltyInvalid    = -10 // Penalty for invalid data
-	ScorePenaltyTimeout    = -5  // Penalty for timeout
-	ScorePenaltyMisbehave  = -25 // Penalty for misbehavior
-	ScoreRewardGood        = 1   // Reward for good behavior
-	BanDurationShort       = 15 * time.Minute
-	BanDurationMedium      = 2 * time.Hour
-	BanDurationLong        = 24 * time.Hour
-	MaxBansBeforePermanent = 5 // After this many bans, permanent ban
+	peerStartingScore        = 50 // Every peer starts here
+	pexStreamTimeout         = 30 * time.Second
+	maxOutboundDialsPerRound = 4
+	ScoreThresholdBan        = 0   // Score at or below triggers ban
+	ScoreThresholdWarn       = 20  // Score below this is concerning
+	ScorePenaltyInvalid      = -10 // Penalty for invalid data
+	ScorePenaltyTimeout      = -5  // Penalty for timeout
+	ScorePenaltyMisbehave    = -25 // Penalty for misbehavior
+	ScoreRewardGood          = 1   // Reward for good behavior
+	BanDurationShort         = 15 * time.Minute
+	BanDurationMedium        = 2 * time.Hour
+	BanDurationLong          = 24 * time.Hour
+	MaxBansBeforePermanent   = 5 // After this many bans, permanent ban
 )
 
 const (
@@ -177,7 +181,8 @@ type BanRecord struct {
 
 // PeerExchange manages peer discovery without public DHT
 type PeerExchange struct {
-	mu sync.RWMutex
+	dialsInFlight atomic.Int32
+	mu            sync.RWMutex
 
 	node         *Node
 	seedNodes    []peer.AddrInfo
@@ -401,9 +406,17 @@ func (pex *PeerExchange) doExchange() {
 		count = len(peers)
 	}
 
+	// Concurrently, so one slow peer can't hold up discovery.
+	var wg sync.WaitGroup
 	for _, p := range peers[:count] {
-		pex.exchangeWith(p)
+		wg.Add(1)
+		go func(p peer.ID) {
+			defer wg.Done()
+			pex.exchangeWith(p)
+		}(p)
 	}
+	wg.Wait()
+	pex.refillOutbound()
 }
 
 // exchangeWith performs peer exchange with a specific peer
@@ -416,6 +429,10 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 		return
 	}
 	defer s.Close()
+	// The context above only bounds opening the stream.
+	if err := s.SetDeadline(time.Now().Add(pexStreamTimeout)); err != nil {
+		return
+	}
 
 	// Send GetPeers request
 	if err := writeMessage(s, PEXMsgGetPeers, nil); err != nil {
@@ -469,11 +486,6 @@ func (pex *PeerExchange) exchangeWith(p peer.ID) {
 
 		if len(addrs) > 0 {
 			pex.addKnownPeer(pid, addrs)
-
-			// Try to connect if we need more peers
-			if len(pex.node.Peers()) < pex.node.config.MaxOutbound {
-				go pex.tryConnect(pid, addrs)
-			}
 		}
 	}
 
@@ -657,6 +669,65 @@ func (pex *PeerExchange) tryConnect(pid peer.ID, addrs []multiaddr.Multiaddr) {
 	}
 }
 
+type knownPeerDial struct {
+	pid       peer.ID
+	addrs     []multiaddr.Multiaddr
+	contacted bool
+}
+
+// knownPeersToDial lists known peers we aren't connected to, in random order with
+// peers we have reached before ahead of addresses others told us about.
+func (pex *PeerExchange) knownPeersToDial() []knownPeerDial {
+	self := pex.node.PeerID()
+	pex.mu.RLock()
+	candidates := make([]knownPeerDial, 0, len(pex.knownPeers))
+	for pid, rec := range pex.knownPeers {
+		if pid == self || pex.node.host.Network().Connectedness(pid) == network.Connected {
+			continue
+		}
+		addrs := make([]multiaddr.Multiaddr, 0, len(rec.Addrs))
+		for _, a := range rec.Addrs {
+			if ma, err := multiaddr.NewMultiaddr(a); err == nil {
+				addrs = append(addrs, ma)
+			}
+		}
+		if len(addrs) > 0 {
+			candidates = append(candidates, knownPeerDial{pid: pid, addrs: addrs, contacted: rec.lastContact != 0})
+		}
+	}
+	pex.mu.RUnlock()
+
+	cryptoShuffle(candidates)
+	sort.SliceStable(candidates, func(i, j int) bool { return candidates[i].contacted && !candidates[j].contacted })
+	return candidates
+}
+
+// refillOutbound starts dials toward our outbound peer count, a few at a time.
+func (pex *PeerExchange) refillOutbound() {
+	need := pex.node.config.MaxOutbound - pex.node.outboundPeerCount() - int(pex.dialsInFlight.Load())
+	if need > 0 {
+		pex.dialKnownPeers(min(need, maxOutboundDialsPerRound))
+	}
+}
+
+// dialKnownPeers starts dials to up to count known peers that aren't banned.
+func (pex *PeerExchange) dialKnownPeers(count int) {
+	for _, c := range pex.knownPeersToDial() {
+		if count == 0 {
+			return
+		}
+		if pex.IsBanned(c.pid) {
+			continue
+		}
+		count--
+		pex.dialsInFlight.Add(1)
+		go func(c knownPeerDial) {
+			defer pex.dialsInFlight.Add(-1)
+			pex.tryConnect(c.pid, c.addrs)
+		}(c)
+	}
+}
+
 func (pex *PeerExchange) shouldProbe(pid peer.ID) bool {
 	pex.mu.Lock()
 	defer pex.mu.Unlock()
@@ -738,6 +809,9 @@ func (pex *PeerExchange) markReachedAddrs(pid peer.ID, addrs []multiaddr.Multiad
 // HandleStream handles incoming PEX protocol streams
 func (pex *PeerExchange) HandleStream(s network.Stream) {
 	defer s.Close()
+	if err := s.SetDeadline(time.Now().Add(pexStreamTimeout)); err != nil {
+		return
+	}
 
 	// Read message
 	msgType, _, err := readPEXMessage(s)
@@ -1141,6 +1215,18 @@ func (pex *PeerExchange) PenalizePeer(pid peer.ID, penalty int, reason string) {
 	}
 }
 
+// isSeed reports whether a peer is one of the configured seed nodes.
+func (pex *PeerExchange) isSeed(pid peer.ID) bool {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+	for _, seed := range pex.seedNodes {
+		if seed.ID == pid {
+			return true
+		}
+	}
+	return false
+}
+
 // isTrustedBlockSource reports whether a peer is a seed, whitelisted, or has
 // earned a score above what every peer starts with.
 func (pex *PeerExchange) isTrustedBlockSource(pid peer.ID) bool {
@@ -1193,12 +1279,14 @@ func (pex *PeerExchange) reconnectLoop() {
 		case <-pex.ctx.Done():
 			return
 		case <-ticker.C:
-			peers := pex.node.host.Network().Peers()
-			if len(peers) == 0 {
+			// Count only peers we dialed: inbound connections can all be one attacker.
+			outbound := pex.node.outboundPeerCount()
+			if outbound == 0 {
 				if err := pex.connectToSeeds(); err != nil {
 					log.Printf("PEX reconnect loop seed dial failed: %v", err)
 				}
 			}
+			pex.refillOutbound()
 		}
 	}
 }
