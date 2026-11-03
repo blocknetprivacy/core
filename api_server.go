@@ -67,6 +67,9 @@ type APIServer struct {
 	templateNow   func() time.Time
 	templateTTL   time.Duration
 
+	// Coinbases built ahead for the next height's templates.
+	templateCoinbases templateCoinbases
+
 	// Route-scoped abuse control for stateless payment-proof verification.
 	proofLimiter *perIPLimiter
 
