@@ -3345,6 +3345,7 @@ func (s *APIServer) createTxBuilder() *wallet.Builder {
 		RingSize:    RingSize,
 		MinFee:      sendMinFee,
 		FeePerByte:  sendFeePerByte,
+		Parallelism: runtime.GOMAXPROCS(0),
 	}
 
 	return wallet.NewBuilder(s.wallet, cfg)
