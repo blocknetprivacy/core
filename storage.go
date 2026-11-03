@@ -378,26 +378,37 @@ func (s *Storage) GetMainChainBlocks(startHeight uint64, max int) ([]*Block, err
 	if max <= 0 {
 		return nil, nil
 	}
-	blocks := make([]*Block, 0, max)
+	var blocks []*Block
 	err := s.db.View(func(tx *bolt.Tx) error {
 		heights := tx.Bucket(bucketHeights)
 		stored := tx.Bucket(bucketBlocks)
+		records := make([][]byte, 0, max)
 		for i := 0; i < max; i++ {
 			hash := heights.Get(heightKey(startHeight + uint64(i)))
 			if hash == nil {
-				return nil
+				break
 			}
 			data := stored.Get(hash)
 			if data == nil {
-				return nil
+				break
 			}
-			block, err := decodeBlock(data)
+			records = append(records, data)
+		}
+		// The records are only valid inside this transaction, and decoding copies
+		// them, so the blocks decode here, in parallel.
+		decoded := make([]*Block, len(records))
+		errs := make([]error, len(records))
+		forEachParallel(len(records), func(i int) {
+			decoded[i], errs[i] = decodeBlock(records[i])
+		})
+		for i, err := range errs {
 			if err != nil {
 				log.Printf("storage: undecodable block at height %d: %v", startHeight+uint64(i), err)
-				return nil
+				decoded = decoded[:i]
+				break
 			}
-			blocks = append(blocks, block)
 		}
+		blocks = decoded
 		return nil
 	})
 	if err != nil {

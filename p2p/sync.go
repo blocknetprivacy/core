@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -1972,26 +1973,34 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	// Enforce entry count and decoded byte budget before processing.
 	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
 
-	// Process each transaction
+	// Process the transactions in parallel: each one is validated on its own.
+	// A transaction's own proofs already verify in parallel, so a quarter of
+	// the CPUs take transactions.
 	attempted := 0
-	invalid := 0
-	for _, txData := range txs {
-		if sm.processTx != nil {
-			attempted++
-			if err := sm.processTx(txData); err != nil {
-				// Some errors are due to our local resource limits (e.g. mempool full).
-				// Those should not penalize the peer.
-				if isBenignMempoolProcessErr(err) {
-					continue
+	var invalid atomic.Int64
+	if sm.processTx != nil && len(txs) > 0 {
+		attempted = len(txs)
+		var next atomic.Int64
+		var wg sync.WaitGroup
+		workers := min(len(txs), max(1, runtime.GOMAXPROCS(0)/4))
+		wg.Add(workers)
+		for range workers {
+			go func() {
+				defer wg.Done()
+				for i := int(next.Add(1) - 1); i < len(txs); i = int(next.Add(1) - 1) {
+					// Some errors are due to our local resource limits (e.g. mempool
+					// full). Those should not penalize the peer.
+					if err := sm.processTx(txs[i]); !isBenignMempoolProcessErr(err) {
+						invalid.Add(1)
+					}
 				}
-				invalid++
-				continue
-			}
+			}()
 		}
+		wg.Wait()
 	}
 
 	if attempted > 0 && sm.node != nil {
-		if penalty, reason, ok := mempoolInvalidPenalty(attempted, invalid); ok {
+		if penalty, reason, ok := mempoolInvalidPenalty(attempted, int(invalid.Load())); ok {
 			sm.node.PenalizePeer(p, penalty, reason)
 		}
 	}

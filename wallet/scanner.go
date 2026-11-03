@@ -98,26 +98,10 @@ func NewScanner(w *Wallet, cfg ScannerConfig) *Scanner {
 	}
 }
 
-// ScanBlock scans a block for owned outputs and spent outputs.
+// ScanBlock scans a block for owned outputs and spent outputs. Its
+// transactions are matched in parallel and applied in order, as in ScanBlocks.
 func (s *Scanner) ScanBlock(block *BlockData) (found int, spent int) {
-	spendableByKeyImage := s.buildSpendableKeyImageIndex()
-	return s.scanBlockWithIndex(block, spendableByKeyImage)
-}
-
-// scanBlockWithIndex scans a block using a caller-supplied spendable-key-image
-// index so a batch sync can build the index once instead of per block. The
-// index is mutated in place: newly found outputs are added and confirmed spends
-// are removed, so it stays correct across consecutive blocks.
-func (s *Scanner) scanBlockWithIndex(block *BlockData, spendableByKeyImage map[[32]byte][][32]byte) (found int, spent int) {
-	keys := s.wallet.Keys()
-	for i := range block.Transactions {
-		tx := &block.Transactions[i]
-		matches := s.matchTxOutputs(tx, block.Height, keys)
-		f, sp := s.applyTxMatches(tx, block.Height, block.Hash, keys, matches, spendableByKeyImage)
-		found += f
-		spent += sp
-	}
-	return found, spent
+	return s.scanBatch([]*BlockData{block}, nil)
 }
 
 // txDerivationMode returns the ScanOutputsBatch mode for a transaction: which
