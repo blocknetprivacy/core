@@ -115,6 +115,18 @@ func (n *Node) BanPeer(pid peer.ID, reason string) {
 	n.pex.BanPeer(pid, reason, BanDurationMedium)
 }
 
+// IsTrustedBlockSource reports whether a peer's block announcements deserve
+// priority: we dialed it, it is a seed or whitelisted, or it delivered a block we
+// accepted. Anyone else can connect for free.
+func (n *Node) IsTrustedBlockSource(pid peer.ID) bool {
+	for _, c := range n.host.Network().ConnsToPeer(pid) {
+		if c.Stat().Direction == network.DirOutbound {
+			return true
+		}
+	}
+	return n.pex != nil && n.pex.isTrustedBlockSource(pid)
+}
+
 // PenalizePeer reduces a peer's reputation score
 func (n *Node) PenalizePeer(pid peer.ID, penalty int, reason string) {
 	if n.pex == nil {

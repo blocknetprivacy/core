@@ -141,6 +141,7 @@ type PeerRecord struct {
 
 // Ban thresholds and durations
 const (
+	peerStartingScore      = 50  // Every peer starts here
 	ScoreThresholdBan      = 0   // Score at or below triggers ban
 	ScoreThresholdWarn     = 20  // Score below this is concerning
 	ScorePenaltyInvalid    = -10 // Penalty for invalid data
@@ -178,9 +179,9 @@ type BanRecord struct {
 type PeerExchange struct {
 	mu sync.RWMutex
 
-	node       *Node
-	seedNodes  []peer.AddrInfo
-	knownPeers map[peer.ID]*PeerRecord
+	node         *Node
+	seedNodes    []peer.AddrInfo
+	knownPeers   map[peer.ID]*PeerRecord
 	banWhitelist map[peer.ID]struct{}
 
 	// Ban list
@@ -721,7 +722,7 @@ func (pex *PeerExchange) markReachedAddrs(pid peer.ID, addrs []multiaddr.Multiad
 	now := time.Now().Unix()
 	rec, ok := pex.knownPeers[pid]
 	if !ok {
-		rec = &PeerRecord{ID: pid.String(), Score: 5}
+		rec = &PeerRecord{ID: pid.String(), Score: peerStartingScore}
 		pex.knownPeers[pid] = rec
 	}
 	rec.Addrs = make([]string, len(addrs))
@@ -857,7 +858,7 @@ func (pex *PeerExchange) addKnownPeer(pid peer.ID, addrs []multiaddr.Multiaddr) 
 			ID:       pid.String(),
 			Addrs:    addrStrs,
 			LastSeen: time.Now().Unix(),
-			Score:    5,
+			Score:    peerStartingScore,
 		}
 	}
 
@@ -1122,7 +1123,7 @@ func (pex *PeerExchange) PenalizePeer(pid peer.ID, penalty int, reason string) {
 		// Create record with starting score
 		rec = &PeerRecord{
 			ID:       pid.String(),
-			Score:    50, // Start at middle
+			Score:    peerStartingScore,
 			LastSeen: time.Now().Unix(),
 		}
 		pex.knownPeers[pid] = rec
@@ -1140,8 +1141,30 @@ func (pex *PeerExchange) PenalizePeer(pid peer.ID, penalty int, reason string) {
 	}
 }
 
+// isTrustedBlockSource reports whether a peer is a seed, whitelisted, or has
+// earned a score above what every peer starts with.
+func (pex *PeerExchange) isTrustedBlockSource(pid peer.ID) bool {
+	pex.mu.RLock()
+	defer pex.mu.RUnlock()
+	if pex.isWhitelistedLocked(pid) {
+		return true
+	}
+	for _, seed := range pex.seedNodes {
+		if seed.ID == pid {
+			return true
+		}
+	}
+	rec, ok := pex.knownPeers[pid]
+	return ok && rec.Score > peerStartingScore
+}
+
 // RewardPeer increases a peer's score for good behavior
 func (pex *PeerExchange) RewardPeer(pid peer.ID) {
+	pex.mu.Lock()
+	if _, ok := pex.knownPeers[pid]; !ok {
+		pex.knownPeers[pid] = &PeerRecord{ID: pid.String(), Score: peerStartingScore, LastSeen: time.Now().Unix()}
+	}
+	pex.mu.Unlock()
 	pex.updatePeerScore(pid, ScoreRewardGood)
 }
 

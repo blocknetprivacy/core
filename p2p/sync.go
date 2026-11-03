@@ -121,20 +121,21 @@ type SyncManager struct {
 	node *Node
 
 	// Callbacks for chain operations
-	getStatus         func() ChainStatus
-	getHeaders        func(startHeight uint64, max int) ([][]byte, error)
-	getBlocks         func(hashes [][32]byte) ([][]byte, error)
-	getBlocksByHeight func(startHeight uint64, max int) ([][]byte, error)
-	processBlock      func(data []byte) error
-	processHeader     func(data []byte) error
-	getMempool        func() [][]byte
-	processTx         func(data []byte) error
-	onBlockAccepted   func(data []byte)
-	isOrphanError     func(error) bool
-	isDuplicateError  func(error) bool
-	getBlockMeta      func(data []byte) (height uint64, prevHash [32]byte, err error)
-	getBlockHash      func(data []byte) (hash [32]byte, err error)
-	fetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error)
+	getStatus             func() ChainStatus
+	getHeaders            func(startHeight uint64, max int) ([][]byte, error)
+	getBlocks             func(hashes [][32]byte) ([][]byte, error)
+	getBlocksByHeight     func(startHeight uint64, max int) ([][]byte, error)
+	processBlock          func(data []byte) error
+	processHeader         func(data []byte) error
+	getMempool            func() [][]byte
+	processTx             func(data []byte) error
+	onBlockAccepted       func(data []byte)
+	processAnnouncedBlock func(from peer.ID, data []byte) error
+	isOrphanError         func(error) bool
+	isDuplicateError      func(error) bool
+	getBlockMeta          func(data []byte) (height uint64, prevHash [32]byte, err error)
+	getBlockHash          func(data []byte) (hash [32]byte, err error)
+	fetchBlocksByHash     func(context.Context, peer.ID, [][32]byte) ([][]byte, error)
 
 	// Sync state
 	syncing        bool
@@ -247,35 +248,38 @@ type SyncConfig struct {
 	GetBlocksByHeight func(startHeight uint64, max int) ([][]byte, error)
 	ProcessBlock      func(data []byte) error
 	ProcessHeader     func(data []byte) error
-	GetMempool        func() [][]byte                                              // Get all mempool transactions
-	ProcessTx         func(data []byte) error                                      // Process a mempool transaction
-	OnBlockAccepted   func(data []byte)                                            // Called when a new block announcement is accepted
-	IsOrphanError     func(error) bool                                             // Orphan classifier for sync recovery (required for recovery to work)
-	IsDuplicateError  func(error) bool                                             // Duplicate classifier — block already known, treat as success
-	GetBlockMeta      func(data []byte) (uint64, [32]byte, error)                  // Extract (height, prevHash) from serialized block; required for orphan recovery
-	GetBlockHash      func(data []byte) ([32]byte, error)                          // Extract block hash from serialized block; required for parent hash verification in orphan recovery
-	FetchBlocksByHash func(context.Context, peer.ID, [][32]byte) ([][]byte, error) // Override block-by-hash fetching (default: p2p FetchBlocks)
+	GetMempool        func() [][]byte         // Get all mempool transactions
+	ProcessTx         func(data []byte) error // Process a mempool transaction
+	OnBlockAccepted   func(data []byte)       // Called when a new block announcement is accepted
+	// ProcessAnnouncedBlock handles a block a peer announced. If unset, ProcessBlock does.
+	ProcessAnnouncedBlock func(from peer.ID, data []byte) error
+	IsOrphanError         func(error) bool                                             // Orphan classifier for sync recovery (required for recovery to work)
+	IsDuplicateError      func(error) bool                                             // Duplicate classifier — block already known, treat as success
+	GetBlockMeta          func(data []byte) (uint64, [32]byte, error)                  // Extract (height, prevHash) from serialized block; required for orphan recovery
+	GetBlockHash          func(data []byte) ([32]byte, error)                          // Extract block hash from serialized block; required for parent hash verification in orphan recovery
+	FetchBlocksByHash     func(context.Context, peer.ID, [][32]byte) ([][]byte, error) // Override block-by-hash fetching (default: p2p FetchBlocks)
 }
 
 // NewSyncManager creates a new sync manager
 func NewSyncManager(node *Node, cfg SyncConfig) *SyncManager {
 	sm := &SyncManager{
-		node:              node,
-		getStatus:         cfg.GetStatus,
-		getHeaders:        cfg.GetHeaders,
-		getBlocks:         cfg.GetBlocks,
-		getBlocksByHeight: cfg.GetBlocksByHeight,
-		processBlock:      cfg.ProcessBlock,
-		processHeader:     cfg.ProcessHeader,
-		getMempool:        cfg.GetMempool,
-		processTx:         cfg.ProcessTx,
-		onBlockAccepted:   cfg.OnBlockAccepted,
-		isOrphanError:     cfg.IsOrphanError,
-		isDuplicateError:  cfg.IsDuplicateError,
-		getBlockMeta:      cfg.GetBlockMeta,
-		getBlockHash:      cfg.GetBlockHash,
-		downloadBuffer:    make(map[uint64]DownloadedBlock),
-		statusSyncCh:      make(chan struct{}, 1),
+		node:                  node,
+		getStatus:             cfg.GetStatus,
+		getHeaders:            cfg.GetHeaders,
+		getBlocks:             cfg.GetBlocks,
+		getBlocksByHeight:     cfg.GetBlocksByHeight,
+		processBlock:          cfg.ProcessBlock,
+		processHeader:         cfg.ProcessHeader,
+		getMempool:            cfg.GetMempool,
+		processTx:             cfg.ProcessTx,
+		onBlockAccepted:       cfg.OnBlockAccepted,
+		processAnnouncedBlock: cfg.ProcessAnnouncedBlock,
+		isOrphanError:         cfg.IsOrphanError,
+		isDuplicateError:      cfg.IsDuplicateError,
+		getBlockMeta:          cfg.GetBlockMeta,
+		getBlockHash:          cfg.GetBlockHash,
+		downloadBuffer:        make(map[uint64]DownloadedBlock),
+		statusSyncCh:          make(chan struct{}, 1),
 		// Debounce status-triggered sync checks; periodic syncLoop still runs.
 		statusSyncMinInterval: 2 * time.Second,
 		claimGiveUpAfter:      syncClaimGiveUpAfter,
@@ -464,13 +468,26 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 
 // handleNewBlock processes a new block announcement and relays to other peers
 func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
-	if sm.processBlock != nil {
-		if err := sm.processBlock(data); err != nil {
-			if !sm.isDuplicateErr(err) && !sm.isOrphanErr(err) {
+	if sm.processBlock != nil || sm.processAnnouncedBlock != nil {
+		var err error
+		if sm.processAnnouncedBlock != nil {
+			err = sm.processAnnouncedBlock(from, data)
+		} else {
+			err = sm.processBlock(data)
+		}
+		if err != nil {
+			switch {
+			case sm.isOrphanErr(err):
+				// We missed its parent. Waiting for the next poll leaves the
+				// node on a stale tip, and later blocks would be orphans too.
+				sm.requestSyncCheck()
+			case !sm.isDuplicateErr(err):
 				sm.banInvalidBlockPeer(from, "invalid new block announcement")
 			}
 			return // duplicate, orphan, or invalid — don't relay
 		}
+		// First delivery of a block we accepted builds a track record.
+		sm.node.RewardPeer(from)
 		// Notify daemon (miner restart, wallet subscribers)
 		if sm.onBlockAccepted != nil {
 			sm.onBlockAccepted(data)
@@ -552,6 +569,12 @@ func (sm *SyncManager) syncLoop() {
 
 // TriggerSync forces a sync check (called when new peer connects)
 func (sm *SyncManager) TriggerSync() {
+	sm.requestSyncCheck()
+}
+
+// RequestSyncCheck asks for a status check soon, for callers that learned this
+// node may be behind.
+func (sm *SyncManager) RequestSyncCheck() {
 	sm.requestSyncCheck()
 }
 

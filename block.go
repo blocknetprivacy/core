@@ -476,12 +476,6 @@ func validateBlockWithContext(
 		return fmt.Errorf("timestamp too far in future")
 	}
 
-	if !skipPoW {
-		if !validatePoW(header) {
-			return fmt.Errorf("invalid proof of work")
-		}
-	}
-
 	if block.Size() > MaxBlockSize {
 		return fmt.Errorf("block too large: %d > %d", block.Size(), MaxBlockSize)
 	}
@@ -497,6 +491,22 @@ func validateBlockWithContext(
 	for i := 1; i < len(block.Transactions); i++ {
 		if block.Transactions[i].IsCoinbase() {
 			return fmt.Errorf("multiple coinbase transactions")
+		}
+	}
+
+	// Everything cheap comes before proof of work, so a block that fails one of
+	// these costs the sender as much as it costs us.
+	merkleRoot, err := block.ComputeMerkleRoot()
+	if err != nil {
+		return fmt.Errorf("failed to compute merkle root: %w", err)
+	}
+	if merkleRoot != header.MerkleRoot {
+		return fmt.Errorf("invalid merkle root")
+	}
+
+	if !skipPoW {
+		if !validatePoW(header) {
+			return fmt.Errorf("invalid proof of work")
 		}
 	}
 
@@ -518,14 +528,6 @@ func validateBlockWithContext(
 	}
 	if err := validateCoinbaseConsensus(block.Transactions[0], header.Height); err != nil {
 		return fmt.Errorf("invalid coinbase consensus commitment: %w", err)
-	}
-
-	merkleRoot, err := block.ComputeMerkleRoot()
-	if err != nil {
-		return fmt.Errorf("failed to compute merkle root: %w", err)
-	}
-	if merkleRoot != header.MerkleRoot {
-		return fmt.Errorf("invalid merkle root")
 	}
 
 	return nil
@@ -1797,15 +1799,66 @@ func (c *Chain) addBlockInternal(block *Block) error {
 // ProcessBlock validates and adds a block, handling fork choice
 // Returns true if block was accepted (even if not on main chain)
 func (c *Chain) ProcessBlock(block *Block) (accepted bool, isMainChain bool, err error) {
-	hash := block.Hash()
-
-	preverified := false
-	if block.Header.Height > 0 && !c.storage.HasBlock(hash) && !c.predictSkipVerification(block) && c.passesCheapPrecheck(block) {
-		if err := preverifyBlockCrypto(block); err != nil {
-			return false, false, err
-		}
-		preverified = true
+	preverification, err := c.PreverifyBlock(block)
+	if err != nil {
+		return false, false, err
 	}
+	return c.ProcessPreverifiedBlock(block, preverification)
+}
+
+// BlockPreverification is the outcome of checking a block's proof of work and
+// signatures before any chain lock is taken.
+type BlockPreverification struct {
+	Verified bool
+}
+
+// maxConcurrentBlockVerifications bounds PoW memory: each verification uses 2 GiB.
+const maxConcurrentBlockVerifications = 2
+
+var (
+	blockVerifySlots = make(chan struct{}, maxConcurrentBlockVerifications)
+	// runBlockPreverify is replaced in tests to avoid real PoW.
+	runBlockPreverify = preverifyBlockCrypto
+)
+
+// NeedsPreverification reports whether a block can pass every cheap check and so
+// is worth the cost of verifying its proof of work.
+func (c *Chain) NeedsPreverification(block *Block) bool {
+	return block.Header.Height > 0 && !c.storage.HasBlock(block.Hash()) && !c.predictSkipVerification(block) && c.passesCheapPrecheck(block)
+}
+
+// PreverifyBlock checks a block's proof of work and signatures. It takes no chain
+// lock, so callers must not hold one either: this takes about a second.
+func (c *Chain) PreverifyBlock(block *Block) (BlockPreverification, error) {
+	if !c.NeedsPreverification(block) {
+		return BlockPreverification{}, nil
+	}
+	blockVerifySlots <- struct{}{}
+	defer func() { <-blockVerifySlots }()
+	return finishPreverify(block)
+}
+
+// PreverifyOwnBlock is PreverifyBlock for a block this node's miners found. It
+// doesn't wait for a verification slot: nothing a peer sends may delay our block.
+func (c *Chain) PreverifyOwnBlock(block *Block) (BlockPreverification, error) {
+	if !c.NeedsPreverification(block) {
+		return BlockPreverification{}, nil
+	}
+	return finishPreverify(block)
+}
+
+func finishPreverify(block *Block) (BlockPreverification, error) {
+	if err := runBlockPreverify(block); err != nil {
+		return BlockPreverification{}, err
+	}
+	return BlockPreverification{Verified: true}, nil
+}
+
+// ProcessPreverifiedBlock adds a block to the chain, using the outcome of an
+// earlier PreverifyBlock.
+func (c *Chain) ProcessPreverifiedBlock(block *Block, preverification BlockPreverification) (accepted bool, isMainChain bool, err error) {
+	hash := block.Hash()
+	preverified := preverification.Verified
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
