@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strconv"
 	"testing"
 )
 
@@ -37,7 +38,7 @@ func TestHandleMiningThreads_RejectsAboveNumCPU(t *testing.T) {
 	}
 
 	// At max: should succeed.
-	req2 := httptest.NewRequest(http.MethodPost, "/api/mining/threads", bytes.NewReader([]byte(`{"threads":`+itoa(maxThreads)+`}`)))
+	req2 := httptest.NewRequest(http.MethodPost, "/api/mining/threads", bytes.NewReader([]byte(`{"threads":`+strconv.Itoa(maxThreads)+`}`)))
 	req2.Header.Set("Content-Type", "application/json")
 	rr2 := httptest.NewRecorder()
 	s.handleMiningThreads(rr2, req2)
@@ -48,4 +49,3 @@ func TestHandleMiningThreads_RejectsAboveNumCPU(t *testing.T) {
 		t.Fatalf("expected miner threads set to max: got %d want %d", got, maxThreads)
 	}
 }
-
