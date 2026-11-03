@@ -391,13 +391,6 @@ func NewDaemon(cfg DaemonConfig, stealthKeys *StealthKeys) (*Daemon, error) {
 			}
 			return block.Hash(), nil
 		},
-		OnBlockAccepted: func(data []byte) {
-			d.miner.NotifyNewBlock()
-			var block Block
-			if err := json.Unmarshal(data, &block); err == nil {
-				d.notifyBlock(&block)
-			}
-		},
 	}
 	d.syncMgr = p2p.NewSyncManager(node, syncCfg)
 
@@ -661,13 +654,14 @@ func (d *Daemon) handleBlock(from peer.ID, data []byte) {
 		return
 	}
 
+	// Peers need nothing from the mempool update, so the block goes out first.
+	d.node.RelayBlock(from, data)
 	d.updateMempoolForAcceptedMainChain(&block, prevBest)
 	d.mu.Unlock()
 
-	d.maybeSaveCheckpoints()
-	d.node.RelayBlock(from, data)
 	d.notifyBlock(&block)
 	d.miner.NotifyNewBlock()
+	d.maybeSaveCheckpoints()
 }
 
 // errBlockIntakeBusy means an announced block wasn't verified because the slot for
@@ -763,21 +757,30 @@ func (d *Daemon) handleAnnouncedBlockRejection(from peer.ID, block *Block, err e
 	}
 }
 
-// processAnnouncedBlock handles a block announced on the sync protocol.
-func (d *Daemon) processAnnouncedBlock(from peer.ID, data []byte) error {
+// processAnnouncedBlock handles a block announced on the sync protocol. Once the
+// block is accepted, the sync manager relays it and then runs the returned
+// function, which notifies subscribers and saves checkpoints.
+func (d *Daemon) processAnnouncedBlock(from peer.ID, data []byte) (func(), error) {
 	var block Block
 	if err := json.Unmarshal(data, &block); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateBlockCheapPrefilters(&block); err != nil {
-		return fmt.Errorf("rejected p2p block at height %d: %w", block.Header.Height, err)
+		return nil, fmt.Errorf("rejected p2p block at height %d: %w", block.Header.Height, err)
 	}
 	preverification, finishIntake, err := d.verifyAnnouncedBlock(from, &block)
 	defer finishIntake()
 	if err != nil {
-		return wrapBlockRejection(&block, err)
+		return nil, wrapBlockRejection(&block, err)
 	}
-	return d.commitVerifiedBlock(&block, preverification)
+	if err := d.acceptVerifiedBlock(&block, preverification); err != nil {
+		return nil, err
+	}
+	return func() {
+		d.miner.NotifyNewBlock()
+		d.notifyBlock(&block)
+		d.maybeSaveCheckpoints()
+	}, nil
 }
 
 func wrapBlockRejection(block *Block, err error) error {
@@ -943,6 +946,15 @@ func (d *Daemon) processBlockData(data []byte) error {
 
 // commitVerifiedBlock adds a block whose expensive checks already ran.
 func (d *Daemon) commitVerifiedBlock(block *Block, preverification BlockPreverification) error {
+	if err := d.acceptVerifiedBlock(block, preverification); err != nil {
+		return err
+	}
+	d.maybeSaveCheckpoints()
+	return nil
+}
+
+// acceptVerifiedBlock is commitVerifiedBlock without the checkpoint save.
+func (d *Daemon) acceptVerifiedBlock(block *Block, preverification BlockPreverification) error {
 	d.mu.Lock()
 
 	prevBest := d.chain.BestHash()
@@ -963,8 +975,6 @@ func (d *Daemon) commitVerifiedBlock(block *Block, preverification BlockPreverif
 
 	d.updateMempoolForAcceptedMainChain(block, prevBest)
 	d.mu.Unlock()
-
-	d.maybeSaveCheckpoints()
 	return nil
 }
 
@@ -1304,6 +1314,10 @@ func (d *Daemon) MinerStats() MinerStats {
 // SubmitTransaction adds a transaction to mempool and broadcasts to peers.
 // SubmitBlock validates a mined block, adds it to the chain, and broadcasts to peers.
 func (d *Daemon) SubmitBlock(block *Block) error {
+	// Encode the announcement while the proof of work is checked, so peers get
+	// the block as soon as it is accepted.
+	marshaled := make(chan []byte, 1)
+	go func() { marshaled <- marshalBlockJSON(block) }()
 	// Verify with no lock held, and without waiting behind peers' blocks.
 	preverification, err := d.chain.PreverifyOwnBlock(block)
 	if err != nil {
@@ -1326,16 +1340,14 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 		return fmt.Errorf("block not accepted (duplicate or stale)")
 	}
 
+	// Broadcast to peers first: nothing below changes what they receive.
+	d.syncMgr.BroadcastBlock(<-marshaled)
+
 	if isMainChain {
 		d.updateMempoolForAcceptedMainChain(block, prevBest)
 		d.miner.NotifyNewBlock()
 	}
 	d.mu.Unlock()
-
-	d.maybeSaveCheckpoints()
-
-	// Broadcast to peers
-	d.syncMgr.BroadcastBlock(marshalBlockJSON(block))
 
 	// Notify wallet/UI subscribers only for blocks that became main-chain.
 	// Side-chain blocks may be accepted for fork choice, but scanning them would
@@ -1345,6 +1357,7 @@ func (d *Daemon) SubmitBlock(block *Block) error {
 	}
 	d.notifyMinedBlock(block)
 
+	d.maybeSaveCheckpoints()
 	return nil
 }
 

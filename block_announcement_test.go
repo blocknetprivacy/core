@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"blocknet/p2p"
+
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 // announcementFixture is a chain with a tip, a block that passes every cheap
@@ -112,7 +114,7 @@ func TestAnnouncedBlockHoldsNoLockDuringVerification(t *testing.T) {
 	f := newAnnouncementFixture(t)
 	entered, release, _ := stubPreverify(t, errors.New("invalid proof of work"))
 	done := make(chan error, 1)
-	go func() { done <- f.daemon.processAnnouncedBlock(f.sender.PeerID(), f.data) }()
+	go func() { done <- announceBlock(f.daemon, f.sender.PeerID(), f.data) }()
 	waitEntered(t, entered)
 
 	if !f.daemon.mu.TryLock() {
@@ -152,7 +154,7 @@ func TestUntrustedPeersShareOneVerificationSlot(t *testing.T) {
 	f := newAnnouncementFixture(t)
 	entered, release, calls := stubPreverify(t, errors.New("invalid proof of work"))
 	first := make(chan error, 1)
-	go func() { first <- f.daemon.processAnnouncedBlock(f.sender.PeerID(), f.data) }()
+	go func() { first <- announceBlock(f.daemon, f.sender.PeerID(), f.data) }()
 	waitEntered(t, entered)
 
 	// A different block from another untrusted peer is dropped, not queued.
@@ -161,7 +163,7 @@ func TestUntrustedPeersShareOneVerificationSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	err = f.daemon.processAnnouncedBlock(f.sender.PeerID(), data)
+	err = announceBlock(f.daemon, f.sender.PeerID(), data)
 	if !errors.Is(err, errBlockIntakeBusy) {
 		t.Fatalf("got %v, want the intake to report busy", err)
 	}
@@ -222,7 +224,7 @@ func TestPendingVerificationsAreBounded(t *testing.T) {
 	f.daemon.blockIntakePending = maxPendingBlockVerifications
 	_, _, calls := stubPreverify(t, nil)
 	// Even a peer we trust is dropped once too much work is queued.
-	err := f.daemon.processAnnouncedBlock(f.sender.PeerID(), f.data)
+	err := announceBlock(f.daemon, f.sender.PeerID(), f.data)
 	if !errors.Is(err, errBlockIntakeBusy) {
 		t.Fatalf("got %v, want the intake to report busy", err)
 	}
@@ -249,10 +251,10 @@ func TestSameBlockIsVerifiedOnceAtATime(t *testing.T) {
 	f := newAnnouncementFixture(t)
 	entered, release, calls := stubPreverify(t, errors.New("invalid proof of work"))
 	first := make(chan error, 1)
-	go func() { first <- f.daemon.processAnnouncedBlock(f.sender.PeerID(), f.data) }()
+	go func() { first <- announceBlock(f.daemon, f.sender.PeerID(), f.data) }()
 	waitEntered(t, entered)
 
-	if err := f.daemon.processAnnouncedBlock(f.receiver.PeerID(), f.data); !errors.Is(err, ErrDuplicateBlock) {
+	if err := announceBlock(f.daemon, f.receiver.PeerID(), f.data); !errors.Is(err, ErrDuplicateBlock) {
 		t.Fatalf("got %v, want a duplicate", err)
 	}
 	if got := calls.Load(); got != 1 {
@@ -323,4 +325,14 @@ func TestCheapChecksRunBeforeProofOfWork(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 300*time.Millisecond {
 		t.Fatalf("rejecting took %s, which suggests PoW ran", elapsed)
 	}
+}
+
+// announceBlock runs an announced block through the daemon as the sync manager
+// does, including the work that follows the relay.
+func announceBlock(d *Daemon, from peer.ID, data []byte) error {
+	afterRelay, err := d.processAnnouncedBlock(from, data)
+	if afterRelay != nil {
+		afterRelay()
+	}
+	return err
 }

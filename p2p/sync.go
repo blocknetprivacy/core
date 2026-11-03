@@ -170,7 +170,7 @@ type SyncManager struct {
 	getMempool            func() [][]byte
 	processTx             func(data []byte) error
 	onBlockAccepted       func(data []byte)
-	processAnnouncedBlock func(from peer.ID, data []byte) error
+	processAnnouncedBlock func(from peer.ID, data []byte) (func(), error)
 	isOrphanError         func(error) bool
 	isDuplicateError      func(error) bool
 	getBlockMeta          func(data []byte) (height uint64, prevHash [32]byte, err error)
@@ -300,8 +300,9 @@ type SyncConfig struct {
 	GetMempool        func() [][]byte         // Get all mempool transactions
 	ProcessTx         func(data []byte) error // Process a mempool transaction
 	OnBlockAccepted   func(data []byte)       // Called when a new block announcement is accepted
-	// ProcessAnnouncedBlock handles a block a peer announced. If unset, ProcessBlock does.
-	ProcessAnnouncedBlock func(from peer.ID, data []byte) error
+	// ProcessAnnouncedBlock handles a block a peer announced. If unset, ProcessBlock
+	// does. A non-nil function it returns runs once an accepted block is relayed.
+	ProcessAnnouncedBlock func(from peer.ID, data []byte) (func(), error)
 	IsOrphanError         func(error) bool                                             // Orphan classifier for sync recovery (required for recovery to work)
 	IsDuplicateError      func(error) bool                                             // Duplicate classifier — block already known, treat as success
 	GetBlockMeta          func(data []byte) (uint64, [32]byte, error)                  // Extract (height, prevHash) from serialized block; required for orphan recovery
@@ -569,8 +570,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 	if sm.processBlock != nil || sm.processAnnouncedBlock != nil {
 		var err error
+		var afterRelay func()
 		if sm.processAnnouncedBlock != nil {
-			err = sm.processAnnouncedBlock(from, data)
+			afterRelay, err = sm.processAnnouncedBlock(from, data)
 		} else {
 			err = sm.processBlock(data)
 		}
@@ -587,12 +589,15 @@ func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 		}
 		// First delivery of a block we accepted builds a track record.
 		sm.node.RewardPeer(from)
+		// Relay to other peers (exclude sender) before any local bookkeeping.
+		sm.relayBlock(from, data)
+		if afterRelay != nil {
+			afterRelay()
+		}
 		// Notify daemon (miner restart, wallet subscribers)
 		if sm.onBlockAccepted != nil {
 			sm.onBlockAccepted(data)
 		}
-		// Relay to other peers (exclude sender)
-		sm.relayBlock(from, data)
 	}
 }
 
