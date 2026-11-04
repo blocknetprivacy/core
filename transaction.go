@@ -1010,7 +1010,7 @@ func validateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 		}
 	}
 
-	// Check each input
+	// Check each input's ring before any signature work.
 	for i, input := range tx.Inputs {
 		// Verify ring size is exactly RingSize
 		if len(input.RingMembers) != RingSize {
@@ -1024,23 +1024,23 @@ func validateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 				return fmt.Errorf("input %d ring member %d: not a canonical on-chain output", i, j)
 			}
 		}
+	}
 
+	// Verify every RingCT signature (key ownership and amount equality) and
+	// output range proof. Skipped below a trusted checkpoint during fast sync,
+	// where the checkpoint already attests this history is valid; the binding,
+	// double-spend and balance checks below still run regardless.
+	if !skipCrypto {
+		if err := verifyTxProofs(tx); err != nil {
+			return err
+		}
+	}
+
+	for i, input := range tx.Inputs {
 		ringSig := &RingCTSignature{
 			Signature: input.RingSignature,
 			RingSize:  len(input.RingMembers),
 		}
-
-		// Verify RingCT signature (proves key ownership AND amount equality).
-		// Skipped below a trusted checkpoint during fast sync — the checkpoint
-		// already attests this history is valid. The binding and double-spend
-		// checks below still run regardless.
-		if !skipCrypto {
-			sigHash := tx.SigningHash()
-			if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], ringSig); err != nil {
-				return fmt.Errorf("input %d: invalid RingCT signature: %w", i, err)
-			}
-		}
-
 		sigKeyImage, sigPseudoOutput, err := ExtractRingCTBinding(ringSig)
 		if err != nil {
 			return fmt.Errorf("input %d: invalid RingCT signature payload: %w", i, err)
@@ -1058,18 +1058,6 @@ func validateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 		}
 	}
 
-	// Verify each output range proof. Skipped below a trusted checkpoint during
-	// fast sync (see skipCrypto) — this is the single largest cost of a sync, as
-	// it is paid on every output including every block's coinbase.
-	if !skipCrypto {
-		for i, output := range tx.Outputs {
-			rangeProof := &RangeProof{Proof: output.RangeProof}
-			if err := VerifyRangeProof(output.Commitment, rangeProof); err != nil {
-				return fmt.Errorf("output %d: invalid range proof: %w", i, err)
-			}
-		}
-	}
-
 	// Verify commitment balance using pseudo-outputs (RingCT)
 	// sum(pseudo_outputs) = sum(outputs) + fee
 	if err := verifyCommitmentBalance(tx); err != nil {
@@ -1077,6 +1065,31 @@ func validateTransaction(tx *Transaction, isSpent KeyImageChecker, isCanonicalRi
 	}
 
 	return nil
+}
+
+// verifyTxProofs checks a transaction's RingCT signatures and output range
+// proofs concurrently. The error is the one a check in input-then-output order
+// would hit first.
+func verifyTxProofs(tx *Transaction) error {
+	sigHash := tx.SigningHash()
+	nInputs := len(tx.Inputs)
+	errs := make([]error, nInputs+len(tx.Outputs))
+	forEachParallel(len(errs), func(k int) {
+		if k < nInputs {
+			input := &tx.Inputs[k]
+			sig := &RingCTSignature{Signature: input.RingSignature, RingSize: len(input.RingMembers)}
+			if err := VerifyRingCT(input.RingMembers, input.RingCommitments, sigHash[:], sig); err != nil {
+				errs[k] = fmt.Errorf("input %d: invalid RingCT signature: %w", k, err)
+			}
+			return
+		}
+		i := k - nInputs
+		output := &tx.Outputs[i]
+		if err := VerifyRangeProof(output.Commitment, &RangeProof{Proof: output.RangeProof}); err != nil {
+			errs[k] = fmt.Errorf("output %d: invalid range proof: %w", i, err)
+		}
+	})
+	return firstError(errs)
 }
 
 // verifyCommitmentBalance verifies that input commitments equal output commitments + fee

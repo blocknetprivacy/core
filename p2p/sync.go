@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -170,7 +171,7 @@ type SyncManager struct {
 	getMempool            func() [][]byte
 	processTx             func(data []byte) error
 	onBlockAccepted       func(data []byte)
-	processAnnouncedBlock func(from peer.ID, data []byte) error
+	processAnnouncedBlock func(from peer.ID, data []byte) (func(), error)
 	isOrphanError         func(error) bool
 	isDuplicateError      func(error) bool
 	getBlockMeta          func(data []byte) (height uint64, prevHash [32]byte, err error)
@@ -300,8 +301,9 @@ type SyncConfig struct {
 	GetMempool        func() [][]byte         // Get all mempool transactions
 	ProcessTx         func(data []byte) error // Process a mempool transaction
 	OnBlockAccepted   func(data []byte)       // Called when a new block announcement is accepted
-	// ProcessAnnouncedBlock handles a block a peer announced. If unset, ProcessBlock does.
-	ProcessAnnouncedBlock func(from peer.ID, data []byte) error
+	// ProcessAnnouncedBlock handles a block a peer announced. If unset, ProcessBlock
+	// does. A non-nil function it returns runs once an accepted block is relayed.
+	ProcessAnnouncedBlock func(from peer.ID, data []byte) (func(), error)
 	IsOrphanError         func(error) bool                                             // Orphan classifier for sync recovery (required for recovery to work)
 	IsDuplicateError      func(error) bool                                             // Duplicate classifier — block already known, treat as success
 	GetBlockMeta          func(data []byte) (uint64, [32]byte, error)                  // Extract (height, prevHash) from serialized block; required for orphan recovery
@@ -569,8 +571,9 @@ func (sm *SyncManager) handleGetBlocksByHeight(s network.Stream, data []byte) {
 func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 	if sm.processBlock != nil || sm.processAnnouncedBlock != nil {
 		var err error
+		var afterRelay func()
 		if sm.processAnnouncedBlock != nil {
-			err = sm.processAnnouncedBlock(from, data)
+			afterRelay, err = sm.processAnnouncedBlock(from, data)
 		} else {
 			err = sm.processBlock(data)
 		}
@@ -587,12 +590,15 @@ func (sm *SyncManager) handleNewBlock(from peer.ID, data []byte) {
 		}
 		// First delivery of a block we accepted builds a track record.
 		sm.node.RewardPeer(from)
+		// Relay to other peers (exclude sender) before any local bookkeeping.
+		sm.relayBlock(from, data)
+		if afterRelay != nil {
+			afterRelay()
+		}
 		// Notify daemon (miner restart, wallet subscribers)
 		if sm.onBlockAccepted != nil {
 			sm.onBlockAccepted(data)
 		}
-		// Relay to other peers (exclude sender)
-		sm.relayBlock(from, data)
 	}
 }
 
@@ -1967,26 +1973,34 @@ func (sm *SyncManager) fetchAndProcessMempool(p peer.ID) error {
 	// Enforce entry count and decoded byte budget before processing.
 	txs = trimByteSliceBatch(txs, MaxSyncMempoolTxCount, SyncMempoolResponseByteBudget)
 
-	// Process each transaction
+	// Process the transactions in parallel: each one is validated on its own.
+	// A transaction's own proofs already verify in parallel, so a quarter of
+	// the CPUs take transactions.
 	attempted := 0
-	invalid := 0
-	for _, txData := range txs {
-		if sm.processTx != nil {
-			attempted++
-			if err := sm.processTx(txData); err != nil {
-				// Some errors are due to our local resource limits (e.g. mempool full).
-				// Those should not penalize the peer.
-				if isBenignMempoolProcessErr(err) {
-					continue
+	var invalid atomic.Int64
+	if sm.processTx != nil && len(txs) > 0 {
+		attempted = len(txs)
+		var next atomic.Int64
+		var wg sync.WaitGroup
+		workers := min(len(txs), max(1, runtime.GOMAXPROCS(0)/4))
+		wg.Add(workers)
+		for range workers {
+			go func() {
+				defer wg.Done()
+				for i := int(next.Add(1) - 1); i < len(txs); i = int(next.Add(1) - 1) {
+					// Some errors are due to our local resource limits (e.g. mempool
+					// full). Those should not penalize the peer.
+					if err := sm.processTx(txs[i]); !isBenignMempoolProcessErr(err) {
+						invalid.Add(1)
+					}
 				}
-				invalid++
-				continue
-			}
+			}()
 		}
+		wg.Wait()
 	}
 
 	if attempted > 0 && sm.node != nil {
-		if penalty, reason, ok := mempoolInvalidPenalty(attempted, invalid); ok {
+		if penalty, reason, ok := mempoolInvalidPenalty(attempted, int(invalid.Load())); ok {
 			sm.node.PenalizePeer(p, penalty, reason)
 		}
 	}

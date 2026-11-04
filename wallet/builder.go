@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math/bits"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"blocknet/protocol/params"
@@ -87,6 +89,11 @@ type TransferConfig struct {
 	RingSize   int
 	MinFee     uint64
 	FeePerByte uint64
+
+	// Parallelism caps how many outputs or inputs are built at once. Zero or one
+	// builds them one at a time. Above one, the callbacks must be safe for
+	// concurrent use.
+	Parallelism int
 }
 
 // Builder constructs transactions
@@ -275,14 +282,10 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 
 	useIndexed := currentHeight >= params.IndexedDerivationHeight && b.config.DeriveSharedSecretIndexed != nil
 
-	outputs := make([]outputData, 0, len(recipients)+changeSplit)
-
 	txPrivKey, txPubKey, err := b.deriveDeterministicR(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to derive tx key: %w", err)
 	}
-
-	var allBlindings [][32]byte
 
 	// deriveSecret picks the right derivation based on activation height.
 	deriveSecret := func(viewPub [32]byte, outputIndex int) ([32]byte, error) {
@@ -292,46 +295,17 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 		return b.config.DeriveSharedSecret(txPrivKey, viewPub)
 	}
 
-	for i, r := range recipients {
-		sharedSecret, err := deriveSecret(r.ViewPubKey, i)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive shared secret for recipient %d: %w", i, err)
-		}
-
-		sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive shared point for recipient %d: %w", i, err)
-		}
-		oneTimePub, err := b.config.PointAdd(sharedPoint, r.SpendPubKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to derive one-time key for recipient %d: %w", i, err)
-		}
-
-		blinding := DeriveBlinding(sharedSecret, i)
-		commitment := b.config.CreateCommitment(r.Amount, blinding)
-		rangeProof, err := b.config.CreateRangeProof(r.Amount, blinding)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create range proof: %w", err)
-		}
-
-		encryptedAmount := encryptAmount(r.Amount, blinding, i)
-		encryptedMemo, err := EncryptMemo(r.Memo, sharedSecret, i)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encrypt memo for recipient %d: %w", i, err)
-		}
-
-		outputs = append(outputs, outputData{
-			pubKey:          oneTimePub,
-			commitment:      commitment,
-			rangeProof:      rangeProof,
-			encryptedAmount: encryptedAmount,
-			encryptedMemo:   encryptedMemo,
-			blinding:        blinding,
-			amount:          r.Amount,
-		})
-		allBlindings = append(allBlindings, blinding)
+	// Recipients first, then the change split into changeSplit outputs.
+	type outputSpec struct {
+		spendPub, viewPub [32]byte
+		amount            uint64
+		memo              []byte
+		label             string // names the output in errors
 	}
-
+	specs := make([]outputSpec, 0, len(recipients)+changeSplit)
+	for i, r := range recipients {
+		specs = append(specs, outputSpec{r.SpendPubKey, r.ViewPubKey, r.Amount, r.Memo, fmt.Sprintf("recipient %d", i)})
+	}
 	changeOutputs := 0
 	if change > 0 {
 		keys := b.wallet.Keys()
@@ -344,58 +318,67 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 		changeOutputs = n
 
 		for c := 0; c < n; c++ {
-			outputIndex := len(outputs)
 			amt := perOutput
 			if c == 0 {
 				amt += remainder
 			}
-
-			changeSecret, err := deriveSecret(keys.ViewPubKey, outputIndex)
-			if err != nil {
-				return nil, fmt.Errorf("failed to derive shared secret for change output %d: %w", c, err)
-			}
-
-			sharedPoint, err := b.config.ScalarToPoint(changeSecret)
-			if err != nil {
-				return nil, fmt.Errorf("failed to derive shared point for change output %d: %w", c, err)
-			}
-			oneTimePub, err := b.config.PointAdd(sharedPoint, keys.SpendPubKey)
-			if err != nil {
-				return nil, fmt.Errorf("failed to derive one-time key for change output %d: %w", c, err)
-			}
-
-			blinding := DeriveBlinding(changeSecret, outputIndex)
-			commitment := b.config.CreateCommitment(amt, blinding)
-			rangeProof, err := b.config.CreateRangeProof(amt, blinding)
-			if err != nil {
-				return nil, fmt.Errorf("failed to create range proof for change output %d: %w", c, err)
-			}
-
-			encryptedAmount := encryptAmount(amt, blinding, outputIndex)
-			encryptedMemo, err := EncryptMemo(nil, changeSecret, outputIndex)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encrypt memo for change output %d: %w", c, err)
-			}
-
-			outputs = append(outputs, outputData{
-				pubKey:          oneTimePub,
-				commitment:      commitment,
-				rangeProof:      rangeProof,
-				encryptedAmount: encryptedAmount,
-				encryptedMemo:   encryptedMemo,
-				blinding:        blinding,
-				amount:          amt,
-			})
-			allBlindings = append(allBlindings, blinding)
+			specs = append(specs, outputSpec{keys.SpendPubKey, keys.ViewPubKey, amt, nil, fmt.Sprintf("change output %d", c)})
 		}
+	}
+
+	outputs := make([]outputData, len(specs))
+	err = b.forEach(len(specs), func(i int) error {
+		spec := specs[i]
+		sharedSecret, err := deriveSecret(spec.viewPub, i)
+		if err != nil {
+			return fmt.Errorf("failed to derive shared secret for %s: %w", spec.label, err)
+		}
+
+		sharedPoint, err := b.config.ScalarToPoint(sharedSecret)
+		if err != nil {
+			return fmt.Errorf("failed to derive shared point for %s: %w", spec.label, err)
+		}
+		oneTimePub, err := b.config.PointAdd(sharedPoint, spec.spendPub)
+		if err != nil {
+			return fmt.Errorf("failed to derive one-time key for %s: %w", spec.label, err)
+		}
+
+		blinding := DeriveBlinding(sharedSecret, i)
+		commitment := b.config.CreateCommitment(spec.amount, blinding)
+		rangeProof, err := b.config.CreateRangeProof(spec.amount, blinding)
+		if err != nil {
+			return fmt.Errorf("failed to create range proof for %s: %w", spec.label, err)
+		}
+
+		encryptedAmount := encryptAmount(spec.amount, blinding, i)
+		encryptedMemo, err := EncryptMemo(spec.memo, sharedSecret, i)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt memo for %s: %w", spec.label, err)
+		}
+
+		outputs[i] = outputData{
+			pubKey:          oneTimePub,
+			commitment:      commitment,
+			rangeProof:      rangeProof,
+			encryptedAmount: encryptedAmount,
+			encryptedMemo:   encryptedMemo,
+			blinding:        blinding,
+			amount:          spec.amount,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	allBlindings := make([][32]byte, len(outputs))
+	for i := range outputs {
+		allBlindings[i] = outputs[i].blinding
 	}
 
 	totalOutputBlinding, err := b.sumBlindings(allBlindings)
 	if err != nil {
 		return nil, fmt.Errorf("failed to sum output blindings: %w", err)
 	}
-
-	inputsData := make([]inputData, len(inputs))
 
 	pseudoBlindings, err := b.distributeBlindings(totalOutputBlinding, len(inputs))
 	if err != nil {
@@ -405,32 +388,9 @@ func (b *Builder) buildTransaction(inputs []*OwnedOutput, recipients []Recipient
 	txPrefix := serializeTxPrefix(txPubKey, len(inputs), outputs, fee)
 	txPrefixHash := sha3.Sum256(txPrefix)
 
-	for i, inp := range inputs {
-		ringKeys, ringCommitments, secretIndex, err := b.config.SelectRingMembers(inp.OneTimePubKey, inp.Commitment)
-		if err != nil {
-			return nil, fmt.Errorf("failed to select ring members: %w", err)
-		}
-
-		pseudoCommitment := b.config.CreateCommitment(inp.Amount, pseudoBlindings[i])
-
-		sig, keyImage, err := b.config.SignRingCT(
-			ringKeys, ringCommitments,
-			secretIndex,
-			inp.OneTimePrivKey, inp.Blinding,
-			pseudoCommitment, pseudoBlindings[i],
-			txPrefixHash[:],
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign input %d: %w", i, err)
-		}
-
-		inputsData[i] = inputData{
-			keyImage:        keyImage,
-			ringMembers:     ringKeys,
-			ringCommitments: ringCommitments,
-			pseudoOutput:    pseudoCommitment,
-			signature:       sig,
-		}
+	inputsData, err := b.signInputs(inputs, pseudoBlindings, txPrefixHash)
+	if err != nil {
+		return nil, err
 	}
 
 	txData := serializeTx(txPubKey, inputsData, outputs, fee)
@@ -543,7 +503,6 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 		return nil, fmt.Errorf("failed to sum output blindings: %w", err)
 	}
 
-	inputsData := make([]inputData, len(inputs))
 	pseudoBlindings, err := b.distributeBlindings(totalOutputBlinding, len(inputs))
 	if err != nil {
 		return nil, fmt.Errorf("failed to distribute blindings: %w", err)
@@ -552,32 +511,9 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 	txPrefix := serializeTxPrefix(txPubKey, len(inputs), outputs, fee)
 	txPrefixHash := sha3.Sum256(txPrefix)
 
-	for i, inp := range inputs {
-		ringKeys, ringCommitments, secretIndex, err := b.config.SelectRingMembers(inp.OneTimePubKey, inp.Commitment)
-		if err != nil {
-			return nil, fmt.Errorf("failed to select ring members: %w", err)
-		}
-
-		pseudoCommitment := b.config.CreateCommitment(inp.Amount, pseudoBlindings[i])
-
-		sig, keyImage, err := b.config.SignRingCT(
-			ringKeys, ringCommitments,
-			secretIndex,
-			inp.OneTimePrivKey, inp.Blinding,
-			pseudoCommitment, pseudoBlindings[i],
-			txPrefixHash[:],
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign input %d: %w", i, err)
-		}
-
-		inputsData[i] = inputData{
-			keyImage:        keyImage,
-			ringMembers:     ringKeys,
-			ringCommitments: ringCommitments,
-			pseudoOutput:    pseudoCommitment,
-			signature:       sig,
-		}
+	inputsData, err := b.signInputs(inputs, pseudoBlindings, txPrefixHash)
+	if err != nil {
+		return nil, err
 	}
 
 	txData := serializeTx(txPubKey, inputsData, outputs, fee)
@@ -595,6 +531,89 @@ func (b *Builder) TransferAll(recipient Recipient, feeRate uint64, currentHeight
 		Fee:          fee,
 		Change:       0,
 	}, nil
+}
+
+// signInputs selects a ring for each input and signs it over txPrefixHash.
+func (b *Builder) signInputs(inputs []*OwnedOutput, pseudoBlindings [][32]byte, txPrefixHash [32]byte) ([]inputData, error) {
+	inputsData := make([]inputData, len(inputs))
+	err := b.forEach(len(inputs), func(i int) error {
+		inp := inputs[i]
+		ringKeys, ringCommitments, secretIndex, err := b.config.SelectRingMembers(inp.OneTimePubKey, inp.Commitment)
+		if err != nil {
+			return fmt.Errorf("failed to select ring members: %w", err)
+		}
+
+		pseudoCommitment := b.config.CreateCommitment(inp.Amount, pseudoBlindings[i])
+
+		sig, keyImage, err := b.config.SignRingCT(
+			ringKeys, ringCommitments,
+			secretIndex,
+			inp.OneTimePrivKey, inp.Blinding,
+			pseudoCommitment, pseudoBlindings[i],
+			txPrefixHash[:],
+		)
+		if err != nil {
+			return fmt.Errorf("failed to sign input %d: %w", i, err)
+		}
+
+		inputsData[i] = inputData{
+			keyImage:        keyImage,
+			ringMembers:     ringKeys,
+			ringCommitments: ringCommitments,
+			pseudoOutput:    pseudoCommitment,
+			signature:       sig,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return inputsData, nil
+}
+
+// forEach calls fn(i) for every i in [0, n) on up to config.Parallelism
+// goroutines and returns the lowest-indexed error. Run one at a time, it stops
+// at the first error; in parallel, items after a failed one may be skipped.
+func (b *Builder) forEach(n int, fn func(i int) error) error {
+	workers := min(n, b.config.Parallelism)
+	if workers <= 1 {
+		for i := range n {
+			if err := fn(i); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	errs := make([]error, n)
+	var next, failedAt atomic.Int64
+	failedAt.Store(int64(n))
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := next.Add(1) - 1; i < int64(n); i = next.Add(1) - 1 {
+				if i > failedAt.Load() {
+					continue
+				}
+				if errs[i] = fn(int(i)); errs[i] != nil {
+					for {
+						cur := failedAt.Load()
+						if i >= cur || failedAt.CompareAndSwap(cur, i) {
+							break
+						}
+					}
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // EstimateTxSizeBytes returns a conservative byte-size estimate for a transaction.
