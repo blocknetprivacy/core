@@ -4216,7 +4216,15 @@
           "generation": { "type": "integer", "format": "int64", "description": "Monotonic content generation; changes whenever transactions are added or removed" },
           "min_fee": { "type": "integer", "description": "Lowest fee in the mempool (atomic units, 0 when empty)" },
           "max_fee": { "type": "integer", "description": "Highest fee in the mempool (atomic units, 0 when empty)" },
-          "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" }
+          "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" },
+          "fee_rates": {
+            "type": "object",
+            "description": "Fee per byte a typical send (two inputs, two outputs) needs to be mined in the next block or within three, estimated from the mempool. The standard rate (10) while blocks have room.",
+            "properties": {
+              "next_block": { "type": "integer" },
+              "within_3_blocks": { "type": "integer" }
+            }
+          }
         },
         "example": {
           "count": 5,
@@ -4224,7 +4232,8 @@
           "generation": 17,
           "min_fee": 10000,
           "max_fee": 25000,
-          "avg_fee": 14600.0
+          "avg_fee": 14600.0,
+          "fee_rates": { "next_block": 10, "within_3_blocks": 10 }
         }
       },
       "StatsResponse": {
@@ -4712,6 +4721,12 @@
             "type": "boolean",
             "default": false,
             "description": "If true, estimate the fee and return a preview without broadcasting. No transaction is created."
+          },
+          "fee_per_byte": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 1000,
+            "description": "Fee per byte in atomic units, from 10 (the standard rate, used when omitted) to 1000. A higher rate is mined sooner when blocks are full; see fee_rates in /api/mempool."
           }
         },
         "example": {
@@ -4850,6 +4865,12 @@
             "maximum": 4,
             "default": 1,
             "description": "Number of change outputs to create (1-4). The core treats 0 or less as 1. Higher values improve back-to-back send concurrency at the cost of reduced privacy (deviates from the standard 2-output transaction fingerprint). The actual count is min(change_split, change in atomic units), and 0 when there is no change."
+          },
+          "fee_per_byte": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 1000,
+            "description": "Fee per byte in atomic units, from 10 (the standard rate, used when omitted) to 1000. A higher rate is mined sooner when blocks are full; see fee_rates in /api/mempool."
           }
         },
         "example": {

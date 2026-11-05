@@ -24,6 +24,9 @@ import (
 const (
 	sendMinFee     = uint64(1000) // 0.00001 BNT minimum fee
 	sendFeePerByte = uint64(10)   // 0.0000001 BNT per byte
+	// The highest fee per byte a send may ask for: 100 times the standard
+	// rate, so a mistyped value cannot spend a balance on fees.
+	maxSendFeePerByte = uint64(1000)
 
 	// blockTemplateSyncHeightTolerance is how many blocks behind an active
 	// sync target the local tip may be while still serving mining templates.
@@ -152,7 +155,32 @@ func (s *APIServer) handleTx(w http.ResponseWriter, r *http.Request) {
 // handleMempool returns mempool stats.
 // GET /api/mempool
 func (s *APIServer) handleMempool(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.daemon.Mempool().Stats())
+	// Also the fee per byte a typical send (two inputs, two outputs) needs to
+	// be mined in the next block or within three, ranked as block templates
+	// rank the mempool; the standard rate while blocks have room. Templates
+	// leave 1000 bytes for the header and coinbase and take at most 1000
+	// transactions.
+	mp := s.daemon.Mempool()
+	typical := wallet.EstimateTxSizeBytes(2, 2, RingSize)
+	rate := func(blocks int) uint64 {
+		return mp.FeeRateFor(blocks, MaxBlockSize-1000, 1000, typical, sendFeePerByte)
+	}
+	writeJSON(w, http.StatusOK, struct {
+		MempoolStats
+		FeeRates map[string]uint64 `json:"fee_rates"`
+	}{mp.Stats(), map[string]uint64{"next_block": rate(1), "within_3_blocks": rate(3)}})
+}
+
+// sendFeeRate is a send's fee per byte: the standard rate unless the request
+// names one, which must lie between that and maxSendFeePerByte.
+func sendFeeRate(requested uint64) (uint64, error) {
+	if requested == 0 {
+		return sendFeePerByte, nil
+	}
+	if requested < sendFeePerByte || requested > maxSendFeePerByte {
+		return 0, fmt.Errorf("fee_per_byte must be between %d and %d", sendFeePerByte, maxSendFeePerByte)
+	}
+	return requested, nil
 }
 
 // handleMempoolTxs returns all mempool transactions as full tx objects.
@@ -1268,9 +1296,15 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Recipients []recipientRequest `json:"recipients"`
 		DryRun     bool               `json:"dry_run"`
+		FeePerByte uint64             `json:"fee_per_byte"`
 	}
 	if err := json.NewDecoder(bytes.NewReader(bodyBytes)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	feeRate, err := sendFeeRate(req.FeePerByte)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1323,7 +1357,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 				outputCount = len(validated)
 			}
 			estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
-			requiredFee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+			requiredFee := max(sendMinFee, uint64(estimatedSize)*feeRate)
 			if requiredFee <= fee {
 				change := inputTotal - totalSend - fee
 				writeJSON(w, http.StatusOK, map[string]any{
@@ -1343,7 +1377,7 @@ func (s *APIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	builder := s.createTxBuilder()
-	result, err := builder.Transfer(toWalletRecipients(validated), sendFeePerByte, height)
+	result, err := builder.Transfer(toWalletRecipients(validated), feeRate, height)
 	if err != nil {
 		writeSendError(w, r, err)
 		return
@@ -1476,6 +1510,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 		Recipients  []recipientRequest `json:"recipients"`
 		DryRun      bool               `json:"dry_run"`
 		ChangeSplit int                `json:"change_split"`
+		FeePerByte  uint64             `json:"fee_per_byte"`
 		Inputs      []struct {
 			TxID        string `json:"txid"`
 			OutputIndex int    `json:"output_index"`
@@ -1492,6 +1527,12 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Inputs) > 256 {
 		writeError(w, http.StatusBadRequest, "too many inputs (max 256)")
+		return
+	}
+
+	feeRate, err := sendFeeRate(req.FeePerByte)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -1553,7 +1594,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 	if req.DryRun {
 		outputCount := len(validated) + changeSplit
 		estimatedSize := wallet.EstimateTxSizeBytes(len(inputs), outputCount, RingSize)
-		fee := max(sendMinFee, uint64(estimatedSize)*sendFeePerByte)
+		fee := max(sendMinFee, uint64(estimatedSize)*feeRate)
 
 		need, ok := wallet.AddU64(totalSend, fee)
 		if !ok || inputTotal < need {
@@ -1578,7 +1619,7 @@ func (s *APIServer) handleSendAdvanced(w http.ResponseWriter, r *http.Request) {
 
 	releaseLease = false
 	builder := s.createTxBuilder()
-	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), sendFeePerByte, changeSplit, height)
+	result, err := builder.TransferWithInputs(inputs, lease, toWalletRecipients(validated), feeRate, changeSplit, height)
 	if err != nil {
 		writeSendError(w, r, err)
 		return
