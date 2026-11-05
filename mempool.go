@@ -168,30 +168,21 @@ func (m *Mempool) AddTransaction(tx *Transaction, txData []byte) error {
 	return nil
 }
 
-// evictLowest removes the lowest fee rate transaction if it's lower than minFeeRate
-func (m *Mempool) evictLowest(minFeeRate uint64) bool {
-	if len(m.priorityQueue) == 0 {
-		return false
-	}
-
-	// Peek at lowest
-	// Note: our heap is max-heap by fee rate, so we need min-heap for eviction
-	// For simplicity, we'll just remove oldest if at capacity
-	var oldest *MempoolEntry
-	var oldestID [32]byte
-	for id, entry := range m.txByID {
-		if oldest == nil || entry.AddedAt.Before(oldest.AddedAt) {
-			oldest = entry
-			oldestID = id
+// evictLowest removes the transaction paying the lowest fee rate (the oldest
+// of equals) if it pays less per byte than feeRate, the newcomer's rate.
+func (m *Mempool) evictLowest(feeRate uint64) bool {
+	var lowest *MempoolEntry
+	for _, entry := range m.txByID {
+		if lowest == nil || entry.FeeRate < lowest.FeeRate ||
+			(entry.FeeRate == lowest.FeeRate && entry.AddedAt.Before(lowest.AddedAt)) {
+			lowest = entry
 		}
 	}
-
-	if oldest != nil && oldest.FeeRate < minFeeRate {
-		m.removeTxByID(oldestID)
-		return true
+	if lowest == nil || lowest.FeeRate >= feeRate {
+		return false
 	}
-
-	return false
+	m.removeTxByID(lowest.TxID)
+	return true
 }
 
 // removeTxByID removes a transaction from mempool by ID
