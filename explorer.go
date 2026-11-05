@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
@@ -102,6 +103,10 @@ func NewExplorer(daemon *Daemon) *Explorer {
 // On mainnet, if the client has a net=testnet cookie, the request is
 // reverse-proxied to the co-located testnet explorer daemon.
 func (e *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/robots.txt" {
+		e.handleRobots(w, r)
+		return
+	}
 	if !params.IsTestnet {
 		if c, err := r.Cookie("net"); err == nil && c.Value == "testnet" {
 			if r.URL.Path == "/events" {
@@ -114,6 +119,19 @@ func (e *Explorer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	e.mux.ServeHTTP(w, r)
+}
+
+// handleRobots lets crawlers index blocks, transactions and stats, and keeps
+// them off search redirects, the event stream, raw block data and the proof endpoints.
+// A testnet explorer asks not to be indexed at all.
+func (e *Explorer) handleRobots(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=3600")
+	if params.IsTestnet {
+		_, _ = io.WriteString(w, "User-agent: *\nDisallow: /\n")
+		return
+	}
+	_, _ = io.WriteString(w, "User-agent: *\nAllow: /\nDisallow: /search\nDisallow: /events\nDisallow: /blockdata/\nDisallow: /prove\n")
 }
 
 func (e *Explorer) httpServer(addr string) *http.Server {

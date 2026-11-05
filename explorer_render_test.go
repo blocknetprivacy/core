@@ -43,7 +43,7 @@ func TestExplorerPagesRender(t *testing.T) {
 		path string
 		want string
 	}{
-		{"/", "blocknet explorer"},
+		{"/", "Blocknet (BNT) explorer"},
 		{"/block/0", fmt.Sprintf("%x", genesis.Hash())},
 		{"/tx/" + fmt.Sprintf("%x", txID), fmt.Sprintf("%x", txID)},
 		{"/stats", "blocknet"},
