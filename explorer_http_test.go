@@ -113,7 +113,7 @@ func TestExplorerGzipsPagesButNotEventStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to decompress index: %v", err)
 	}
-	if !strings.Contains(string(body), "blocknet explorer") {
+	if !strings.Contains(string(body), "Blocknet (BNT) explorer") {
 		t.Fatal("decompressed index is missing expected content")
 	}
 
@@ -246,5 +246,59 @@ func TestGetBlockByHeightDoesNotWaitForChainWriter(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		chain.mu.Unlock()
 		t.Fatal("GetBlockByHeight blocked while the chain write lock was held")
+	}
+}
+
+func TestExplorerServesRobotsTxt(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	e := NewExplorer(daemon)
+	req := httptest.NewRequest(http.MethodGet, "/robots.txt", nil)
+	// The testnet cookie must not divert crawlers to the testnet explorer.
+	req.AddCookie(&http.Cookie{Name: "net", Value: "testnet"})
+	rr := httptest.NewRecorder()
+	e.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Fatalf("content type = %q", ct)
+	}
+	body := rr.Body.String()
+	for _, want := range []string{"User-agent: *", "Allow: /", "Disallow: /search", "Disallow: /events"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("robots.txt missing %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestExplorerPagesCarryDescriptiveTitles(t *testing.T) {
+	chain, _, cleanup := mustCreateTestChain(t)
+	defer cleanup()
+	mustAddGenesisBlock(t, chain)
+
+	daemon, stopDaemon := mustStartTestDaemon(t, chain)
+	defer stopDaemon()
+
+	e := NewExplorer(daemon)
+	for path, want := range map[string]string{
+		"/":        "<title>Blocknet (BNT) explorer",
+		"/block/0": "<title>Blocknet block 0 · Blocknet (BNT) explorer</title>",
+		"/stats":   "<title>Blocknet network stats",
+	} {
+		rr := httptest.NewRecorder()
+		e.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", path, rr.Code)
+		}
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Fatalf("%s: missing %q", path, want)
+		}
 	}
 }

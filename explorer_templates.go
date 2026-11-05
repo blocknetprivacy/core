@@ -496,10 +496,10 @@ const explorerIndexTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>blocknet explorer</title>
-<meta name="description" content="Live blocks, transactions and network stats for blocknet, zero-knowledge money.">
-<meta property="og:title" content="blocknet explorer">
-<meta property="og:description" content="Live blocks, transactions and network stats for blocknet.">
+<title>Blocknet (BNT) explorer · live blocks and transactions</title>
+<meta name="description" content="Explore the Blocknet (BNT) blockchain: live blocks, private transactions, hashrate, difficulty and emission. Amounts and senders stay hidden.">
+<meta property="og:title" content="Blocknet (BNT) explorer">
+<meta property="og:description" content="Live blocks, private transactions and network stats for Blocknet (BNT).">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com">
 {{template "head" .}}
 </head>
@@ -542,10 +542,10 @@ const explorerBlockTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Block {{.Height}} · blocknet explorer</title>
-<meta name="description" content="blocknet block {{.Height}}">
-<meta property="og:title" content="Block {{.Height}} · blocknet">
-<meta property="og:description" content="blocknet block {{.Height}}: {{.TxCount}} transactions.">
+<title>Blocknet block {{.Height}} · Blocknet (BNT) explorer</title>
+<meta name="description" content="Blocknet (BNT) block {{.Height}}: {{.TxCount}} transactions, {{printf "%.8f" .Reward}} BNT reward, difficulty {{.Difficulty}}.">
+<meta property="og:title" content="Blocknet block {{.Height}}">
+<meta property="og:description" content="Blocknet (BNT) block {{.Height}}: {{.TxCount}} transactions.">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com/block/{{.Height}}">
 {{template "head" .}}
 </head>
@@ -581,10 +581,10 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Transaction {{slice .Hash 0 12}} · blocknet explorer</title>
-<meta name="description" content="A private blocknet transaction.">
-<meta property="og:title" content="Transaction · blocknet">
-<meta property="og:description" content="A private blocknet transaction. Amounts and senders are hidden.">
+<title>Blocknet transaction {{slice .Hash 0 12}} · Blocknet (BNT) explorer</title>
+<meta name="description" content="A private Blocknet (BNT) transaction{{if not .InMempool}} in block {{.BlockHeight}}{{end}}: {{.InputCount}} inputs and {{.OutputCount}} outputs. Amounts and senders are hidden.">
+<meta property="og:title" content="Blocknet transaction">
+<meta property="og:description" content="A private Blocknet (BNT) transaction. Amounts and senders are hidden.">
 {{template "head" .}}
 </head>
 <body>
@@ -647,10 +647,10 @@ const explorerStatsTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Network stats · blocknet explorer</title>
-<meta name="description" content="blocknet network statistics">
-<meta property="og:title" content="Network stats · blocknet">
-<meta property="og:description" content="Difficulty, hashrate, block time and emission for blocknet.">
+<title>Blocknet network stats · hashrate, difficulty and emission</title>
+<meta name="description" content="Blocknet (BNT) network statistics: hashrate, difficulty, block time, transactions and coin emission, charted over time.">
+<meta property="og:title" content="Blocknet network stats">
+<meta property="og:description" content="Difficulty, hashrate, block time and emission for Blocknet (BNT).">
 <meta property="og:url" content="https://explorer.blocknetcrypto.com/stats">
 {{template "head" .}}
 </head>
@@ -681,7 +681,7 @@ const explorerNotFoundTmpl = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Not found · blocknet explorer</title>
+<title>Not found · Blocknet explorer</title>
 <meta name="robots" content="noindex">
 {{template "head" .}}
 </head>
