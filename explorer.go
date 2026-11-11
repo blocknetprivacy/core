@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"blocknet/protocol/params"
-	"blocknet/wallet"
 
 	"golang.org/x/time/rate"
 )
@@ -805,29 +804,7 @@ func (e *Explorer) handleProve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var results []proveResult
-	for i, out := range tx.Outputs {
-		if !CheckStealthOutput(spendPub, viewPriv, tx.TxPublicKey, out.PublicKey) {
-			results = append(results, proveResult{Index: i})
-			continue
-		}
-
-		po := proveResult{Index: i, Match: true}
-		var blinding [32]byte
-		if isCoinbase {
-			blinding = wallet.DeriveCoinbaseConsensusBlinding(tx.TxPublicKey, blockHeight, i)
-		} else {
-			secret, serr := DeriveStealthSecret(tx.TxPublicKey, viewPriv)
-			if serr == nil {
-				blinding = wallet.DeriveBlinding(secret, i)
-				if memo, ok := wallet.DecryptMemo(out.EncryptedMemo, secret, i); ok && len(memo) > 0 {
-					po.Memo = string(memo)
-				}
-			}
-		}
-		po.Amount = float64(wallet.DecryptAmount(out.EncryptedAmount, blinding, i)) / 100_000_000
-		results = append(results, po)
-	}
+	results := explorerProofResults(decodeProofOutputs(tx, viewPriv, tx.TxPublicKey, spendPub, isCoinbase, blockHeight))
 
 	proveJSON(w, http.StatusOK, results)
 }
@@ -886,31 +863,8 @@ func (e *Explorer) handleProveSend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ECDH is symmetric: H(tx_priv * view_pub) == H(view_priv * tx_pub)
-	// So we can reuse CheckStealthOutput by swapping the scalar/point roles.
-	var results []proveResult
-	for i, out := range tx.Outputs {
-		if !CheckStealthOutput(spendPub, txPriv, viewPub, out.PublicKey) {
-			results = append(results, proveResult{Index: i})
-			continue
-		}
-
-		po := proveResult{Index: i, Match: true}
-		var blinding [32]byte
-		if isCoinbase {
-			blinding = wallet.DeriveCoinbaseConsensusBlinding(tx.TxPublicKey, blockHeight, i)
-		} else {
-			secret, serr := DeriveStealthSecretSender(txPriv, viewPub)
-			if serr == nil {
-				blinding = wallet.DeriveBlinding(secret, i)
-				if memo, ok := wallet.DecryptMemo(out.EncryptedMemo, secret, i); ok && len(memo) > 0 {
-					po.Memo = string(memo)
-				}
-			}
-		}
-		po.Amount = float64(wallet.DecryptAmount(out.EncryptedAmount, blinding, i)) / 100_000_000
-		results = append(results, po)
-	}
+	// ECDH is symmetric: txPriv*viewPub == viewPriv*txPub.
+	results := explorerProofResults(decodeProofOutputs(tx, txPriv, viewPub, spendPub, isCoinbase, blockHeight))
 
 	proveJSON(w, http.StatusOK, results)
 }
