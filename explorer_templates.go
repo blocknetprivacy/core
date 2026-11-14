@@ -608,8 +608,8 @@ const explorerTxTmpl = `<!DOCTYPE html>
 <div class="tabs"><button class="on" data-t="r" type="button">received</button><button data-t="s" type="button">sent</button></div>
 <div data-p="r"><p class="note" style="margin-bottom:8px">Check if an output in this transaction is yours.</p><p class="warnl">Your view private key is sent to this server.</p>
 <input id="recv-spend" placeholder="spend public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><input id="recv-view" placeholder="view private key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><button class="go" id="recv-btn" type="button">check</button></div>
-<div data-p="s" style="display:none"><p class="note" style="margin-bottom:8px">Prove you sent this transaction. Give the view private key and the recipient's public keys. Anyone can check this proof.</p>
-<input id="send-txpriv" placeholder="view private key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><input id="send-spend" placeholder="recipient spend public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><input id="send-view" placeholder="recipient view public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><button class="go" id="send-btn" type="button">prove</button></div>
+<div data-p="s" style="display:none"><p class="note" style="margin-bottom:8px">Prove you sent this transaction using its transaction private key (tx_key from prove) and the recipient's public keys. This reveals the transaction's payment details, not your wallet-wide private keys.</p>
+<input id="send-txpriv" placeholder="transaction private key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><input id="send-spend" placeholder="recipient spend public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><input id="send-view" placeholder="recipient view public key (64 hex)" maxlength="64" spellcheck="false" autocomplete="off"><button class="go" id="send-btn" type="button">prove</button></div>
 <div id="prove-result" style="display:none"></div></div>
 </div>
 <div>

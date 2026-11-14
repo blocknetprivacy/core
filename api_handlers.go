@@ -468,32 +468,14 @@ func (s *APIServer) handleVerifyProof(w http.ResponseWriter, r *http.Request) {
 // without a live chain lookup.
 func matchProofOutputs(tx *Transaction, txPriv, spendPub, viewPub [32]byte, isCoinbase bool, blockHeight uint64) (outputs []map[string]any, totalMatched uint64) {
 	outputs = make([]map[string]any, 0, len(tx.Outputs))
-	for i, out := range tx.Outputs {
-		if !CheckStealthOutput(spendPub, txPriv, viewPub, out.PublicKey) {
-			outputs = append(outputs, map[string]any{"index": i, "match": false})
-			continue
-		}
-
-		var blinding [32]byte
-		var memo string
-		if isCoinbase {
-			blinding = wallet.DeriveCoinbaseConsensusBlinding(tx.TxPublicKey, blockHeight, i)
-		} else {
-			secret, serr := DeriveStealthSecretSender(txPriv, viewPub)
-			if serr == nil {
-				blinding = wallet.DeriveBlinding(secret, i)
-				if m, ok := wallet.DecryptMemo(out.EncryptedMemo, secret, i); ok && len(m) > 0 {
-					memo = string(m)
-				}
+	for _, out := range decodeProofOutputs(tx, txPriv, viewPub, spendPub, isCoinbase, blockHeight) {
+		entry := map[string]any{"index": out.Index, "match": out.Match}
+		if out.Match {
+			entry["amount"] = out.Amount
+			totalMatched += out.Amount
+			if out.Memo != "" {
+				entry["memo"] = out.Memo
 			}
-		}
-
-		amount := wallet.DecryptAmount(out.EncryptedAmount, blinding, i)
-		totalMatched += amount
-
-		entry := map[string]any{"index": i, "match": true, "amount": amount}
-		if memo != "" {
-			entry["memo"] = memo
 		}
 		outputs = append(outputs, entry)
 	}
