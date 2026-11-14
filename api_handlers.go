@@ -153,11 +153,22 @@ func (s *APIServer) handleTx(w http.ResponseWriter, r *http.Request) {
 // handleMempool returns mempool stats.
 // GET /api/mempool
 func (s *APIServer) handleMempool(w http.ResponseWriter, r *http.Request) {
+	// Also the fee per byte a typical send (two inputs, two outputs) needs to
+	// be mined in the next block or within three, ranked as block templates
+	// rank the mempool; the base rate while blocks have room. Templates
+	// leave 1000 bytes for the header and coinbase and take at most 1000
+	// transactions.
+	mp := s.daemon.Mempool()
+	typical := wallet.EstimateTxSizeBytes(2, 2, RingSize)
+	rate := func(blocks int) uint64 {
+		return mp.FeeRateFor(blocks, MaxBlockSize-1000, 1000, typical, sendFeePerByte)
+	}
 	writeJSON(w, http.StatusOK, struct {
 		MempoolStats
-		BaseFeePerByte uint64 `json:"base_fee_per_byte"`
-		MinTxFee       uint64 `json:"min_tx_fee"`
-	}{s.daemon.Mempool().Stats(), sendFeePerByte, sendMinFee})
+		BaseFeePerByte uint64            `json:"base_fee_per_byte"`
+		MinTxFee       uint64            `json:"min_tx_fee"`
+		FeeRates       map[string]uint64 `json:"fee_rates"`
+	}{mp.Stats(), sendFeePerByte, sendMinFee, map[string]uint64{"next_block": rate(1), "within_3_blocks": rate(3)}})
 }
 
 // handleMempoolTxs returns all mempool transactions as full tx objects.

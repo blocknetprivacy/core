@@ -498,7 +498,8 @@
                   "max_fee": 25000,
                   "avg_fee": 14600.0,
                   "base_fee_per_byte": 10,
-                  "min_tx_fee": 1000
+                  "min_tx_fee": 1000,
+                  "fee_rates": { "next_block": 10, "within_3_blocks": 10 }
                 }
               }
             }
@@ -4569,7 +4570,15 @@
           "max_fee": { "type": "integer", "description": "Highest fee in the mempool (atomic units, 0 when empty)" },
           "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" },
           "base_fee_per_byte": { "type": "integer", "description": "Base fee rate this node charges for wallet sends, in atomic units per byte. extra_fee_per_byte is added to it." },
-          "min_tx_fee": { "type": "integer", "description": "Lowest fee a wallet send pays, in atomic units, whatever its size" }
+          "min_tx_fee": { "type": "integer", "description": "Lowest fee a wallet send pays, in atomic units, whatever its size" },
+          "fee_rates": {
+            "type": "object",
+            "description": "Fee per byte a typical send (two inputs, two outputs) needs to be mined in the next block or within three, estimated from the mempool. Equal to base_fee_per_byte while blocks have room. To pay a rate, send extra_fee_per_byte = rate - base_fee_per_byte.",
+            "properties": {
+              "next_block": { "type": "integer" },
+              "within_3_blocks": { "type": "integer" }
+            }
+          }
         },
         "example": {
           "count": 5,
@@ -4579,7 +4588,8 @@
           "max_fee": 25000,
           "avg_fee": 14600.0,
           "base_fee_per_byte": 10,
-          "min_tx_fee": 1000
+          "min_tx_fee": 1000,
+          "fee_rates": { "next_block": 10, "within_3_blocks": 10 }
         }
       },
       "StatsResponse": {

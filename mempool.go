@@ -236,6 +236,44 @@ func (m *Mempool) evictLowest(feeRate uint64) bool {
 	return true
 }
 
+// FeeRateFor returns the fee per byte a new transaction of txSize bytes needs
+// to fall within the next blocks blocks of the mempool, ranked as block
+// templates rank it (fee rate, highest first; blockSpace bytes and maxCount
+// transactions a block). It is floor while those blocks have room for it.
+// Packing gaps are ignored, so it is an estimate.
+func (m *Mempool) FeeRateFor(blocks, blockSpace, maxCount, txSize int, floor uint64) uint64 {
+	m.mu.RLock()
+	rates := make([]struct {
+		rate uint64
+		size int
+	}, 0, len(m.txByID))
+	for _, entry := range m.txByID {
+		if entry.FeeRate >= floor {
+			rates = append(rates, struct {
+				rate uint64
+				size int
+			}{entry.FeeRate, entry.Size})
+		}
+	}
+	m.mu.RUnlock()
+	sort.Slice(rates, func(i, j int) bool { return rates[i].rate > rates[j].rate })
+
+	room, slots := blocks*blockSpace-txSize, blocks*maxCount-1
+	for i := 0; i < len(rates); {
+		// Paying one more than a rate puts the transaction ahead of all of
+		// that rate's transactions; equal rates are ranked by TxID.
+		rate, size, j := rates[i].rate, 0, i
+		for ; j < len(rates) && rates[j].rate == rate; j++ {
+			size += rates[j].size
+		}
+		if size > room || j-i > slots {
+			return rate + 1
+		}
+		room, slots, i = room-size, slots-(j-i), j
+	}
+	return floor
+}
+
 // removeTxByID removes a transaction from mempool by ID
 func (m *Mempool) removeTxByID(txID [32]byte) {
 	entry, exists := m.txByID[txID]
