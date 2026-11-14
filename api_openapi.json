@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Blocknet Daemon API",
-    "description": "Network upgrade notice: Blocknet plans a network upgrade around 2027-02-16. After it, you will have 1 year to move your coins to the new format, until about 2028-02-16. Coins not moved by then cannot be spent. The wallet will guide you. JSON API for the Blocknet privacy blockchain daemon. The API starts when the core runs with `--api <addr>`. Private endpoints require Bearer token authentication with the token in `<dataDir>/api.cookie`, written on startup. Public blockchain routes (`GET /api/health`, `/api/status`, `/api/block/{id}`, `/api/tx/{hash}`, `/api/mempool`, `/api/mempool/txs`, `/api/peers`, `/api/peers/banned`, `/api/stats`, and `POST /api/verify`, `/api/verify-proof`) need no token. Node settings are read and changed with `GET` and `PATCH /api/settings`.",
+    "description": "Network upgrade notice: Blocknet plans a network upgrade around 2027-02-16. After it, you will have 1 year to move your coins to the new format, until about 2028-02-16. Coins not moved by then cannot be spent. The wallet will guide you. JSON API for the Blocknet privacy blockchain daemon. The API starts when the core runs with `--api <addr>`. Private endpoints require Bearer token authentication with the token in `<dataDir>/api.cookie`, written on startup. Public blockchain routes (`GET /api/health`, `/api/status`, `/api/block/{id}`, `/api/tx/{hash}`, `/api/mempool`, `/api/mempool/txs`, `/api/peers`, `/api/peers/banned`, `/api/stats`, and `POST /api/verify`, `/api/verify-proof`) need no token. Node settings are read and changed with `GET` and `PATCH /api/settings`. Request bodies are limited to 1 MiB; a larger JSON body is refused with 400 `invalid JSON body`. On private routes the token is checked first, so an unknown path without a valid token returns 401, and a known path with the wrong method returns 405 with a plain-text body.",
     "version": "0.23.0",
     "license": {
       "name": "MIT"
@@ -128,7 +128,7 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "internal error" }
+                "example": { "error": "failed to save settings" }
               }
             }
           }
@@ -322,7 +322,7 @@
                   ],
                   "confirmations": 1,
                   "reward": 72325093035,
-                  "fees": 0
+                  "fees": 15000
                 }
               }
             }
@@ -354,7 +354,7 @@
         "operationId": "getTx",
         "tags": ["Blockchain"],
         "summary": "Get transaction by hash",
-        "description": "Searches mempool first (fast), then the transaction index (a chain scan is used only while the index is still building). Returns the transaction with confirmation count and mempool status.",
+        "description": "Searches mempool first (fast), then the transaction index. There is no chain scan: a transaction that the index does not hold, or an index read error, gives 404. Returns the transaction with confirmation count and mempool status.",
         "parameters": [
           {
             "name": "hash",
@@ -363,7 +363,7 @@
             "description": "Transaction hash (64 hex characters)",
             "schema": {
               "type": "string",
-              "pattern": "^[a-f0-9]{64}$"
+              "pattern": "^[0-9a-fA-F]{64}$"
             },
             "example": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
           }
@@ -676,7 +676,7 @@
                 "$ref": "#/components/schemas/VerifyRequest"
               },
               "example": {
-                "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                 "message": "blocknet-auth:1:blocknet.id:a1b2c3d4e5f6:1708531200",
                 "signature": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
               }
@@ -790,7 +790,7 @@
               "example": {
                 "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
                 "tx_key": "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f",
-                "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF"
+                "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG"
               }
             }
           }
@@ -922,7 +922,7 @@
                 },
                 "example": {
                   "loaded": true,
-                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                   "filename": "mywallet.dat",
                   "synced_height": 4200,
                   "chain_height": 9800
@@ -953,7 +953,7 @@
             }
           },
           "401": {
-            "description": "Missing or invalid Bearer token (text/plain), or wrong wallet password (JSON)",
+            "description": "Missing or invalid Bearer token (text/plain). Or, as JSON: wrong wallet password, or a file that could not be decrypted (for example truncated or damaged)",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
@@ -998,7 +998,7 @@
             }
           },
           "422": {
-            "description": "Wallet file is corrupted or unreadable",
+            "description": "The file decrypted, but its contents are not valid wallet data",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
@@ -1070,7 +1070,7 @@
                 },
                 "example": {
                   "created": true,
-                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                   "filename": "wallet.dat"
                 }
               }
@@ -1235,7 +1235,7 @@
                 "example": {
                   "imported": true,
                   "view_only": false,
-                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                   "filename": "restored.dat",
                   "synced_height": 0,
                   "chain_height": 9800
@@ -1372,7 +1372,7 @@
                   }
                 },
                 "example": {
-                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                   "view_only": false
                 }
               }
@@ -1455,7 +1455,7 @@
             "name": "limit",
             "in": "query",
             "required": false,
-            "schema": { "type": "integer", "minimum": 0, "maximum": 500, "default": 20 },
+            "schema": { "type": "integer", "minimum": 0, "default": 20 },
             "description": "Maximum number of outputs to return. Values above 500 are clamped to 500."
           },
           {
@@ -1470,7 +1470,7 @@
             "in": "query",
             "required": false,
             "schema": { "type": "string", "enum": ["desc", "asc"], "default": "desc" },
-            "description": "Sort direction. desc is newest-first (pending, then descending block height); asc reverses it. Ties break by txid then output index."
+            "description": "Sort direction. desc is newest-first (pending, then descending block height); asc reverses it. Ties break by txid then output index. Case and surrounding spaces are ignored."
           }
         ],
         "responses": {
@@ -1534,7 +1534,7 @@
             "name": "limit",
             "in": "query",
             "required": false,
-            "schema": { "type": "integer", "minimum": 0, "maximum": 500, "default": 50 },
+            "schema": { "type": "integer", "minimum": 0, "default": 50 },
             "description": "Maximum number of sends to return. Values above 500 are clamped to 500."
           },
           {
@@ -1549,7 +1549,7 @@
             "in": "query",
             "required": false,
             "schema": { "type": "string", "enum": ["desc", "asc"], "default": "desc" },
-            "description": "Sort direction by wallet-recorded send timestamp. Ties are sorted by txid."
+            "description": "Sort direction by wallet-recorded send timestamp. Ties are sorted by txid. Case and surrounding spaces are ignored."
           }
         ],
         "responses": {
@@ -1576,7 +1576,7 @@
                       "total_amount": 3250000000000,
                       "recipients": [
                         {
-                          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                           "amount": 3250000000000,
                           "memo_hex": "696e766f696365202338343231"
                         }
@@ -1598,6 +1598,15 @@
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "403": { "$ref": "#/components/responses/WalletLocked" },
+          "500": {
+            "description": "The chain state of the sends could not be read from storage",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "unable to read transaction status" }
+              }
+            }
+          },
           "503": { "$ref": "#/components/responses/NoWallet" }
         }
       }
@@ -1636,6 +1645,7 @@
                   "spent": 1,
                   "unspent": 1,
                   "pending": 1,
+                  "unspendable": 0,
                   "outputs": [
                     {
                       "txid": "f0e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d",
@@ -1687,7 +1697,7 @@
         "operationId": "sendFunds",
         "tags": ["Wallet"],
         "summary": "Send funds",
-        "description": "Builds a privacy-preserving transaction with one or more recipients using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * tx_size), using the values from GET /api/mempool. Note: multi-recipient transactions link all recipients within the same transaction from a graph-analysis perspective. Requires unlocked full wallet (not view-only).",
+        "description": "Builds a privacy-preserving transaction with one or more recipients using RingCT (Pedersen commitments, Bulletproofs range proofs, CLSAG ring signatures with fixed ring size 16), submits to mempool, and broadcasts via Dandelion++. Fee is calculated as max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size), using the values from GET /api/mempool. estimated_size is a conservative size estimate, not the final serialized size. Note: multi-recipient transactions link all recipients within the same transaction from a graph-analysis perspective. Requires unlocked full wallet (not view-only).",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -1707,7 +1717,7 @@
               "example": {
                 "recipients": [
                   {
-                    "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                    "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                     "amount": 500000000
                   }
                 ]
@@ -1723,17 +1733,40 @@
                 "schema": {
                   "$ref": "#/components/schemas/SendResponse"
                 },
-                "example": {
-                  "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
-                  "fee": 15000,
-                  "change": 734850000,
-                  "recipients": [
-                    {
-                      "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
-                      "amount": 500000000
+                "examples": {
+                  "broadcast": {
+                    "summary": "Transaction broadcast",
+                    "value": {
+                      "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
+                      "fee": 47210,
+                      "fee_per_byte": 10,
+                      "change": 734952790,
+                      "dry_run": false,
+                      "recipients": [
+                        {
+                          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
+                          "amount": 500000000
+                        }
+                      ]
                     }
-                  ],
-                  "dry_run": false
+                  },
+                  "dry_run": {
+                    "summary": "Dry-run preview (no txid)",
+                    "value": {
+                      "dry_run": true,
+                      "fee": 47210,
+                      "fee_per_byte": 10,
+                      "change": 734952790,
+                      "input_total": 1235000000,
+                      "input_count": 1,
+                      "recipients": [
+                        {
+                          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
+                          "amount": 500000000
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             }
@@ -1779,9 +1812,15 @@
                     }
                   },
                   "insufficient_fee": {
-                    "summary": "Not enough funds once the fee is added",
+                    "summary": "Dry run: not enough funds once the fee is added",
                     "value": {
-                      "error": "insufficient funds: 25 BNT to send plus a fee of about 0.0024465 BNT (50 per byte) needs 25.0024465 BNT, and 25.001 BNT is spendable"
+                      "error": "insufficient funds: 25 BNT to send plus a fee of about 0.0023605 BNT (50 per byte) needs 25.0023605 BNT, and 25.001 BNT is spendable"
+                    }
+                  },
+                  "insufficient_fee_send": {
+                    "summary": "Real send: not enough funds once the fee is added",
+                    "value": {
+                      "error": "insufficient funds: 25 BNT to send plus the fee at 50 per byte is more than the 25.001 BNT that is spendable"
                     }
                   },
                   "too_many_coins": {
@@ -1827,7 +1866,7 @@
                   },
                   "double_spend": {
                     "summary": "Input already spent in the mempool or chain",
-                    "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...)" }
+                    "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...); a replacement must spend every coin of the transaction it replaces" }
                   },
                   "interrupted": {
                     "summary": "Node restarted while the request was running",
@@ -1946,7 +1985,7 @@
                   "value": {
                     "recipients": [
                       {
-                        "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                        "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                         "amount": 500000000
                       }
                     ],
@@ -1961,7 +2000,7 @@
                   "value": {
                     "recipients": [
                       {
-                        "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                        "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                         "amount": 500000000
                       }
                     ],
@@ -1976,7 +2015,7 @@
                   "value": {
                     "recipients": [
                       {
-                        "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                        "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                         "amount": 500000000
                       }
                     ],
@@ -2003,15 +2042,16 @@
                     "summary": "Transaction broadcast",
                     "value": {
                       "txid": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
-                      "fee": 15000,
-                      "change": 234850000,
+                      "fee": 69370,
+                      "fee_per_byte": 10,
+                      "change": 234930630,
                       "change_split": 1,
                       "input_total": 735000000,
                       "input_count": 2,
                       "dry_run": false,
                       "recipients": [
                         {
-                          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                           "amount": 500000000
                         }
                       ]
@@ -2020,15 +2060,16 @@
                   "dry_run": {
                     "summary": "Dry-run preview",
                     "value": {
-                      "fee": 15000,
-                      "change": 234850000,
+                      "fee": 47210,
+                      "fee_per_byte": 10,
+                      "change": 234952790,
                       "change_split": 1,
                       "input_total": 735000000,
                       "input_count": 1,
                       "dry_run": true,
                       "recipients": [
                         {
-                          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                           "amount": 500000000
                         }
                       ]
@@ -2062,12 +2103,24 @@
                   },
                   "duplicate": {
                     "summary": "Duplicate input reference",
-                    "value": { "error": "input 2: duplicate of input 0 (txid b3c4d5...a2b3c4, index 0)" }
+                    "value": { "error": "input 2: duplicate of input 0 (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)" }
+                  },
+                  "bad_txid_hex": {
+                    "summary": "Input txid is not hex",
+                    "value": { "error": "input 0: invalid txid hex" }
+                  },
+                  "unspendable": {
+                    "summary": "Output shares a one-time key with a larger output",
+                    "value": { "error": "input 0: output is unspendable, it shares a one-time key with a larger output (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)" }
+                  },
+                  "reserved": {
+                    "summary": "Output is in use by another send that is still running",
+                    "value": { "error": "input 0: reserved by another in-flight transaction (txid b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4, index 0)" }
                   },
                   "insufficient": {
                     "summary": "Dry run: inputs don't cover amount + fee",
                     "value": {
-                      "error": "insufficient input amount: inputs total 0.001 BNT, need at least 5.00015 BNT (amount 5 BNT + fee 0.00015 BNT)"
+                      "error": "insufficient input amount: inputs total 0.001 BNT, need at least 5.0004721 BNT (amount 5 BNT + fee 0.0004721 BNT)"
                     }
                   },
                   "insufficient_build": {
@@ -2137,7 +2190,7 @@
                   },
                   "double_spend": {
                     "summary": "Input already spent in the mempool or chain",
-                    "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...)" }
+                    "value": { "error": "mempool rejected: double-spend: key image already in mempool (tx 1a2b3c4d5e6f7a8b...); a replacement must spend every coin of the transaction it replaces" }
                   },
                   "interrupted": {
                     "summary": "Node restarted while the request was running",
@@ -2196,7 +2249,7 @@
           "Wallet"
         ],
         "summary": "Speed up a pending send (replace-by-fee)",
-        "description": "Rebuilds a pending send of this wallet at a higher fee and replaces it in the mempool. The new transaction spends the same coins with the same ring members, pays the same recipients and memos, and may add coins when the change cannot cover the higher fee. The fee rate is at least the old rate (rounded up) plus base_fee_per_byte, even if extra_fee_per_byte asks for less; fee_per_byte in the response is the rate used. The old send record gets replaced_by and a new record gets replaces; GET /api/wallet/sends shows only the newest with a bumps count. A send to a $handle can be bumped only if the wallet saved the address the handle resolved to. Nodes that do not support replacement keep the old transaction. Requires an unlocked full wallet.",
+        "description": "Rebuilds a pending send of this wallet at a higher fee and replaces it in the mempool. The new transaction spends the same coins with the same ring members, pays the same recipients and memos, and may add coins when the change cannot cover the higher fee. The fee rate is at least the old rate (rounded up) plus base_fee_per_byte, even if extra_fee_per_byte asks for less; fee_per_byte in the response is the rate used. The fee is also at least the old fee plus base_fee_per_byte for each byte of the old transaction. The old send record gets replaced_by and a new record gets replaces; GET /api/wallet/sends shows only the newest with a bumps count. A send to a $handle can be bumped only if the wallet saved the address the handle resolved to. Nodes that do not support replacement keep the old transaction. Requires an unlocked full wallet.",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -2206,7 +2259,7 @@
               "type": "string",
               "maxLength": 128
             },
-            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. If the node stopped while the request was running, its outcome is unknown: the key shows state `accepted` in the status route and returns 409 with an interrupted message until it expires."
+            "description": "Optional idempotency key for retry-safe client behavior (max 128 chars). A repeat with the same key and the same JSON body replays the stored response, success or error, for 30 days (up to 4096 keys). 429 responses are not stored. Reusing a key with a different body returns 409. If the node stopped while the request was running, its outcome is unknown: a repeat with the key returns 409 with an interrupted message until the key expires. Bump keys have no status route (the two send status routes report `not_found` for them); check GET /api/wallet/sends."
           }
         ],
         "requestBody": {
@@ -2221,7 +2274,7 @@
                   "summary": "Preview a bump to fast",
                   "value": {
                     "txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
-                    "extra_fee_per_byte": 10,
+                    "extra_fee_per_byte": 20,
                     "dry_run": true
                   }
                 },
@@ -2229,7 +2282,7 @@
                   "summary": "Send the bump",
                   "value": {
                     "txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
-                    "extra_fee_per_byte": 10
+                    "extra_fee_per_byte": 20
                   }
                 }
               }
@@ -2249,11 +2302,11 @@
                     "summary": "Dry run",
                     "value": {
                       "old_txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
-                      "fee": 97860,
-                      "fee_per_byte": 20,
-                      "old_fee": 48930,
-                      "bump_cost": 48930,
-                      "change": 499902140,
+                      "fee": 141630,
+                      "fee_per_byte": 30,
+                      "old_fee": 47210,
+                      "bump_cost": 94420,
+                      "change": 499858370,
                       "input_count": 1,
                       "dry_run": true
                     }
@@ -2263,11 +2316,11 @@
                     "value": {
                       "txid": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
                       "old_txid": "5d0dd597d3e3a1c7b2f4e8d9c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
-                      "fee": 97860,
-                      "fee_per_byte": 20,
-                      "old_fee": 48930,
-                      "bump_cost": 48930,
-                      "change": 499902140,
+                      "fee": 141630,
+                      "fee_per_byte": 30,
+                      "old_fee": 47210,
+                      "bump_cost": 94420,
+                      "change": 499858370,
                       "input_count": 1,
                       "dry_run": false
                     }
@@ -2305,7 +2358,13 @@
                   "insufficient": {
                     "summary": "Not enough funds",
                     "value": {
-                      "error": "insufficient funds: 25 BNT to send plus a fee of about 0.0024465 BNT (50 per byte) needs 25.0024465 BNT, and 25.001 BNT is spendable"
+                      "error": "insufficient funds: 25 BNT to send plus a fee of about 0.0023605 BNT (50 per byte) needs 25.0023605 BNT, and 25.001 BNT is spendable"
+                    }
+                  },
+                  "insufficient_build": {
+                    "summary": "Not enough funds, found when the bump is built",
+                    "value": {
+                      "error": "insufficient funds: 25 BNT to send plus the fee at 50 per byte is more than the 25.001 BNT that is spendable"
                     }
                   },
                   "too_many_coins": {
@@ -2399,6 +2458,24 @@
                     "summary": "Wallet lost track of the coins",
                     "value": {
                       "error": "the wallet cannot find the coins this send spent, so it cannot be sped up"
+                    }
+                  },
+                  "recipients_unbuildable": {
+                    "summary": "A saved recipient cannot be used again",
+                    "value": {
+                      "error": "the recipients of this send cannot be rebuilt: recipient 0: invalid address"
+                    }
+                  },
+                  "ring_mismatch": {
+                    "summary": "The old ring does not hold the spent coin",
+                    "value": {
+                      "error": "the ring of this send does not hold its own coin, so it cannot be sped up"
+                    }
+                  },
+                  "interrupted": {
+                    "summary": "Same key, earlier request cut off by a restart",
+                    "value": {
+                      "error": "request was interrupted by a node restart and its outcome is unknown; check GET /api/wallet/sends before sending again with a new idempotency key"
                     }
                   },
                   "replacement_refused": {
@@ -2547,8 +2624,9 @@
                 "properties": {
                   "message": {
                     "type": "string",
+                    "minLength": 1,
                     "maxLength": 1024,
-                    "description": "The message to sign (max 1024 bytes)"
+                    "description": "The message to sign. It must not be empty. The limit is 1024 bytes of UTF-8, so a message with non-ASCII characters can hold fewer than 1024 characters."
                   }
                 }
               },
@@ -2567,7 +2645,7 @@
                   "$ref": "#/components/schemas/SignResponse"
                 },
                 "example": {
-                  "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+                  "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
                   "signature": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
                   "message": "blocknet-auth:1:blocknet.id:a1b2c3d4e5f6:1708531200"
                 }
@@ -2580,6 +2658,10 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
+                  "bad_json": {
+                    "summary": "Body is not valid JSON, or message is not a string",
+                    "value": { "error": "invalid JSON body" }
+                  },
                   "empty_message": {
                     "summary": "Missing message",
                     "value": { "error": "message is required" }
@@ -2706,7 +2788,7 @@
                 "examples": {
                   "wrong_password": {
                     "summary": "Incorrect password",
-                    "value": { "error": "wrong password" }
+                    "value": { "error": "incorrect password" }
                   }
                 }
               },
@@ -2813,11 +2895,15 @@
             }
           },
           "401": {
-            "description": "Incorrect password or missing Bearer token",
+            "description": "Missing or invalid Bearer token (text/plain), or incorrect password (JSON)",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "example": { "error": "incorrect password" }
+              },
+              "text/plain": {
+                "schema": { "type": "string" },
+                "example": "unauthorized"
               }
             }
           },
@@ -2984,6 +3070,10 @@
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "examples": {
+                  "bad_json": {
+                    "summary": "Body is not valid JSON",
+                    "value": { "error": "invalid JSON body" }
+                  },
                   "bad_txid": {
                     "summary": "Invalid txid format",
                     "value": { "error": "txid must be 64 hex characters" }
@@ -3021,7 +3111,16 @@
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "failed to derive tx key" }
+                "examples": {
+                  "tx_key": {
+                    "summary": "The transaction key could not be derived",
+                    "value": { "error": "failed to derive tx key" }
+                  },
+                  "public_key": {
+                    "summary": "The public key of the transaction key could not be derived",
+                    "value": { "error": "failed to derive public key" }
+                  }
+                }
               }
             }
           },
@@ -3187,7 +3286,8 @@
                       "description": "Total amount removed from the wallet, in atomic units"
                     },
                     "issues": {
-                      "type": "array",
+                      "type": ["array", "null"],
+                      "description": "null when the wallet has no outputs. An empty array when it has outputs and none is stale.",
                       "items": {
                         "type": "object",
                         "properties": {
@@ -3207,7 +3307,7 @@
                               "negative_output_index"
                             ]
                           },
-                          "canonical_block_hash": { "type": "string" },
+                          "canonical_block_hash": { "type": "string", "description": "Omitted when reason is missing_canonical_block or negative_output_index" },
                           "one_time_pub": { "type": "string" },
                           "commitment": { "type": "string" }
                         }
@@ -3374,11 +3474,15 @@
             }
           },
           "401": {
-            "description": "Incorrect password or missing Bearer token",
+            "description": "Missing or invalid Bearer token (text/plain), or incorrect password (JSON)",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
                 "example": { "error": "incorrect password" }
+              },
+              "text/plain": {
+                "schema": { "type": "string" },
+                "example": "unauthorized"
               }
             }
           },
@@ -3460,46 +3564,33 @@
         "operationId": "saveCheckpoints",
         "tags": ["Blockchain"],
         "summary": "Write block checkpoints to disk",
-        "description": "Appends checkpoints (block height + hash, every 100 blocks) to `<dataDir>/checkpoints.dat`, resuming after the last one already written. Only finalized heights are written: up to the chain tip minus 100 blocks, rounded down to a multiple of 100. If no height is final yet, it writes nothing and returns `message: \"chain is empty, nothing to save\"`. Checkpoints let nodes fast-sync by skipping proof-of-work re-verification at or below the checkpointed height. Requires Bearer token.",
+        "description": "Rebuilds `<dataDir>/checkpoints.dat` from the canonical chain: one checkpoint (block height + hash) for every 100 blocks. Each call writes the whole file again and replaces the old one atomically. Only finalized heights are written: up to the chain tip minus 100 blocks, rounded down to a multiple of 100. If no height is final yet, the file is written empty and the response has `written: 0` and `last_checkpoint: 0`. Checkpoints let nodes fast-sync by skipping proof-of-work re-verification at or below the checkpointed height. Requires Bearer token.",
         "responses": {
           "200": {
-            "description": "Checkpoints written (or already up to date)",
+            "description": "Checkpoints file rebuilt",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "written": { "type": "integer", "description": "Number of checkpoints appended this call" },
+                    "written": { "type": "integer", "description": "Number of checkpoints in the rebuilt file (last_checkpoint / 100)" },
                     "chain_height": { "type": "integer", "description": "Current chain tip height" },
                     "last_checkpoint": { "type": "integer", "description": "Height of the highest checkpoint on disk" },
-                    "path": { "type": "string", "description": "Path to the checkpoints file" },
-                    "message": { "type": "string", "description": "Present when nothing was written (empty chain or already up to date)" }
-                  }
+                    "path": { "type": "string", "description": "Path to the checkpoints file" }
+                  },
+                  "required": ["written", "chain_height", "last_checkpoint", "path"]
                 },
-                "example": { "written": 3, "chain_height": 14207, "last_checkpoint": 14200, "path": "/home/user/.blocknet/checkpoints.dat" }
+                "example": { "written": 142, "chain_height": 14307, "last_checkpoint": 14200, "path": "/home/user/.blocknet/checkpoints.dat" }
               }
             }
           },
           "401": { "$ref": "#/components/responses/Unauthorized" },
           "500": {
-            "description": "Failed to write the checkpoints file",
+            "description": "A canonical block is missing at a checkpoint height, or the file could not be written",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "examples": {
-                  "mkdir": {
-                    "summary": "Data dir could not be created",
-                    "value": { "error": "failed to create data dir" }
-                  },
-                  "open": {
-                    "summary": "File could not be opened",
-                    "value": { "error": "failed to open checkpoints file" }
-                  },
-                  "write": {
-                    "summary": "Write failed",
-                    "value": { "error": "failed to write checkpoint" }
-                  }
-                }
+                "example": { "error": "failed to save checkpoints" }
               }
             }
           }
@@ -3559,7 +3650,7 @@
         "operationId": "certifyChain",
         "tags": ["Blockchain"],
         "summary": "Verify chain integrity",
-        "description": "Walks the entire chain and checks every block's difficulty (LWMA), timestamp rules, and prev-hash linkage. This is an arithmetic-only check (no Argon2id PoW re-hashing), so it completes in seconds. Returns all violations found, or confirms the chain is clean.",
+        "description": "Walks the entire chain and checks every block's difficulty (LWMA), timestamp rules, and prev-hash linkage. This is an arithmetic-only check (no Argon2id PoW re-hashing), so it completes in seconds. Returns all violations found, or confirms the chain is clean. The genesis block is not checked. If a block is missing from storage, the check stops and returns that one violation.",
         "responses": {
           "200": {
             "description": "Chain verification result",
@@ -3570,7 +3661,7 @@
                   "properties": {
                     "height": {
                       "type": "integer",
-                      "description": "Number of blocks checked"
+                      "description": "Chain tip height at the time of the check"
                     },
                     "clean": {
                       "type": "boolean",
@@ -3668,7 +3759,7 @@
         "operationId": "startMining",
         "tags": ["Mining"],
         "summary": "Start mining",
-        "description": "Starts the Argon2id proof-of-work miner. Load a wallet first: the miner pays the wallet that was loaded when the core started mining, and with no wallet the coinbase pays throwaway keys and the reward is lost. The miner waits until it has at least one peer. Each thread allocates ~2GB RAM. No request body required.",
+        "description": "Starts the Argon2id proof-of-work miner. Load a wallet first: the miner pays the wallet that is loaded when each block is built. If no wallet was loaded since the core started, the coinbase pays throwaway keys and the reward is lost. `POST /api/wallet/unload` clears the reward keys, so load a wallet again before you mine. The miner waits until it has at least one peer. Each thread allocates ~2GB RAM. No request body required.",
         "responses": {
           "200": {
             "description": "Mining started",
@@ -3799,7 +3890,7 @@
             "required": false,
             "schema": { "type": "string" },
             "description": "Optional reward address override. If provided, the coinbase output pays to this stealth address instead of the loaded wallet address.",
-            "example": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4"
+            "example": "a3oaLAJoRhS7PQtWpDgSqZ4m8XDkEnotjeoZ893vLofoM8PvUqa1egLPJDZ9RAkVm5Ua5KNVPRn4VRvqhxDoro6BRkebM"
           }
         ],
         "responses": {
@@ -3829,7 +3920,7 @@
                           {
                             "commitment": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
                             "public_key": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
-                            "range_proof": "",
+                            "range_proof": "mJ6DkXw2c0vT1q8ZbY5uKe4R7aHn3LsPf9GdCiVoWxM=",
                             "encrypted_amount": [0,0,0,0,0,0,0,0],
                             "encrypted_memo": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
                           }
@@ -3840,8 +3931,8 @@
                     ]
                   },
                   "target": "0000ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-                  "header_base": "0100000080370000...",
-                  "reward_address_used": "3wZc3y1Qw4eYpZtGJxkqkV6xG9c2oXHqfJjQ6b3sR5hYhJ8tZz1qvJ1mY1a9o7hV4pYwqH7xG5d5d8cJ8p4",
+                  "header_base": "0100000080370000000000000000a3f1c2e4b5d6978899aabbccddeeff00112233445566778899aabbccddee7c1e9a4b2d3f5061728394a5b6c7d8e9fa0b1c2d3e4f5061728394a5b6c7d8e97004a46700000000e803000000000000",
+                  "reward_address_used": "a3oaLAJoRhS7PQtWpDgSqZ4m8XDkEnotjeoZ893vLofoM8PvUqa1egLPJDZ9RAkVm5Ua5KNVPRn4VRvqhxDoro6BRkebM",
                   "template_id": "7b3d2f4a9d11c8ef",
                   "template_expires_at_unix_ms": 1738800840000,
                   "mempool_generation": 17
@@ -3976,7 +4067,7 @@
         "operationId": "submitBlock",
         "tags": ["Mining"],
         "summary": "Submit a solved block",
-        "description": "Accepts a solved block (from pool mining or an external miner). Send either the full block in the raw consensus form (see `RawBlock`, as returned in `GET /api/mining/blocktemplate`) or a compact `template_id` + `nonce`. The block must pass full validation: correct height, prev hash linking to the current tip, valid difficulty, valid Argon2id proof-of-work, valid merkle root, and valid transactions. On success the block is broadcast to peers and `mined_block` subscribers are notified. `accepted: true` is also returned when the block is valid but lands on a side chain. Rate limit: 2 requests/s per IP (burst 4), 2 at a time.",
+        "description": "Accepts a solved block (from pool mining or an external miner). Send either the full block in the raw consensus form (see `RawBlock`, as returned in `GET /api/mining/blocktemplate`) or a compact `template_id` + `nonce`. The block must pass full validation: correct height, prev hash linking to the current tip, valid difficulty, valid Argon2id proof-of-work, valid merkle root, and valid transactions. On success the block is broadcast to peers and `mined_block` subscribers are notified. `accepted: true` is also returned when the block is valid but lands on a side chain. When `template_id` is present and not blank, the compact form is used and any block fields in the body are ignored. A request body larger than 1 MiB returns 400 `invalid JSON body`; the full-block JSON form writes each byte as a number, so use the compact form for large blocks. Rate limit: 2 requests/s per IP (burst 4), 2 at a time.",
         "requestBody": {
           "required": true,
           "content": {
@@ -3998,8 +4089,9 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": ["accepted", "hash", "height"],
                   "properties": {
-                    "accepted": { "type": "boolean" },
+                    "accepted": { "type": "boolean", "description": "Always true in a 200 response" },
                     "hash": { "type": "string", "description": "Block hash (64 hex chars)" },
                     "height": { "type": "integer", "description": "Block height" }
                   }
@@ -4027,7 +4119,7 @@
                     "value": { "error": "block rejected as stale" }
                   },
                   "bad_json": {
-                    "summary": "Body is not valid JSON or not a block",
+                    "summary": "Body is not valid JSON, is not a block, or is larger than 1 MiB",
                     "value": { "error": "invalid JSON body" }
                   },
                   "no_nonce": {
@@ -4110,11 +4202,20 @@
             }
           },
           "400": {
-            "description": "Missing confirmation",
+            "description": "Body is not valid JSON (an empty body counts), or the confirmation is missing",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/Error" },
-                "example": { "error": "confirmation required (set confirm: true)" }
+                "examples": {
+                  "bad_json": {
+                    "summary": "Body is empty or not valid JSON",
+                    "value": { "error": "invalid JSON body" }
+                  },
+                  "no_confirm": {
+                    "summary": "confirm is not true",
+                    "value": { "error": "confirmation required (set confirm: true)" }
+                  }
+                }
               }
             }
           },
@@ -4136,7 +4237,7 @@
         "operationId": "getEvents",
         "tags": ["Events"],
         "summary": "Real-time event stream (SSE)",
-        "description": "Server-Sent Events stream for real-time updates. On connection, emits a `connected` event with current chain state. Then streams `new_block` for every new block added to the chain and `mined_block` for every block accepted through `POST /api/mining/submitblock` or the built-in miner. Sends SSE comment keepalives every 30s. Write timeout is disabled for this long-lived connection. The `reward` in `mined_block` is what the block's coinbase pays: the block reward, plus the block's fees from the Faraday height (103680).",
+        "description": "Server-Sent Events stream for real-time updates. On connection, emits a `connected` event with current chain state. Then streams `new_block` for each main-chain block that arrives by gossip or announcement, or is submitted or mined locally. Blocks fetched during catch-up sync and side-chain blocks do not emit it. Each client has a 10-event buffer and events are dropped when it is full, so do not treat the stream as gap-free. It streams `mined_block` for every block accepted through `POST /api/mining/submitblock` or the built-in miner. Sends SSE comment keepalives every 30s. Write timeout is disabled for this long-lived connection. The `reward` in `mined_block` is what the block's coinbase pays: the block reward, plus the block's fees from the Faraday height (103680).",
         "responses": {
           "200": {
             "description": "SSE event stream (long-lived connection)",
@@ -4153,11 +4254,11 @@
                   },
                   "new_block": {
                     "summary": "New block added to chain",
-                    "value": "event: new_block\ndata: {\"height\":14208,\"hash\":\"0000d4b5a8e7c3f2910b6e5d4c3a2f1e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4\",\"timestamp\":1738800240,\"tx_count\":3}\n\n"
+                    "value": "event: new_block\ndata: {\"hash\":\"0000d4b5a8e7c3f2910b6e5d4c3a2f1e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4\",\"height\":14208,\"timestamp\":1738800240,\"tx_count\":3}\n\n"
                   },
                   "mined_block": {
                     "summary": "Block mined by this node",
-                    "value": "event: mined_block\ndata: {\"height\":14208,\"hash\":\"0000d4b5a8e7c3f2910b6e5d4c3a2f1e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4\",\"reward\":72325093035}\n\n"
+                    "value": "event: mined_block\ndata: {\"hash\":\"0000d4b5a8e7c3f2910b6e5d4c3a2f1e0d9c8b7a6f5e4d3c2b1a09f8e7d6c5b4\",\"height\":14208,\"reward\":72325093035}\n\n"
                   },
                   "keepalive": {
                     "summary": "SSE comment sent every 30s to keep connection alive",
@@ -4202,6 +4303,10 @@
       "Settings": {
         "type": "object",
         "properties": {
+          "pow_cache": {
+            "type": ["boolean", "null"],
+            "description": "Keep proof-of-work memory cached while idle. When false, the core releases it. Default true. Applies after restart."
+          },
           "listen": {
             "type": ["string", "null"],
             "description": "P2P listen multiaddr. Applies after restart."
@@ -4276,6 +4381,7 @@
       },
       "DaemonStats": {
         "type": "object",
+        "required": ["pid", "peer_id", "peers", "chain_height", "best_hash", "total_work", "mempool_size", "mempool_bytes", "mempool_generation", "syncing", "identity_age"],
         "properties": {
           "pid": { "type": "integer", "description": "Process ID of the core" },
           "peer_id": { "type": "string", "description": "This node's libp2p peer ID" },
@@ -4285,19 +4391,19 @@
           "total_work": { "type": "integer", "description": "Cumulative chain work (sum of difficulties)" },
           "mempool_size": { "type": "integer", "description": "Number of unconfirmed transactions" },
           "mempool_bytes": { "type": "integer", "description": "Total mempool size in bytes" },
-          "mempool_generation": { "type": "integer", "format": "int64", "description": "Monotonic mempool content generation used by mining clients to detect template changes" },
+          "mempool_generation": { "type": "integer", "minimum": 0, "description": "Monotonic mempool content generation used by mining clients to detect template changes" },
           "syncing": { "type": "boolean", "description": "True if the node is currently syncing blocks from peers" },
           "sync_progress": {
             "type": "integer",
-            "description": "Blocks synced so far in the current sync. Only present while syncing."
+            "description": "Blocks synced so far in the current sync. Present only while syncing and when it is not 0."
           },
           "sync_target": {
             "type": "integer",
-            "description": "Target height of the current sync. Only present while syncing."
+            "description": "Target height of the current sync. Present only while syncing and when it is not 0."
           },
           "sync_percent": {
             "type": "string",
-            "description": "Sync progress as a percent string such as \"12.3%\". Only present while syncing."
+            "description": "Sync progress as a percent string such as \"12.3%\". Present only while syncing with a known target."
           },
           "identity_age": { "type": "string", "description": "Duration since last P2P identity rotation (e.g. \"2h34m12s\")" }
         },
@@ -4335,6 +4441,7 @@
       },
       "Block": {
         "type": "object",
+        "required": ["height", "hash", "prev_hash", "merkle_root", "timestamp", "difficulty", "nonce", "tx_count", "transactions", "confirmations", "reward", "fees"],
         "properties": {
           "height": { "type": "integer" },
           "hash": { "type": "string", "description": "Full block hash (64 hex chars)" },
@@ -4385,11 +4492,13 @@
             }
           ],
           "confirmations": 1,
-          "reward": 72325093035
+          "reward": 72325093035,
+          "fees": 15000
         }
       },
       "TxSummary": {
         "type": "object",
+        "required": ["hash", "is_coinbase", "inputs", "outputs", "fee"],
         "properties": {
           "hash": { "type": "string", "description": "Transaction hash (64 hex chars)" },
           "is_coinbase": { "type": "boolean", "description": "True for block reward transaction" },
@@ -4428,6 +4537,7 @@
       },
       "TxInput": {
         "type": "object",
+        "required": ["key_image", "ring_members", "ring_commitments", "pseudo_output", "ring_signature"],
         "properties": {
           "key_image": { "$ref": "#/components/schemas/Bytes32" },
           "ring_members": {
@@ -4450,6 +4560,7 @@
       },
       "TxOutput": {
         "type": "object",
+        "required": ["commitment", "public_key", "encrypted_amount", "encrypted_memo"],
         "properties": {
           "commitment": { "$ref": "#/components/schemas/Bytes32" },
           "public_key": { "$ref": "#/components/schemas/Bytes32" },
@@ -4464,6 +4575,7 @@
       },
       "Transaction": {
         "type": "object",
+        "required": ["version", "inputs", "outputs", "fee", "tx_public_key"],
         "properties": {
           "version": { "type": "integer", "minimum": 0, "maximum": 255 },
           "inputs": {
@@ -4508,6 +4620,7 @@
       },
       "TxLookupResult": {
         "type": "object",
+        "required": ["tx", "confirmations", "in_mempool"],
         "properties": {
           "tx": {
             "$ref": "#/components/schemas/Transaction",
@@ -4562,10 +4675,11 @@
       },
       "MempoolStats": {
         "type": "object",
+        "required": ["count", "size_bytes", "generation", "min_fee", "max_fee", "avg_fee", "base_fee_per_byte", "min_tx_fee", "fee_rates"],
         "properties": {
           "count": { "type": "integer", "description": "Number of unconfirmed transactions" },
           "size_bytes": { "type": "integer", "description": "Total serialized size in bytes" },
-          "generation": { "type": "integer", "format": "int64", "description": "Monotonic content generation; changes whenever transactions are added or removed" },
+          "generation": { "type": "integer", "minimum": 0, "description": "Monotonic content generation; changes whenever transactions are added or removed" },
           "min_fee": { "type": "integer", "description": "Lowest fee in the mempool (atomic units, 0 when empty)" },
           "max_fee": { "type": "integer", "description": "Highest fee in the mempool (atomic units, 0 when empty)" },
           "avg_fee": { "type": "number", "description": "Average fee (atomic units, 0 when empty)" },
@@ -4594,13 +4708,14 @@
       },
       "StatsResponse": {
         "type": "object",
+        "required": ["height", "difficulty", "network_hashrate", "avg_block_time", "block_reward", "emitted", "remaining", "target_supply", "pct_emitted", "tail_emission", "months_to_tail", "blocks_per_month", "block_interval_sec"],
         "description": "Chain, network, and emission statistics. Amounts are in atomic units (smallest units).",
         "properties": {
           "height": { "type": "integer", "description": "Current chain height" },
           "difficulty": { "type": "integer", "description": "Difficulty target for the next block (LWMA)" },
           "network_hashrate": { "type": "number", "description": "Estimated network hashrate (hashes/sec) over recent blocks; 0 with insufficient history" },
           "avg_block_time": { "type": "number", "description": "Average block time (seconds) over recent blocks; 0 with insufficient history" },
-          "block_reward": { "type": "integer", "description": "Coinbase reward at the current height (atomic units)" },
+          "block_reward": { "type": "integer", "description": "Base block reward at the current height, in atomic units. It does not include transaction fees, which the coinbase also pays from the Faraday height." },
           "emitted": { "type": "integer", "description": "Cumulative coins emitted through the current height (atomic units)" },
           "remaining": { "type": "integer", "description": "Coins remaining toward target_supply; 0 once tail emission is reached (atomic units)" },
           "target_supply": { "type": "integer", "description": "Approximate emission before tail emission begins (~100M coins, atomic units)" },
@@ -4631,19 +4746,11 @@
         "description": "Array of unconfirmed transactions currently in the mempool.",
         "items": {
           "$ref": "#/components/schemas/Transaction"
-        },
-        "example": [
-          {
-            "version": 1,
-            "inputs": [],
-            "outputs": [],
-            "fee": 12000,
-            "tx_public_key": [194,138,112,166,28,117,16,161,205,137,33,108,161,108,255,202,234,73,135,71,126,134,219,204,185,112,70,252,46,24,56,78]
-          }
-        ]
+        }
       },
       "PeerEntry": {
         "type": "object",
+        "required": ["peer_id", "addrs"],
         "properties": {
           "peer_id": { "type": "string", "description": "libp2p peer ID" },
           "addrs": {
@@ -4664,6 +4771,7 @@
       },
       "BanEntry": {
         "type": "object",
+        "required": ["peer_id", "addrs", "reason", "ban_count", "permanent"],
         "properties": {
           "peer_id": { "type": "string", "description": "libp2p peer ID" },
           "addrs": {
@@ -4730,7 +4838,7 @@
           "block_height": { "type": "integer", "description": "Block height where this output was confirmed" },
           "is_coinbase": { "type": "boolean", "description": "True if this is a mining reward output" },
           "spent": { "type": "boolean", "description": "True if already used as an input" },
-          "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent, 0 means unspent)" },
+          "spent_height": { "type": "integer", "description": "Block height where the spend confirmed. Omitted if unspent, and also while the spending transaction is not yet confirmed." },
           "unspendable": { "type": "boolean", "description": "True if this output shares a one-time key with a larger output, so it can never be spent and is not counted in balances. Omitted otherwise." },
           "memo_hex": {
             "type": "string",
@@ -4758,7 +4866,7 @@
           "type": { "type": "string", "enum": ["coinbase", "regular"], "description": "Output type: coinbase (mining reward) or regular (transfer)" },
           "confirmations": { "type": "integer", "description": "Number of confirmations (chain_height - block_height)" },
           "block_height": { "type": "integer", "description": "Block height where this output was confirmed" },
-          "spent_height": { "type": "integer", "description": "Block height where spent (omitted if unspent)" },
+          "spent_height": { "type": "integer", "description": "Block height where the spend confirmed. Omitted if unspent, and also while the spending transaction is not yet confirmed." },
           "one_time_pub": { "type": "string", "description": "One-time public key (64 hex chars)" },
           "commitment": { "type": "string", "description": "Pedersen commitment (64 hex chars)" },
           "memo_hex": {
@@ -4799,13 +4907,14 @@
           }
         },
         "example": {
-          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
           "amount": 500000000,
           "memo_hex": "696e766f696365202338343231"
         }
       },
       "WalletSendEntry": {
         "type": "object",
+        "required": ["txid", "timestamp", "recorded_height", "chain_state", "confirmations", "in_mempool", "fee", "total_amount", "recipients"],
         "properties": {
           "txid": {
             "type": "string",
@@ -4822,7 +4931,7 @@
           "chain_state": {
             "type": "string",
             "enum": ["confirmed", "mempool", "not_found"],
-            "description": "Current daemon lookup state for the transaction hash"
+            "description": "Current daemon lookup state for the txid returned in this entry"
           },
           "confirmations": {
             "type": "integer",
@@ -4834,7 +4943,7 @@
           },
           "fee": {
             "type": "integer",
-            "description": "Fee recorded by the wallet in atomic units"
+            "description": "Fee recorded by the wallet in atomic units. For a sped-up send, this is the fee of the newest version, even when txid shows an older version that confirmed."
           },
           "total_amount": {
             "type": "integer",
@@ -4858,7 +4967,7 @@
           "total_amount": 3250000000000,
           "recipients": [
             {
-              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
               "amount": 3250000000000
             }
           ]
@@ -4866,6 +4975,7 @@
       },
       "WalletSendsResponse": {
         "type": "object",
+        "required": ["count", "total", "limit", "offset", "order", "sends"],
         "properties": {
           "count": {
             "type": "integer",
@@ -4873,7 +4983,7 @@
           },
           "total": {
             "type": "integer",
-            "description": "Total wallet send records available before pagination"
+            "description": "Total sends available before pagination. A sped-up send counts once; its replaced versions are not counted."
           },
           "limit": {
             "type": "integer",
@@ -4933,7 +5043,7 @@
           },
           "signature": {
             "type": "string",
-            "pattern": "^[a-f0-9]{128}$",
+            "pattern": "^[0-9a-fA-F]{128}$",
             "description": "Hex-encoded 64-byte Schnorr signature over Ristretto255 (128 hex chars)"
           },
           "message": {
@@ -4942,7 +5052,7 @@
           }
         },
         "example": {
-          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
           "signature": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
           "message": "blocknet-auth:1:blocknet.id:a1b2c3d4e5f6:1708531200"
         }
@@ -4961,12 +5071,12 @@
           },
           "signature": {
             "type": "string",
-            "pattern": "^[a-f0-9]{128}$",
+            "pattern": "^[0-9a-fA-F]{128}$",
             "description": "Hex-encoded 64-byte Schnorr signature over Ristretto255 (128 hex chars), as returned by `POST /api/wallet/sign`"
           }
         },
         "example": {
-          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
           "message": "blocknet-auth:1:blocknet.id:a1b2c3d4e5f6:1708531200",
           "signature": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
         }
@@ -4977,12 +5087,12 @@
         "properties": {
           "txid": {
             "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
+            "pattern": "^[0-9a-fA-F]{64}$",
             "description": "Transaction hash (64 hex characters)"
           },
           "tx_key": {
             "type": "string",
-            "pattern": "^[0-9a-f]{64}$",
+            "pattern": "^[0-9a-fA-F]{64}$",
             "description": "Deterministic transaction private key from POST /api/wallet/prove (64 hex characters)"
           },
           "address": {
@@ -4993,11 +5103,12 @@
         "example": {
           "txid": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
           "tx_key": "f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f",
-          "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF"
+          "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG"
         }
       },
       "VerifyProofResponse": {
         "type": "object",
+        "required": ["txid", "valid", "total_matched", "outputs"],
         "properties": {
           "txid": { "type": "string", "description": "Transaction hash (echoed back)" },
           "valid": { "type": "boolean", "description": "True if tx_key corresponds to the transaction's public key" },
@@ -5020,6 +5131,7 @@
       },
       "ProofOutput": {
         "type": "object",
+        "required": ["index", "match"],
         "properties": {
           "index": { "type": "integer", "description": "Output index within the transaction" },
           "match": { "type": "boolean", "description": "True if this output was received by the address" },
@@ -5033,7 +5145,7 @@
         "properties": {
           "address": {
             "type": "string",
-            "description": "Recipient stealth address (base58-encoded spend_pub || view_pub) or Blocknet ID handle"
+            "description": "Recipient stealth address (base58 of spend_pub || view_pub || 4-byte checksum) or a Blocknet ID handle. A handle is written `$name` or `@name`: at most 64 characters from a-z, 0-9, `_`, `-` and `.`, case ignored. Control and non-ASCII characters are removed from the value before it is read."
           },
           "amount": {
             "type": "integer",
@@ -5075,10 +5187,11 @@
             "description": "One or more recipients. Total amount must not exceed spendable balance."
           },
           "extra_fee_per_byte": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "minimum": 0,
+            "maximum": 17592186044406,
             "default": 0,
-            "description": "Atomic units per byte added to the base fee rate (base_fee_per_byte from GET /api/mempool). The fee is max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size). There is no upper limit; a value so large that the fee overflows is rejected. Miners fill blocks by fee rate, highest first, so a higher value confirms sooner when blocks are full."
+            "description": "Atomic units per byte added to the base fee rate (base_fee_per_byte from GET /api/mempool). The fee is max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size). Write it as a plain whole number: a fraction or an exponent (5.0, 1e2), a negative number, or a string is rejected. null or a missing field means 0. There is no policy limit; only a value above 2^44 - 10, where the fee math could overflow, is rejected with `extra_fee_per_byte is too large`. Miners fill blocks by fee rate, highest first, so a higher value confirms sooner when blocks are full."
           },
           "dry_run": {
             "type": "boolean",
@@ -5089,7 +5202,7 @@
         "example": {
           "recipients": [
             {
-              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
               "amount": 500000000,
               "memo_text": "invoice #8421"
             }
@@ -5098,6 +5211,7 @@
       },
       "SendResponse": {
         "type": "object",
+        "required": ["fee", "change", "dry_run", "recipients"],
         "properties": {
           "txid": { "type": "string", "description": "Transaction hash (64 hex chars). Absent when dry_run is true." },
           "fee": { "type": "integer", "description": "Fee paid (or estimated) in atomic units" },
@@ -5114,12 +5228,13 @@
         },
         "example": {
           "txid": "b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4",
-          "fee": 15000,
-          "change": 734850000,
+          "fee": 47210,
+          "fee_per_byte": 10,
+          "change": 734952790,
           "dry_run": false,
           "recipients": [
             {
-              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
               "amount": 500000000,
               "memo_hex": "696e766f696365202338343231"
             }
@@ -5128,6 +5243,7 @@
       },
       "SendStatusResponse": {
         "type": "object",
+        "required": ["idempotency_key", "state"],
         "properties": {
           "idempotency_key": {
             "type": "string",
@@ -5169,6 +5285,7 @@
           "result": {
             "txid": "733cc5d530c4e31bb5691681a349ee4d99cf22538dc857588a312a0a82985e72",
             "fee": 5698010,
+            "fee_per_byte": 10,
             "change": 266360844681,
             "dry_run": false,
             "recipients": [
@@ -5213,10 +5330,11 @@
             "description": "Specific outputs to use as transaction inputs. No automatic selection is performed. Each output must be unspent, mature, unreserved, and not have its key image in the mempool."
           },
           "extra_fee_per_byte": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "minimum": 0,
+            "maximum": 17592186044406,
             "default": 0,
-            "description": "Atomic units per byte added to the base fee rate (base_fee_per_byte from GET /api/mempool). The fee is max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size). There is no upper limit; a value so large that the fee overflows is rejected. Miners fill blocks by fee rate, highest first, so a higher value confirms sooner when blocks are full."
+            "description": "Atomic units per byte added to the base fee rate (base_fee_per_byte from GET /api/mempool). The fee is max(min_tx_fee, (base_fee_per_byte + extra_fee_per_byte) * estimated_size). Write it as a plain whole number: a fraction or an exponent (5.0, 1e2), a negative number, or a string is rejected. null or a missing field means 0. There is no policy limit; only a value above 2^44 - 10, where the fee math could overflow, is rejected with `extra_fee_per_byte is too large`. Miners fill blocks by fee rate, highest first, so a higher value confirms sooner when blocks are full."
           },
           "dry_run": {
             "type": "boolean",
@@ -5234,7 +5352,7 @@
         "example": {
           "recipients": [
             {
-              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
               "amount": 500000000
             }
           ],
@@ -5245,6 +5363,7 @@
       },
       "SendAdvancedResponse": {
         "type": "object",
+        "required": ["fee", "change", "change_split", "input_total", "input_count", "dry_run", "recipients"],
         "properties": {
           "txid": {
             "type": "string",
@@ -5286,15 +5405,16 @@
         },
         "example": {
           "txid": "c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5",
-          "fee": 15000,
-          "change": 234850000,
+          "fee": 69370,
+          "fee_per_byte": 10,
+          "change": 234930630,
           "change_split": 1,
           "input_total": 735000000,
           "input_count": 2,
           "dry_run": false,
           "recipients": [
             {
-              "address": "9PNoFCqUa7K8e5JfV2Hs3TBt7kMzRGkPxJ4xVmn5cFbLd1Qy8W6uXo3Z9pNvRwA2hY7sK4mBjE6gC8dF",
+              "address": "CHXViiPArSDF5ApM8oia5mCVDRSiJAhwzpZEERUf75bDmkbnxxBzN8M1f8mf9N1o3zfCGeTiVM1eseC7e2mfHxHCvUzmG",
               "amount": 500000000
             }
           ]
@@ -5302,6 +5422,7 @@
       },
       "SendAdvancedStatusResponse": {
         "type": "object",
+        "required": ["idempotency_key", "state"],
         "properties": {
           "idempotency_key": {
             "type": "string",
@@ -5343,6 +5464,7 @@
           "result": {
             "txid": "733cc5d530c4e31bb5691681a349ee4d99cf22538dc857588a312a0a82985e72",
             "fee": 5698010,
+            "fee_per_byte": 10,
             "change": 266360844681,
             "change_split": 1,
             "input_total": 3516366542691,
@@ -5387,7 +5509,7 @@
           },
           "mempool_generation": {
             "type": "integer",
-            "format": "int64",
+            "minimum": 0,
             "description": "Exact mempool generation represented by the template transaction selection. Compare with /api/status mempool_generation to detect same-tip content changes."
           }
         },
@@ -5424,23 +5546,27 @@
         "properties": {
           "template_id": {
             "type": "string",
+            "minLength": 1,
             "description": "Template ID returned by GET /api/mining/blocktemplate."
           },
           "nonce": {
             "type": "integer",
-            "description": "PoW nonce found for the referenced template."
+            "minimum": 0,
+            "maximum": 18446744073709551615,
+            "description": "PoW nonce found for the referenced template. An unsigned 64-bit whole number."
           }
         }
       },
       "MiningStatus": {
         "type": "object",
+        "required": ["running", "threads"],
         "properties": {
           "running": { "type": "boolean", "description": "Whether the miner is currently active" },
           "threads": { "type": "integer", "description": "Number of mining threads (always present)" },
           "hashrate": { "type": "number", "description": "Hashes per second (only present when running)" },
           "hash_count": { "type": "integer", "description": "Total hashes computed this session (only present when running)" },
           "blocks_found": { "type": "integer", "description": "Blocks mined this session (only present when running)" },
-          "started_at": { "type": "string", "format": "date-time", "description": "RFC3339 miner start time (only present when running)" }
+          "started_at": { "type": "string", "format": "date-time", "description": "RFC3339 miner start time, with the UTC offset of the host (only present when running)" }
         },
         "example": {
           "running": true,
@@ -5463,10 +5589,11 @@
             "description": "The pending send to speed up (its newest txid)"
           },
           "extra_fee_per_byte": {
-            "type": "integer",
+            "type": ["integer", "null"],
             "minimum": 0,
+            "maximum": 17592186044406,
             "default": 0,
-            "description": "Atomic units per byte added to base_fee_per_byte, as for /api/wallet/send. The rate used is never below the minimum for a bump."
+            "description": "Atomic units per byte added to base_fee_per_byte, with the same format rules as for /api/wallet/send. The rate used is never below the minimum for a bump."
           },
           "dry_run": {
             "type": "boolean",
@@ -5477,6 +5604,7 @@
       },
       "BumpResponse": {
         "type": "object",
+        "required": ["old_txid", "fee", "fee_per_byte", "old_fee", "bump_cost", "change", "input_count", "dry_run"],
         "properties": {
           "txid": {
             "type": "string",
