@@ -52,7 +52,9 @@ const (
 	SafeConfirmations   = 10              // ~50 minutes for "safe"
 	CoinbaseMaturity    = 60              // ~5 hours before mined coins spendable
 	MaxReorgDepth       = 100             // Hard finality (~8 hours)
-	TimestampFuturLimit = 2 * time.Hour   // Max timestamp ahead of now
+	TimestampFuturLimit = 2 * time.Hour   // Max timestamp ahead of now before Faraday
+	// From the Faraday height a block may be at most this far ahead of now.
+	FaradayTimestampFutureLimit = 15 * time.Minute
 
 	// Block size
 	MaxBlockSize = 1 << 20 // 1MB hard cap
@@ -319,7 +321,11 @@ func ValidateBlock(block *Block, chain *Chain) error {
 func validateTimestamp(header *BlockHeader, chain *Chain) error {
 	// Must be greater than median of last 11 blocks
 	medianTime := chain.MedianTimestamp(11)
-	return validateTimestampWithMedian(header, medianTime)
+	parent := chain.GetBlock(header.PrevHash)
+	if parent == nil {
+		return fmt.Errorf("unknown parent %x", header.PrevHash[:8])
+	}
+	return validateTimestampWithMedian(header, medianTime, parent.Header.Timestamp)
 }
 
 // blockSpaceForTransactions is the room left in a block for mempool transactions
@@ -329,7 +335,7 @@ func blockSpaceForTransactions(coinbase *Transaction) int {
 }
 
 // templateTimestamp returns now, raised if needed so a block built on prevHash
-// satisfies the timestamp rules. A parent may be stamped up to TimestampFuturLimit
+// satisfies the timestamp rules. A parent may be stamped up to the future limit
 // ahead of this node's clock, and a child at or before it would be rejected.
 func (c *Chain) templateTimestamp(prevHash [32]byte, now int64) int64 {
 	ancestors, err := c.storage.GetAncestorHeaders(prevHash, 11)
@@ -348,18 +354,30 @@ func (c *Chain) templateTimestamp(prevHash [32]byte, now int64) int64 {
 	return max(now, floor+1)
 }
 
-func validateTimestampWithMedian(header *BlockHeader, medianTime int64) error {
+func validateTimestampWithMedian(header *BlockHeader, medianTime, parentTimestamp int64) error {
 	if header.Timestamp <= medianTime {
 		return fmt.Errorf("timestamp %d <= median %d", header.Timestamp, medianTime)
 	}
 
 	// Must not be too far in future
-	maxTime := time.Now().Add(TimestampFuturLimit).Unix()
-	if header.Timestamp > maxTime {
+	if header.Timestamp > maxBlockTimestamp(header.Height, parentTimestamp, time.Now().Unix()) {
 		return fmt.Errorf("timestamp too far in future")
 	}
 
 	return nil
+}
+
+// maxBlockTimestamp is the latest timestamp a block at height may carry on a
+// parent stamped parentTimestamp, by a clock reading now. Before the Faraday
+// height that is TimestampFuturLimit ahead of now. From it, a block may be at
+// most FaradayTimestampFutureLimit ahead, or one second after a parent that is
+// already further ahead: a chain stamped ahead before the upgrade keeps
+// extending, no block can move it further ahead, and it returns to real time.
+func maxBlockTimestamp(height uint64, parentTimestamp, now int64) int64 {
+	if !upgradeActive(height, params.FaradayHeight) {
+		return now + int64(TimestampFuturLimit/time.Second)
+	}
+	return max(now+int64(FaradayTimestampFutureLimit/time.Second), parentTimestamp+1)
 }
 
 // validatePoW checks if block meets PoW difficulty using Argon2id
@@ -462,7 +480,7 @@ func validateBlockWithContext(
 	if err != nil {
 		return fmt.Errorf("failed to derive median timestamp from parent context: %w", err)
 	}
-	if err := validateTimestampWithMedian(header, medianTime); err != nil {
+	if err := validateTimestampWithMedian(header, medianTime, parent.Header.Timestamp); err != nil {
 		return fmt.Errorf("invalid timestamp: %w", err)
 	}
 
@@ -471,8 +489,7 @@ func validateBlockWithContext(
 	}
 
 	// Always reject excessively-future timestamps.
-	maxTime := time.Now().Add(TimestampFuturLimit).Unix()
-	if header.Timestamp > maxTime {
+	if header.Timestamp > maxBlockTimestamp(header.Height, parent.Header.Timestamp, time.Now().Unix()) {
 		return fmt.Errorf("timestamp too far in future")
 	}
 
@@ -960,7 +977,7 @@ func (c *Chain) passesCheapPrecheck(block *Block) bool {
 		return false
 	}
 	median, err := medianTimestampFromParent(parent, getParent, 11)
-	if err != nil || validateTimestampWithMedian(h, median) != nil {
+	if err != nil || validateTimestampWithMedian(h, median, parent.Header.Timestamp) != nil {
 		return false
 	}
 	root, err := block.ComputeMerkleRoot()
